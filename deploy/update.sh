@@ -191,6 +191,7 @@ main() {
     manifest_candidate="${BACKUP_DIR}/release-manifest.json"
     compose_candidate="${BACKUP_DIR}/docker-compose.next.yml"
     update_candidate="${BACKUP_DIR}/update.next.sh"
+    auto_update_candidate="${BACKUP_DIR}/auto-update.next.sh"
     log "Downloading and validating the current deployment definition..."
     curl -fsSL "${release_base}/release-manifest.json" -o "$manifest_candidate"
     release_image="$(sed -n 's/.*"image"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest_candidate" | head -n 1)"
@@ -200,6 +201,7 @@ main() {
     esac
     curl -fsSL "${release_base}/docker-compose.yml" -o "$compose_candidate"
     curl -fsSL "${release_base}/update.sh" -o "$update_candidate"
+    curl -fsSL "${release_base}/auto-update.sh" -o "$auto_update_candidate"
     docker compose --env-file "${INSTALL_DIR}/.env" -f "$compose_candidate" config -q
     cp "$compose_candidate" "${INSTALL_DIR}/docker-compose.yml"
     set_env_value "POLYSIEM_IMAGE" "$release_image"
@@ -219,6 +221,10 @@ main() {
         if ! cp "$update_candidate" "${INSTALL_DIR}/update.sh" \
             || ! chmod 700 "${INSTALL_DIR}/update.sh"; then
             warn "PolySIEM updated, but update.sh could not refresh itself."
+        fi
+        if ! cp "$auto_update_candidate" "${INSTALL_DIR}/auto-update.sh" \
+            || ! chmod 700 "${INSTALL_DIR}/auto-update.sh"; then
+            warn "PolySIEM updated, but auto-update.sh could not refresh itself."
         fi
         exit 0
     fi

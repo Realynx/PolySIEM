@@ -4,7 +4,12 @@ import {
   isPublicDemoRequestAllowed,
 } from "@/lib/demo/mode";
 
-const PUBLIC_PATHS = ["/login", "/setup"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/setup",
+  "/opengraph-image",
+  "/twitter-image",
+];
 
 /**
  * Coarse route protection only: checks for the presence of the session cookie

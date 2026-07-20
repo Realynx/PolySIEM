@@ -209,7 +209,7 @@ export default async function AboutSettingsPage() {
       : installType === "native"
         ? `curl -fsSL https://github.com/${repository}/releases/latest/download/install-vm.sh | sudo bash`
         : installType === "docker-source"
-          ? `curl -fsSL https://raw.githubusercontent.com/${repository}/main/deploy/install.sh | sudo bash -s -- --source`
+          ? `curl -fsSL https://raw.githubusercontent.com/${repository}/master/deploy/install.sh | sudo bash -s -- --source`
           : "sudo /opt/polysiem/update.sh";
 
   const facts = [

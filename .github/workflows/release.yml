@@ -55,6 +55,7 @@ jobs:
           git ls-files --error-unmatch .env.example
           test -f README.md
           test -f LICENSE
+          test -f deploy/auto-update.sh
           test -f deploy/standalone-entrypoint.sh
           test -f deploy/standalone-entrypoint.ps1
 
@@ -122,7 +123,9 @@ jobs:
   standalone-linux:
     name: Build Linux x64 standalone bundle
     needs: validate
-    runs-on: ubuntu-latest
+    # Use the older supported runner baseline so native binaries do not inherit
+    # a newer glibc requirement than common Debian/Ubuntu LXC guests provide.
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -153,6 +156,7 @@ jobs:
           cp -a .next/static "${STAGE}/.next/static"
           cp -a public prisma "${STAGE}/"
           cp deploy/standalone-entrypoint.sh "${STAGE}/start.sh"
+          cp deploy/polysiem.service "${STAGE}/polysiem.service"
           cp .env.example README.md LICENSE "${STAGE}/"
           chmod +x "${STAGE}/start.sh"
           PRISMA_VERSION="$(node -p "require('./package.json').devDependencies.prisma.replace(/^[^0-9]*/, '')")"
@@ -231,13 +235,14 @@ jobs:
         run: |
           mkdir release
           cp deploy/install.sh deploy/install.ps1 deploy/install-vm.sh release/
-          cp deploy/update.sh deploy/update.ps1 deploy/docker-compose.yml deploy/docker-compose.demo.yml release/
+          cp deploy/update.sh deploy/update.ps1 deploy/auto-update.sh deploy/docker-compose.yml deploy/docker-compose.demo.yml release/
           IMAGE_REPOSITORY="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           jq -n \
             --arg version "${{ needs.validate.outputs.version }}" \
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg image "ghcr.io/${IMAGE_REPOSITORY}:${{ needs.validate.outputs.version }}" \
-            '{schemaVersion: 1, version: $version, repository: $repository, image: $image, platforms: {docker: ["linux/amd64", "linux/arm64"], installers: ["linux", "windows"]}, assets: {compose: "docker-compose.yml", demoCompose: "docker-compose.demo.yml", linuxInstaller: "install.sh", windowsInstaller: "install.ps1", linuxUpdater: "update.sh", windowsUpdater: "update.ps1", nativeLinuxInstaller: "install-vm.sh"}}' \
+            --arg nativeLinuxX64Bundle "polysiem-${{ needs.validate.outputs.version }}-standalone-linux-x64.tar.gz" \
+            '{schemaVersion: 1, version: $version, repository: $repository, image: $image, platforms: {docker: ["linux/amd64", "linux/arm64"], installers: ["linux", "windows"]}, assets: {compose: "docker-compose.yml", demoCompose: "docker-compose.demo.yml", linuxInstaller: "install.sh", windowsInstaller: "install.ps1", linuxUpdater: "update.sh", linuxAutoUpdater: "auto-update.sh", windowsUpdater: "update.ps1", nativeLinuxInstaller: "install-vm.sh", nativeLinuxX64Bundle: $nativeLinuxX64Bundle}}' \
             > release/release-manifest.json
 
       - name: Upload deployment assets

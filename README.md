@@ -13,6 +13,10 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
+<p align="center">
+  <a href="https://demo.polysiem.f0x.app/"><strong>Explore the live demo</strong></a>
+</p>
+
 ## About PolySIEM
 
 PolySIEM turns scattered homelab state into a living source of truth. It documents hosts, VMs, containers, services, networks, firewall policy, storage, and runbooks while preserving where each fact came from.
@@ -61,7 +65,27 @@ For a Debian or Ubuntu VM/LXC without Docker:
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash
 ```
 
-This installs Node.js, PostgreSQL, and a hardened `polysiem.service` systemd unit.
+This installs Node.js, PostgreSQL, and a checksum-verified prebuilt runtime with a hardened `polysiem.service` systemd unit. On architectures without a native bundle, it falls back to a source build.
+
+Build from source instead of using the release bundle:
+
+```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --source
+```
+
+Force a repair/reinstall of the current release:
+
+```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --force
+```
+
+Uninstall PolySIEM, including its database, configuration, runtime, and backups:
+
+```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --uninstall
+```
+
+The uninstall leaves the shared Node.js and PostgreSQL OS packages installed.
 
 ### Manual Docker Compose or source build
 

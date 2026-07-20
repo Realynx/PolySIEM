@@ -13,7 +13,7 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-    env_file: .env
+    env_file: ${POLYSIEM_ENV_FILE:-.env}
     environment:
       POLYSIEM_GITHUB_REPOSITORY: ${POLYSIEM_GITHUB_REPOSITORY:-Realynx/PolySIEM}
     depends_on:

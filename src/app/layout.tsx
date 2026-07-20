@@ -3,6 +3,7 @@ import { Plus_Jakarta_Sans, Geist_Mono } from "next/font/google";
 import { cookies } from "next/headers";
 import { Providers } from "@/components/providers";
 import { ServiceWorkerRegistration } from "@/components/pwa/service-worker-registration";
+import { getSitePresentation } from "@/lib/site-presentation";
 import { THEME_COOKIE, isThemeColor } from "@/lib/theme";
 import "./globals.css";
 
@@ -16,16 +17,42 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: {
-    default: "PolySIEM",
-    template: "%s · PolySIEM",
-  },
-  description: "Self-hosted homelab documentation dashboard",
-  manifest: "/manifest.webmanifest",
-  icons: { icon: "/brand/polysiem-mark.svg", apple: "/icons/apple-touch-icon.png" },
-  appleWebApp: { capable: true, title: "PolySIEM", statusBarStyle: "default" },
-};
+export function generateMetadata(): Metadata {
+  const site = getSitePresentation();
+
+  return {
+    metadataBase: site.baseUrl,
+    applicationName: "PolySIEM",
+    title: {
+      default: site.title,
+      template: "%s · PolySIEM",
+    },
+    description: site.description,
+    alternates: { canonical: "/" },
+    openGraph: {
+      type: "website",
+      url: "/",
+      siteName: "PolySIEM",
+      title: site.title,
+      description: site.description,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: site.title,
+      description: site.description,
+    },
+    manifest: "/manifest.webmanifest",
+    icons: {
+      icon: "/brand/polysiem-mark.svg",
+      apple: "/icons/apple-touch-icon.png",
+    },
+    appleWebApp: {
+      capable: true,
+      title: "PolySIEM",
+      statusBarStyle: "default",
+    },
+  };
+}
 
 export const viewport: Viewport = {
   themeColor: [

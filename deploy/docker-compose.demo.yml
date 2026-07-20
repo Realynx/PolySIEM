@@ -13,6 +13,8 @@ services:
     image: ${POLYSIEM_IMAGE:-ghcr.io/realynx/polysiem:latest}
     pull_policy: always
     restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     ports:
       - "${POLYSIEM_DEMO_PORT:-3000}:3000"
     environment:
@@ -32,6 +34,21 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  # The demo is disposable and intentionally follows the verified `latest`
+  # release image. Docker control stays isolated in this updater container;
+  # the PolySIEM application never receives the Docker socket.
+  updater:
+    image: nickfedor/watchtower:1.19.0
+    restart: unless-stopped
+    command:
+      - --cleanup
+      - --interval
+      - "300"
+      - --label-enable
+      - --rolling-restart
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
   db:
     image: postgres:17-alpine

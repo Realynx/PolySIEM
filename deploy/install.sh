@@ -6,19 +6,19 @@
 #   curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install.sh | bash
 #
 # Build from source instead of pulling the release image:
-#   curl -fsSL https://raw.githubusercontent.com/Realynx/PolySIEM/main/deploy/install.sh | bash -s -- --source
+#   curl -fsSL https://raw.githubusercontent.com/Realynx/PolySIEM/master/deploy/install.sh | bash -s -- --source
 #
 # Environment overrides:
 #   INSTALL_DIR     install location            (default: /opt/polysiem)
 #   POLYSIEM_REPO    GitHub repository URL       (default: https://github.com/Realynx/PolySIEM)
-#   POLYSIEM_BRANCH  branch for raw downloads    (default: main)
+#   POLYSIEM_BRANCH  branch for raw downloads    (default: master)
 #
 # Idempotent: re-running keeps your .env, pulls a newer image and restarts.
 #
 set -euo pipefail
 
 POLYSIEM_REPO="${POLYSIEM_REPO:-https://github.com/Realynx/PolySIEM}"
-POLYSIEM_BRANCH="${POLYSIEM_BRANCH:-main}"
+POLYSIEM_BRANCH="${POLYSIEM_BRANCH:-master}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/polysiem}"
 
 REPO_SLUG="${POLYSIEM_REPO#https://github.com/}"
@@ -152,6 +152,8 @@ DB_PASSWORD=${db_password}
 POLYSIEM_IMAGE=${RELEASE_IMAGE}
 POLYSIEM_GITHUB_REPOSITORY=${REPO_SLUG}
 POLYSIEM_INSTALL_TYPE=$([ "$SOURCE_MODE" -eq 1 ] && printf 'docker-source' || printf 'docker')
+POLYSIEM_AUTO_UPDATE_CAPABLE=$([ "$SOURCE_MODE" -eq 1 ] && printf 'false' || printf 'true')
+POLYSIEM_UPDATE_AGENT_TOKEN=$(openssl rand -hex 32)
 EOF
     chmod 600 "${INSTALL_DIR}/.env"
 }
@@ -169,6 +171,14 @@ ensure_install_metadata() {
         if [ "$SOURCE_MODE" -eq 1 ]; then install_type="docker-source"; else install_type="docker"; fi
         printf 'POLYSIEM_INSTALL_TYPE=%s\n' "$install_type" >> "${INSTALL_DIR}/.env"
     fi
+    if ! grep -q '^POLYSIEM_AUTO_UPDATE_CAPABLE=' "${INSTALL_DIR}/.env"; then
+        if [ "$SOURCE_MODE" -eq 1 ]; then capable=false; else capable=true; fi
+        printf 'POLYSIEM_AUTO_UPDATE_CAPABLE=%s\n' "$capable" >> "${INSTALL_DIR}/.env"
+    fi
+    if [ "$SOURCE_MODE" -eq 0 ] \
+        && ! grep -q '^POLYSIEM_UPDATE_AGENT_TOKEN=' "${INSTALL_DIR}/.env"; then
+        printf 'POLYSIEM_UPDATE_AGENT_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "${INSTALL_DIR}/.env"
+    fi
 }
 
 install_updater() {
@@ -176,6 +186,43 @@ install_updater() {
     curl -fsSL "${RELEASE_BASE}/update.sh" -o "${INSTALL_DIR}/update.sh" \
         || die "could not download update.sh (check POLYSIEM_REPO / network)"
     chmod 700 "${INSTALL_DIR}/update.sh"
+}
+
+install_auto_update_timer() {
+    [ "$SOURCE_MODE" -eq 0 ] || return 0
+    command -v systemctl >/dev/null 2>&1 || {
+        warn "systemd is unavailable; automatic updates can be checked manually but cannot be scheduled"
+        return 0
+    }
+    log "Installing opt-in automatic update timer..."
+    curl -fsSL "${RELEASE_BASE}/auto-update.sh" -o "${INSTALL_DIR}/auto-update.sh" \
+        || die "could not download auto-update.sh"
+    chmod 700 "${INSTALL_DIR}/auto-update.sh"
+    cat > /etc/systemd/system/polysiem-auto-update.service <<EOF
+[Unit]
+Description=PolySIEM automatic update check
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+Environment=INSTALL_DIR=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/auto-update.sh
+EOF
+    cat > /etc/systemd/system/polysiem-auto-update.timer <<'EOF'
+[Unit]
+Description=Check for verified PolySIEM releases
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now polysiem-auto-update.timer >/dev/null
 }
 
 deploy_release() {
@@ -265,6 +312,7 @@ main() {
     write_env
     ensure_install_metadata
     install_updater
+    install_auto_update_timer
     if [ "$SOURCE_MODE" -eq 1 ]; then
         deploy_source
     else

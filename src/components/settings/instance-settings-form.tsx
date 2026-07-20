@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -22,6 +23,11 @@ interface InstanceSettingsView {
   instanceName: string;
   defaultTheme: string;
   staleRemoveThreshold: number;
+  autoUpdate: {
+    enabled: boolean;
+    capable: boolean;
+    enforcedByDemo: boolean;
+  };
 }
 
 export function InstanceSettingsForm({ initial }: { initial: InstanceSettingsView }) {
@@ -29,6 +35,7 @@ export function InstanceSettingsForm({ initial }: { initial: InstanceSettingsVie
   const [instanceName, setInstanceName] = useState(initial.instanceName);
   const [defaultTheme, setDefaultTheme] = useState(initial.defaultTheme);
   const [threshold, setThreshold] = useState(String(initial.staleRemoveThreshold));
+  const [autoUpdate, setAutoUpdate] = useState(initial.autoUpdate.enabled);
 
   const save = useMutation({
     mutationFn: () => {
@@ -39,6 +46,7 @@ export function InstanceSettingsForm({ initial }: { initial: InstanceSettingsVie
           instanceName: instanceName.trim() || "PolySIEM",
           defaultTheme,
           staleRemoveThreshold: Number.isFinite(parsed) ? parsed : initial.staleRemoveThreshold,
+          autoUpdate,
         }),
       });
     },
@@ -73,6 +81,25 @@ export function InstanceSettingsForm({ initial }: { initial: InstanceSettingsVie
               className="max-w-sm"
             />
             <p className="text-xs text-muted-foreground">Shown in the sidebar and browser title.</p>
+          </div>
+          <div className="flex max-w-2xl items-start justify-between gap-5 border-t pt-4">
+            <div className="space-y-1">
+              <Label htmlFor="auto-update">Automatic updates</Label>
+              <p className="text-xs text-muted-foreground">
+                {initial.autoUpdate.enforcedByDemo
+                  ? "Required for the public demo so it follows the latest verified GitHub release."
+                  : initial.autoUpdate.capable
+                    ? "Checks every 15 minutes and uses the transactional host updater with backup, health verification, and rollback."
+                    : "Available when PolySIEM is installed with the managed Linux Docker installer."}
+              </p>
+            </div>
+            <Switch
+              id="auto-update"
+              checked={autoUpdate}
+              onCheckedChange={setAutoUpdate}
+              disabled={!initial.autoUpdate.capable || initial.autoUpdate.enforcedByDemo}
+              aria-label="Automatically install verified PolySIEM releases"
+            />
           </div>
           <div className="grid gap-2">
             <Label htmlFor="default-theme">Default theme for new users</Label>

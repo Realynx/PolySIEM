@@ -57,4 +57,11 @@ describe("public demo middleware lock", () => {
       ).status,
     ).toBe(200);
   });
+
+  it("keeps social preview images public without a session", () => {
+    for (const path of ["/opengraph-image", "/twitter-image"]) {
+      const response = middleware(new NextRequest(`http://localhost${path}`));
+      expect(response.status).toBe(200);
+    }
+  });
 });

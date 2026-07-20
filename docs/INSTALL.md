@@ -112,7 +112,17 @@ For a Debian/Ubuntu VM or LXC (e.g. on Proxmox), no Docker involved:
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash
 ```
 
-What it does: installs Node 22 (NodeSource) + distro PostgreSQL, creates a `polysiem` system user and database, checks out the exact tag from the latest release manifest, builds, writes `/opt/polysiem/.env`, applies migrations, assembles the standalone runtime in `/opt/polysiem/run`, and installs a hardened systemd unit (`polysiem.service`: `NoNewPrivileges`, `ProtectSystem=full`, `PrivateTmp`).
+What it does: installs Node 22 (NodeSource) + distro PostgreSQL, creates a `polysiem` system user and database, downloads the exact x86-64 standalone bundle named by the latest release manifest, verifies it against the release's `SHA256SUMS`, writes `/opt/polysiem/.env`, applies migrations, switches the runtime in `/opt/polysiem/run`, and installs a hardened systemd unit (`polysiem.service`: `NoNewPrivileges`, `ProtectSystem=full`, `PrivateTmp`). Re-running an unchanged healthy release exits without reinstalling it.
+
+On architectures without a published native bundle, the installer falls back to building the selected release from source. Use `--source` to request that path explicitly, `--force` to repair/reinstall the current bundle, or `--uninstall` to permanently remove PolySIEM:
+
+```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --source
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --force
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --uninstall
+```
+
+`--uninstall` deletes the PolySIEM PostgreSQL database and role, `/opt/polysiem` (including `.env` and every installer backup), the systemd unit, and the `polysiem` system user. It leaves the shared Node.js and PostgreSQL OS packages installed.
 
 Service management:
 
@@ -134,9 +144,13 @@ Open `http://<your-server>:3000`. PolySIEM launches the first-run installer; the
 | Windows Docker Desktop | `powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\PolySIEM\update.ps1"` |
 | Docker (manual) | Download `deploy/update.sh` to the install directory and run it as root |
 | Docker (source) | `git -C /opt/polysiem/src pull && docker compose --env-file /opt/polysiem/.env -f /opt/polysiem/src/deploy/docker-compose.source.yml up -d --build` |
-| Native VM | Re-run `install-vm.sh` (git pull → build → migrate → restart) |
+| Native VM/LXC | Re-run `install-vm.sh` (verified bundle → backup → migrate → restart) |
 
 Admins can use **Settings → About → Check for updates** to compare the running build with GitHub's latest stable release. The check is read-only and runs server-side so browser clients never call GitHub directly. It does not give the application access to Docker or the host.
+
+Managed Linux Docker installs also expose an **Automatic updates** toggle under **Settings → System**. It is off by default. When enabled, a root-owned systemd timer checks every 15 minutes and invokes the same transactional updater described below. A failed release is rolled back and is not retried automatically; inspect the preserved backup and run the updater manually after correcting the problem. PolySIEM itself never receives Docker access or root privileges.
+
+Linux Docker installations created before this feature should rerun the latest `install.sh` once. The installer preserves `.env` and data, adds the local update-agent token, and installs the timer; the toggle remains off until an administrator enables it.
 
 The Linux and Windows Docker updaters perform this sequence:
 
@@ -152,14 +166,14 @@ The updater deliberately keeps both the backup and the rollback image after succ
 Every tagged release is published only after all of these are ready:
 
 - A GHCR image manifest supporting `linux/amd64` and `linux/arm64`. Docker Desktop uses these Linux-container images on Windows.
-- `install.sh`, `update.sh`, and `install-vm.sh` for Linux.
+- `install.sh`, `update.sh`, `auto-update.sh`, and `install-vm.sh` for Linux.
 - `install.ps1` and `update.ps1` for Windows.
 - `docker-compose.yml`, `release-manifest.json`, and `SHA256SUMS`.
-- Platform-specific native bundles: `standalone-linux-x64.tar.gz` and `standalone-windows-x64.zip`. Each contains a matching Prisma CLI and a `start.sh` or `start.ps1` entrypoint that applies migrations before starting Node.
+- Versioned platform-specific native bundles: `polysiem-<version>-standalone-linux-x64.tar.gz` and `polysiem-<version>-standalone-windows-x64.zip`. Each contains a matching Prisma CLI and a `start.sh` or `start.ps1` entrypoint that applies migrations before starting Node. The Linux bundle also contains the native systemd unit.
 
-Installers and updaters consume the stable `releases/latest/download/...` assets, not mutable deployment files from `main`. `SHA256SUMS` covers every published artifact.
+Installers and updaters consume the stable `releases/latest/download/...` assets, not mutable deployment files from `master`. `SHA256SUMS` covers every published artifact.
 
-The native installer follows the same principle: it completes the new build first, stops the service, backs up PostgreSQL, `.env`, and `/opt/polysiem/run`, then migrates and switches the runtime. A failed migration or health check restores the saved database and runtime.
+The native installer follows the same principle: it downloads, checksum-verifies, and stages the new runtime first, stops the service, backs up PostgreSQL, `.env`, and `/opt/polysiem/run`, then migrates and switches the runtime. A source build is used only when explicitly requested or when no bundle exists for the host architecture. A failed migration or health check restores the saved database and runtime.
 
 Source-mode Docker installs are developer-oriented and are not switched by the release-image updater. Take the database and `.env` backup below, build the new image, and keep the prior local image tag until the new build is healthy.
 
@@ -264,7 +278,7 @@ docker compose exec db psql -U polysiem polysiem \
   -c "UPDATE \"User\" SET \"passwordHash\" = '$HASH' WHERE email = 'admin@example.com';"
 
 # Native install:
-HASH=$(cd /opt/polysiem/app && node -e "require('bcryptjs').hash('NEWPASSWORD',10).then(h=>console.log(h))")
+HASH=$(cd /opt/polysiem/run && node -e "require('bcryptjs').hash('NEWPASSWORD',10).then(h=>console.log(h))")
 sudo -u postgres psql polysiem \
   -c "UPDATE \"User\" SET \"passwordHash\" = '$HASH' WHERE email = 'admin@example.com';"
 ```

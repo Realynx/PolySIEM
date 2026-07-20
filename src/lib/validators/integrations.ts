@@ -685,5 +685,6 @@ export const instanceSettingsSchema = z.object({
     .enum(["blue", "emerald", "violet", "amber", "rose"])
     .optional(),
   staleRemoveThreshold: z.number().int().min(1).max(100).optional(),
+  autoUpdate: z.boolean().optional(),
 });
 export type InstanceSettingsInput = z.infer<typeof instanceSettingsSchema>;

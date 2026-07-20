@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { handleApi, jsonOk } from "@/lib/api";
+import { ApiError, handleApi, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guards";
 import { audit } from "@/lib/audit";
 import { purgeMockIntegrations } from "@/lib/demo/provision";
@@ -20,6 +20,7 @@ import {
   instanceSettingsSchema,
   ollamaConfigSchema,
 } from "@/lib/validators/integrations";
+import { getAutoUpdateConfig } from "@/lib/updates/auto-update";
 
 const DEFAULT_STALE_REMOVE_THRESHOLD = 3;
 
@@ -31,6 +32,7 @@ async function readSettings() {
     ollamaConfig,
     embeddingConfig,
     developerMode,
+    autoUpdate,
   ] = await Promise.all([
     getSetting<string>(SETTING_KEYS.instanceName, "PolySIEM"),
     getSetting<string>(SETTING_KEYS.defaultTheme, "blue"),
@@ -41,6 +43,7 @@ async function readSettings() {
     getOllamaConfig(),
     getEmbeddingConfig(),
     getDeveloperModeConfig(),
+    getAutoUpdateConfig(),
   ]);
   // Sanitize AI configs so the encrypted Azure API key never leaves the server.
   return {
@@ -50,6 +53,7 @@ async function readSettings() {
     ollamaConfig: sanitizeAiConfig(ollamaConfig),
     embeddingConfig: sanitizeEmbeddingConfig(embeddingConfig),
     developerMode,
+    autoUpdate,
   };
 }
 
@@ -79,6 +83,25 @@ export const PATCH = handleApi(async (req: NextRequest) => {
       instance.staleRemoveThreshold,
     );
     updatedFields.push("staleRemoveThreshold");
+  }
+  if (instance.autoUpdate !== undefined) {
+    const current = await getAutoUpdateConfig();
+    if (instance.autoUpdate && !current.capable) {
+      throw new ApiError(
+        409,
+        "auto_update_unavailable",
+        "Automatic updates require a managed Linux Docker installation.",
+      );
+    }
+    if (current.enforcedByDemo && !instance.autoUpdate) {
+      throw new ApiError(
+        409,
+        "auto_update_enforced",
+        "Automatic updates are required for the public demo.",
+      );
+    }
+    await setSetting(SETTING_KEYS.autoUpdate, instance.autoUpdate);
+    updatedFields.push("autoUpdate");
   }
   let purgedMockIntegrations: string[] = [];
   if (instance.developerMode !== undefined) {

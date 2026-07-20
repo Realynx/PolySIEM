@@ -153,4 +153,9 @@ server rejects persistent mutations with HTTP 423 and disables background
 writers. Its bootstrap marker and empty-database check prevent the command from
 converting an existing PolySIEM installation.
 
+The dedicated demo Compose stack checks the verified GHCR `latest` image every
+five minutes and recreates only the demo application when a newer release is
+published. The Docker socket is mounted only into the isolated updater
+container; the PolySIEM container never receives Docker control.
+
 > Note: the development seed (`npm run db:seed`) creates no accounts or default credentials. The first-run installer asks for the administrator, optionally connects live integrations, and presents a skippable mock dashboard tutorial. Install persistent mock sources from the Integrations page so the scenario and seed are explicit.
