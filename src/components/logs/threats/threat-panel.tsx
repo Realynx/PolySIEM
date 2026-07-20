@@ -1,0 +1,492 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  FilterX,
+  Plus,
+  Radar,
+  RefreshCw,
+  SearchX,
+  Settings2,
+  ShieldCheck,
+} from "lucide-react";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import { apiFetch } from "@/components/shared/api-client";
+import { PageHeader } from "@/components/shared/page-header";
+import { EmptyState } from "@/components/shared/empty-state";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatRelative } from "@/lib/format";
+import { useDebounced } from "@/components/shared/use-debounced";
+import type {
+  AiScanConfigDto,
+  AiScanRunDto,
+  SecurityTicketDto,
+  TicketListResponse,
+} from "@/lib/types";
+import { SEVERITIES } from "./constants";
+import { hasActiveInvestigation } from "./investigation-state";
+import { NewTicketDialog } from "./new-ticket-dialog";
+import { ScanConfigDialog } from "./scan-config-dialog";
+import { RunStatusBadge, ScanHistory } from "./scan-history";
+import { SeverityBadge } from "./severity-badge";
+import { TicketSheet } from "./ticket-sheet";
+import { TicketTable } from "./ticket-table";
+
+const PAGE_SIZE = 25;
+
+interface LogSource {
+  id: string;
+  name: string;
+}
+
+/** SOAR-style response panel: AI-generated and manual security tickets with scan controls. */
+export function ThreatPanel({
+  sources,
+  isAdmin,
+}: {
+  sources: LogSource[];
+  isAdmin: boolean;
+}) {
+  const queryClient = useQueryClient();
+
+  const [status, setStatus] = useState<"open" | "closed" | "all">("open");
+  const [severity, setSeverity] = useState<string>("all");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<SecurityTicketDto | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [newTicketOpen, setNewTicketOpen] = useState(false);
+
+  const debouncedSearch = useDebounced(search, 400);
+
+  // New filters restart pagination.
+  useEffect(() => {
+    setPage(1);
+  }, [status, severity, debouncedSearch]);
+
+  const params = useMemo(() => {
+    const p = new URLSearchParams({
+      status,
+      page: String(page),
+      pageSize: String(PAGE_SIZE),
+    });
+    if (severity !== "all") p.set("severity", severity);
+    if (debouncedSearch.trim()) p.set("q", debouncedSearch.trim());
+    return p;
+  }, [status, severity, debouncedSearch, page]);
+
+  const ticketsQuery = useQuery({
+    queryKey: ["tickets", status, severity, debouncedSearch, page],
+    queryFn: () => apiFetch<TicketListResponse>(`/api/logs/tickets?${params}`),
+    placeholderData: keepPreviousData,
+    // Background investigations update the tickets they run against; while any
+    // are queued/running, poll the list so their badges advance without the
+    // user opening the ticket. Stops once nothing is active.
+    refetchInterval: (query) =>
+      hasActiveInvestigation(query.state.data?.tickets) ? 3500 : false,
+  });
+
+  const runsQuery = useQuery({
+    queryKey: ["scan-runs"],
+    queryFn: () =>
+      apiFetch<{ runs: AiScanRunDto[] }>("/api/logs/scan/runs?limit=20"),
+  });
+
+  const configQuery = useQuery({
+    queryKey: ["scan-config"],
+    queryFn: () => apiFetch<AiScanConfigDto>("/api/logs/scan/config"),
+  });
+
+  const refreshAll = () => {
+    void queryClient.invalidateQueries({ queryKey: ["tickets"] });
+    void queryClient.invalidateQueries({ queryKey: ["scan-runs"] });
+  };
+
+  const runScan = useMutation({
+    mutationFn: () =>
+      apiFetch<AiScanRunDto>("/api/logs/scan/run", { method: "POST" }),
+    onSuccess: (run) => {
+      const created = run.stats?.ticketsCreated ?? 0;
+      const updated = run.stats?.ticketsUpdated ?? 0;
+      if (run.status === "FAILED") {
+        toast.error(run.error ?? "The scan failed.");
+      } else if (created === 0 && updated === 0) {
+        toast.success("Scan complete — nothing suspicious found.");
+      } else {
+        toast.success(
+          `Scan complete — ${created} new ticket${created === 1 ? "" : "s"}${updated > 0 ? `, ${updated} updated` : ""}.`,
+        );
+      }
+      refreshAll();
+    },
+    onError: (err: Error) => {
+      if (/already running/i.test(err.message))
+        toast.info("A scan is already running — hang tight.");
+      else toast.error(err.message);
+      refreshAll();
+    },
+  });
+
+  const config = configQuery.data;
+  const openCounts = ticketsQuery.data?.openCounts;
+  const totalOpen = openCounts
+    ? Object.values(openCounts).reduce((a, b) => a + b, 0)
+    : 0;
+  const urgentOpen = openCounts ? openCounts.CRITICAL + openCounts.HIGH : 0;
+  const lastRun = runsQuery.data?.runs[0];
+
+  const hasFilters =
+    status !== "open" || severity !== "all" || search.trim() !== "";
+  const clearFilters = () => {
+    setStatus("open");
+    setSeverity("all");
+    setSearch("");
+  };
+
+  const total = ticketsQuery.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const neverConfigured = config !== undefined && config.model === "";
+
+  return (
+    <>
+      <PageHeader
+        title="Threat watch"
+        description="Your configured AI provider reads Elasticsearch log digests — Suricata alerts, Cloudflared, and error spikes — and opens tickets for anything worth a look."
+        actions={
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setNewTicketOpen(true)}
+            >
+              <Plus data-icon="inline-start" />
+              New ticket
+            </Button>
+            {isAdmin && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfigOpen(true)}
+                >
+                  <Settings2 data-icon="inline-start" />
+                  Configure
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => runScan.mutate()}
+                  disabled={runScan.isPending}
+                >
+                  <Radar
+                    data-icon="inline-start"
+                    className={cn(runScan.isPending && "animate-spin")}
+                  />
+                  {runScan.isPending ? "Scanning…" : "Run scan now"}
+                </Button>
+              </>
+            )}
+          </>
+        }
+      />
+
+      <div className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <Card>
+            <CardContent className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">Open tickets</p>
+              <p className="text-2xl font-semibold tabular-nums">{totalOpen}</p>
+              <div className="flex flex-wrap gap-1">
+                {openCounts &&
+                  SEVERITIES.filter((s) => openCounts[s] > 0).map((s) => (
+                    <SeverityBadge
+                      key={s}
+                      severity={s}
+                      count={openCounts[s]}
+                      className="text-[0.65rem]"
+                    />
+                  ))}
+                {openCounts && totalOpen === 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    nothing needs attention
+                  </span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+          <Card className={cn(urgentOpen > 0 && "border-destructive/40")}>
+            <CardContent className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">
+                Critical &amp; high
+              </p>
+              <p
+                className={cn(
+                  "text-2xl font-semibold tabular-nums",
+                  urgentOpen > 0 && "text-destructive",
+                )}
+              >
+                {urgentOpen}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {urgentOpen > 0
+                  ? "open tickets to triage first"
+                  : "no urgent tickets"}
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">Last scan</p>
+              <p className="text-2xl font-semibold">
+                {lastRun ? formatRelative(lastRun.startedAt) : "never"}
+              </p>
+              <div className="flex items-center gap-1.5">
+                {lastRun && <RunStatusBadge status={lastRun.status} />}
+                {lastRun && (
+                  <span className="truncate font-mono text-xs text-muted-foreground">
+                    {lastRun.model}
+                  </span>
+                )}
+                {!lastRun && (
+                  <span className="text-xs text-muted-foreground">
+                    run one to get started
+                  </span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">Last run activity</p>
+              <p className="text-2xl font-semibold tabular-nums">
+                {lastRun?.stats?.docsScanned !== undefined
+                  ? lastRun.stats.docsScanned.toLocaleString()
+                  : "—"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {lastRun?.stats
+                  ? `events scanned · ${lastRun.stats.ticketsCreated ?? 0} new / ${lastRun.stats.ticketsUpdated ?? 0} updated`
+                  : "events scanned"}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card>
+          <CardContent className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Status</Label>
+              <Tabs
+                value={status}
+                onValueChange={(v) => setStatus(v as typeof status)}
+              >
+                <TabsList className="h-8">
+                  <TabsTrigger value="open">Open</TabsTrigger>
+                  <TabsTrigger value="closed">Closed</TabsTrigger>
+                  <TabsTrigger value="all">All</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+            <div className="space-y-1.5">
+              <Label
+                htmlFor="ticket-severity-filter"
+                className="text-xs text-muted-foreground"
+              >
+                Severity
+              </Label>
+              <Select value={severity} onValueChange={setSeverity}>
+                <SelectTrigger
+                  id="ticket-severity-filter"
+                  size="sm"
+                  className="w-32"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All severities</SelectItem>
+                  {SEVERITIES.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {s.toLowerCase()}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="min-w-48 flex-1 space-y-1.5">
+              <Label
+                htmlFor="ticket-search"
+                className="text-xs text-muted-foreground"
+              >
+                Search
+              </Label>
+              <Input
+                id="ticket-search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search tickets…"
+                className="h-7 text-[0.8rem]"
+              />
+            </div>
+            {hasFilters && (
+              <Button variant="ghost" size="sm" onClick={clearFilters}>
+                <FilterX data-icon="inline-start" />
+                Clear filters
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+
+        {ticketsQuery.isError ? (
+          <ErrorCard
+            message={ticketsQuery.error.message}
+            onRetry={() => void ticketsQuery.refetch()}
+          />
+        ) : ticketsQuery.isPending ? (
+          <div className="space-y-2 rounded-lg border p-3">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-full" />
+            ))}
+          </div>
+        ) : ticketsQuery.data.tickets.length === 0 ? (
+          hasFilters ? (
+            <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-14 text-center">
+              <SearchX className="size-6 text-muted-foreground" />
+              <p className="text-sm font-medium">
+                No tickets match your filters
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Try a different status, severity, or search.
+              </p>
+            </div>
+          ) : neverConfigured ? (
+            <EmptyState
+              icon={Radar}
+              title="AI scanning isn't set up yet"
+              description="Configure an AI provider and PolySIEM will periodically scan Suricata, Cloudflared, and other Elastic logs, correlate what it finds, and open tickets here."
+              action={
+                isAdmin ? (
+                  <Button onClick={() => setConfigOpen(true)}>
+                    <Settings2 data-icon="inline-start" />
+                    Configure AI scanning
+                  </Button>
+                ) : undefined
+              }
+            />
+          ) : (
+            <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-14 text-center">
+              <ShieldCheck className="size-6 text-success" />
+              <p className="text-sm font-medium">All quiet — no open tickets</p>
+              <p className="text-sm text-muted-foreground">
+                {lastRun
+                  ? `Last scan ${formatRelative(lastRun.startedAt)} found nothing that needs your attention.`
+                  : "Run a scan to check your logs for anomalies."}
+              </p>
+            </div>
+          )
+        ) : (
+          <>
+            <TicketTable
+              tickets={ticketsQuery.data.tickets}
+              selectedId={selected?.id ?? null}
+              onSelect={setSelected}
+            />
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">
+                  {total.toLocaleString()} ticket{total === 1 ? "" : "s"} · page{" "}
+                  {page} of {totalPages}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                  >
+                    <ChevronLeft data-icon="inline-start" />
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages}
+                  >
+                    Next
+                    <ChevronRight data-icon="inline-end" />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        <ScanHistory
+          runs={runsQuery.data?.runs}
+          isLoading={runsQuery.isPending}
+        />
+      </div>
+
+      <TicketSheet
+        ticket={selected}
+        isAdmin={isAdmin}
+        onOpenChange={(open) => {
+          if (!open) setSelected(null);
+        }}
+        onUpdated={setSelected}
+      />
+      <ScanConfigDialog
+        open={configOpen}
+        onOpenChange={setConfigOpen}
+        config={config}
+        sources={sources}
+      />
+      <NewTicketDialog open={newTicketOpen} onOpenChange={setNewTicketOpen} />
+    </>
+  );
+}
+
+function ErrorCard({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <Card className="border-destructive/40">
+      <CardContent className="flex flex-col items-start gap-3 py-6">
+        <div className="flex items-center gap-2 text-destructive">
+          <AlertTriangle className="size-4 shrink-0" />
+          <p className="font-medium">Could not load tickets</p>
+        </div>
+        <p className="text-sm break-all text-muted-foreground">{message}</p>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          <RefreshCw data-icon="inline-start" />
+          Retry
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}

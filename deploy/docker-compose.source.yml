@@ -1,0 +1,41 @@
+# PolySIEM — build-from-source deployment.
+#
+# Run from the repository root (--env-file makes ${DB_PASSWORD} below resolve
+# from the repo-root .env, since this compose file lives in deploy/):
+#   docker compose --env-file .env -f deploy/docker-compose.source.yml up -d --build
+#
+# Expects a .env file at the repository root (one directory above this file)
+# containing DATABASE_URL (host `db`), APP_SECRET, APP_URL and DB_PASSWORD —
+# see .env.example. `install.sh --source` sets all of this up for you.
+
+services:
+  polysiem:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: polysiem:local
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file: ../.env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: polysiem
+      POSTGRES_DB: polysiem
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - polysiem-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polysiem -d polysiem"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  polysiem-pgdata:

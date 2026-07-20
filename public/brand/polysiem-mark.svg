@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">PolySIEM</title>
+  <desc id="desc">Three rounded dashboard tiles and an AI spark forming the PolySIEM mark.</desc>
+  <defs>
+    <linearGradient id="brand" x1="8" y1="4" x2="57" y2="61" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#4f46e5"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#brand)"/>
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="14.25" fill="none" stroke="#fff" stroke-opacity=".14" stroke-width="1.5"/>
+  <g transform="translate(11 11) scale(1.75)" color="#fff">
+    <rect x="3" y="3" width="8" height="8" rx="2.5" fill="currentColor"/>
+    <rect x="13" y="3" width="8" height="8" rx="2.5" fill="currentColor" opacity=".68"/>
+    <rect x="3" y="13" width="8" height="8" rx="2.5" fill="currentColor" opacity=".68"/>
+    <path d="M17 12.5c.15 2.55 1.95 4.35 4.5 4.5-2.55.15-4.35 1.95-4.5 4.5-.15-2.55-1.95-4.35-4.5-4.5 2.55-.15 4.35-1.95 4.5-4.5Z" fill="currentColor"/>
+  </g>
+</svg>

@@ -1,36 +1,197 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PolySIEM
 
-## Getting Started
+**Self-hosted homelab documentation dashboard** — one place for your inventory, network, firewall docs and runbooks, kept in sync with the tools you already run.
 
-First, run the development server:
+[![CI](https://img.shields.io/github/actions/workflow/status/Realynx/PolySIEM/ci.yml?branch=main&label=CI)](https://github.com/Realynx/PolySIEM/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Realynx/PolySIEM)](https://github.com/Realynx/PolySIEM/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+## Features
+
+- **Inventory** — hosts, VMs, containers, services, networks, IPs and storage, with tags, full-text search and audit history
+- **Network & firewall documentation** — firewall rules and DHCP leases pulled from OPNsense, annotatable so the "why" lives next to the rule
+- **Proxmox sync and provisioning** — import nodes, VMs and containers with a read-only token, or use a scoped write token to create LXC containers with SSH-key injection from the inventory UI and workflow engine
+- **OPNsense sync** — interfaces, firewall rules, DHCP data via API key/secret
+- **Log explorer** — live Elasticsearch queries with level/time aggregations, right inside the dashboard
+- **AI assist (Ollama)** — draft docs and summaries with your own local models; nothing leaves your network
+- **MCP server** — expose your homelab documentation to Claude and other MCP clients via a Streamable HTTP endpoint with scoped API tokens
+- **Themes & roles** — light/dark themes with accent colors; admin/user roles with per-route guards
+- **First-run wizard** — open the browser, create the admin account, done; no CLI account juggling
+
+## Screenshots
+
+<!-- TODO: add screenshots once the UI is final -->
+<!-- ![Dashboard](docs/screenshots/dashboard.png) -->
+<!-- ![Inventory](docs/screenshots/inventory.png) -->
+<!-- ![Firewall rules](docs/screenshots/firewall.png) -->
+<!-- ![Log explorer](docs/screenshots/logs.png) -->
+
+## Quick start
+
+### Linux — Docker (recommended)
+
+One command on a fresh Debian/Ubuntu/Fedora-family box (installs Docker if missing, generates secrets, starts PolySIEM + PostgreSQL):
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install.sh | bash
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open `http://<your-server>:3000` — the setup wizard creates the first admin account.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Prefer building the image from source? Append `--source`:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+curl -fsSL https://raw.githubusercontent.com/Realynx/PolySIEM/main/deploy/install.sh | bash -s -- --source
+```
 
-## Learn More
+### Windows — Docker Desktop
 
-To learn more about Next.js, take a look at the following resources:
+Install and start Docker Desktop, then run in PowerShell:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```powershell
+irm https://github.com/Realynx/PolySIEM/releases/latest/download/install.ps1 | iex
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+PolySIEM is installed under `%LOCALAPPDATA%\PolySIEM`, with PostgreSQL in a Docker volume. The installer preserves `.env` and its encryption secret when re-run.
 
-## Deploy on Vercel
+### Manual Docker Compose
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+mkdir -p /opt/polysiem && cd /opt/polysiem
+curl -fL -o docker-compose.yml https://github.com/Realynx/PolySIEM/releases/latest/download/docker-compose.yml
+cat > .env <<EOF
+DB_PASSWORD=$(openssl rand -hex 24)
+APP_SECRET=$(openssl rand -hex 32)
+APP_URL=http://$(hostname -I | awk '{print $1}'):3000
+EOF
+echo "DATABASE_URL=postgresql://polysiem:$(grep '^DB_PASSWORD=' .env | cut -d= -f2)@db:5432/polysiem" >> .env
+docker compose up -d
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Public read-only demo
+
+From a repository checkout, launch a dedicated public demo with one command:
+
+```bash
+docker compose -f deploy/docker-compose.demo.yml up -d --wait
+```
+
+Or use the equivalent npm shortcut: `npm run demo`. Open
+`http://localhost:3000` and select **Sign in**; the shared credentials are
+pre-filled (`demo` / `polysiem-demo`). The demo uses a separate PostgreSQL
+volume, provisions coordinated mock Proxmox, OPNsense, UniFi, Elasticsearch,
+and OTX integrations, and enables deterministic mock AI.
+
+Every persistent API mutation is rejected server-side in this mode, including
+settings, users, integrations, docs, workflows, tokens, provisioning, and MCP
+writes. Login/logout and non-persistent mock-AI interactions remain available.
+The startup guard refuses to convert an existing PolySIEM database into a public
+demo. Stop it with `npm run demo:down`.
+
+### Native VM install (Proxmox-style, no Docker)
+
+For a Debian/Ubuntu VM or LXC — installs Node 22, PostgreSQL and a systemd service:
+
+```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash
+```
+
+See [docs/INSTALL.md](docs/INSTALL.md) for the full install, upgrade and troubleshooting guide.
+
+## Configuration
+
+All configuration is environment variables (`.env`, generated by the installers):
+
+| Variable | Required | Description |
+|---|---|---|
+| `DATABASE_URL` | yes | PostgreSQL connection string, e.g. `postgresql://polysiem:pass@db:5432/polysiem` |
+| `APP_SECRET` | yes | 32+ char secret used to encrypt integration credentials at rest (`openssl rand -hex 32`). **Losing it means re-entering all integration credentials.** |
+| `APP_URL` | yes | Public URL of your instance, e.g. `http://10.0.0.5:3000` (used in MCP config snippets) |
+| `DB_PASSWORD` | compose only | Password for the bundled PostgreSQL container |
+| `PORT` / `HOSTNAME` | no | Listen port/interface (defaults `3000` / `0.0.0.0` in the image) |
+| `POLYSIEM_DEMO_MODE` | no | Enables effective mock-integration controls; the dedicated demo Compose file sets this automatically. |
+| `POLYSIEM_DEMO_LOCKED` / `POLYSIEM_DEMO_AUTO_SETUP` | no | Dedicated public-demo lock/bootstrap flags. Never point them at a real PolySIEM database. |
+
+## Integrations
+
+Configure under **Admin → Integrations**; credentials are encrypted with `APP_SECRET` before they touch the database, and every integration has a "Test connection" button. The Add Integration dialog shows per-type setup steps inline; the full least-privilege walkthrough is in [docs/integration-setup.md](docs/integration-setup.md).
+
+### Proxmox VE
+
+1. On any cluster node shell, create a dedicated read-only user and token:
+   ```bash
+   pveum user add polysiem@pve --comment "PolySIEM read-only sync"
+   pveum acl modify / --users polysiem@pve --roles PVEAuditor
+   pveum user token add polysiem@pve sync --privsep 0
+   ```
+   **`PVEAuditor`** is enough for inventory sync and monitoring. `--privsep 0` makes the token inherit the user's read-only permissions. This token deliberately cannot use container provisioning.
+2. In PolySIEM enter the host (`https://<node>:8006`), token ID `polysiem@pve!sync` and the secret printed once by the last command.
+3. Optional: to create LXC containers from PolySIEM, use a separate token scoped to only the intended pool, nodes, storage, and bridges. It needs container allocation/configuration, storage allocation, and the related audit permissions. PolySIEM can inject an existing documented public SSH key while creating the CT; private keys are never sent to Proxmox.
+
+### OPNsense
+
+1. **System → Access → Users**: create a `polysiem` user (random password) with only the read privileges PolySIEM needs — dashboard, interface status, firewall rules/aliases and your DHCP service's settings page; exact list in the [setup guide](docs/integration-setup.md#opnsense). No firmware privilege is needed.
+2. In the user's **API keys** section click **+** — a `key`/`secret` pair downloads once.
+3. In PolySIEM enter the OPNsense URL, key and secret.
+
+### Elasticsearch (log explorer)
+
+1. Create a scoped read-only API key (`POST /_security/api_key` in Kibana Dev Tools) granting cluster `monitor` plus `read`/`view_index_metadata`/`monitor` on your log indices — full request body in the [setup guide](docs/integration-setup.md#elasticsearch).
+2. In PolySIEM enter the Elasticsearch URL, the `encoded` value from the response as the API key, and the index pattern to query (e.g. `logs-*`; comma-separated patterns work too).
+
+### Ollama (AI assist)
+
+Point PolySIEM at your Ollama endpoint (e.g. `http://ollama.lan:11434`) under Admin → Settings; pick the model in the AI panel. No cloud calls are made.
+
+### MCP server
+
+PolySIEM exposes an MCP endpoint at `${APP_URL}/api/mcp` (Streamable HTTP, `Bearer ps_...` API tokens minted under **Admin → API tokens**). See [docs/MCP.md](docs/MCP.md) for client config snippets (Claude Desktop, Claude Code, etc.).
+
+## Architecture
+
+Next.js 15 (App Router, standalone output) + Prisma 6 + PostgreSQL 17 on Node 22. Everything runs in a single process: route handlers serve the UI/API and background integration sync is scheduled in-process via `instrumentation.ts` — no queue, no worker, no sidecar. Designed for a single homelab box with Postgres co-located; not aiming to be enterprise software.
+
+## Development
+
+```bash
+npm install
+# point DATABASE_URL in .env at a local PostgreSQL, then:
+npm run db:migrate
+npm run db:seed   # dev only — creates no users; first-run setup stays interactive
+npm run dev
+```
+
+`db:seed` creates no users or default credentials (and it refuses to run in production unless `ALLOW_SEED=true`). Open PolySIEM to choose the first administrator in the installer. The installer can optionally connect integrations and includes a skippable mock dashboard tutorial. To explore with generated data afterward, enable Developer mode and Mock integrations under Settings → Integrations — see [demo mode](docs/integration-setup.md#demo-mode).
+
+## Updating
+
+- In **Settings → About**, select **Check for updates** to compare the running version with the latest stable GitHub release.
+- **Docker installer:** run `sudo /opt/polysiem/update.sh`. It backs up PostgreSQL, `.env`, and Compose; applies the new image and migrations; verifies health; and automatically restores the database and previous image if startup fails.
+- **Windows Docker Desktop:** run `powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\PolySIEM\update.ps1"`. It uses the same backup, migration, health-check, and rollback sequence.
+- **Native VM:** re-run `install-vm.sh`. It builds before downtime, then backs up PostgreSQL, `.env`, and the current runtime before migrating; a failed migration or startup restores the backup.
+
+Pre-update backups are retained under `/opt/polysiem/backups/`. See [the installation guide](docs/INSTALL.md#upgrading) for source installs and recovery details.
+
+## Backup
+
+Two things matter:
+
+```bash
+# 1. The database
+docker compose -f /opt/polysiem/docker-compose.yml exec db pg_dump -U polysiem polysiem > polysiem-$(date +%F).sql
+
+# 2. Your .env — especially APP_SECRET
+cp /opt/polysiem/.env /somewhere/safe/
+```
+
+> **Warning:** `APP_SECRET` encrypts your integration credentials. A database backup without the matching `APP_SECRET` means re-entering every Proxmox/OPNsense/Elasticsearch credential after restore.
+
+## Roadmap
+
+- Network scanner VM discovery (find unmanaged hosts on your LAN)
+- Richer IPAM views (subnet utilization, conflict detection)
+- Import/export (JSON/CSV) of inventory and docs
+
+## License
+
+[MIT](LICENSE) — © PolySIEM contributors.

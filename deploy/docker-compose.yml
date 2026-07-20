@@ -1,0 +1,39 @@
+# PolySIEM — release deployment (pre-built image from GHCR).
+#
+# Expects a .env file next to this compose file containing at least:
+#   DATABASE_URL=postgresql://polysiem:${DB_PASSWORD}@db:5432/polysiem
+#   APP_SECRET=<openssl rand -hex 32>
+#   APP_URL=http://<host-ip>:3000
+#   DB_PASSWORD=<openssl rand -hex 24>
+# The install.sh one-liner generates this for you.
+
+services:
+  polysiem:
+    image: ${POLYSIEM_IMAGE:-ghcr.io/realynx/polysiem:latest}
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      POLYSIEM_GITHUB_REPOSITORY: ${POLYSIEM_GITHUB_REPOSITORY:-Realynx/PolySIEM}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: polysiem
+      POSTGRES_DB: polysiem
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - polysiem-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polysiem -d polysiem"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  polysiem-pgdata:

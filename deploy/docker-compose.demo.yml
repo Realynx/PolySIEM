@@ -1,0 +1,52 @@
+# Dedicated, disposable public PolySIEM demo.
+#
+# Launch from a repository checkout:
+#   docker compose -f deploy/docker-compose.demo.yml up -d --wait
+#
+# This stack deliberately uses its own database and volume. Do not point these
+# demo flags at a real PolySIEM database; auto-setup will refuse a non-demo DB.
+
+name: polysiem-demo
+
+services:
+  polysiem:
+    image: ${POLYSIEM_IMAGE:-ghcr.io/realynx/polysiem:latest}
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "${POLYSIEM_DEMO_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: postgresql://polysiem_demo:polysiem_demo@db:5432/polysiem_demo
+      APP_SECRET: ${POLYSIEM_DEMO_APP_SECRET:-public-demo-only-secret-change-for-your-host-2026}
+      APP_URL: ${POLYSIEM_DEMO_URL:-http://localhost:3000}
+      POLYSIEM_GITHUB_REPOSITORY: ${POLYSIEM_GITHUB_REPOSITORY:-Realynx/PolySIEM}
+      POLYSIEM_DEMO_MODE: "true"
+      POLYSIEM_DEMO_LOCKED: "true"
+      POLYSIEM_DEMO_AUTO_SETUP: "true"
+      POLYSIEM_DEMO_USERNAME: ${POLYSIEM_DEMO_USERNAME:-demo}
+      POLYSIEM_DEMO_PASSWORD: ${POLYSIEM_DEMO_PASSWORD:-polysiem-demo}
+      POLYSIEM_DEMO_PROFILE: ${POLYSIEM_DEMO_PROFILE:-security-incident}
+      POLYSIEM_DEMO_SEED: ${POLYSIEM_DEMO_SEED:-github-public-demo}
+      POLYSIEM_DEMO_SIZE: ${POLYSIEM_DEMO_SIZE:-3}
+      MOCK_AI: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: polysiem_demo
+      POSTGRES_DB: polysiem_demo
+      POSTGRES_PASSWORD: polysiem_demo
+    volumes:
+      - polysiem-demo-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polysiem_demo -d polysiem_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  polysiem-demo-pgdata:

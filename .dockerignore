@@ -1,0 +1,29 @@
+# Dependencies / build output (rebuilt inside the image)
+node_modules
+.next
+tsconfig.tsbuildinfo
+
+# VCS / CI
+.git
+.github
+
+# Environment files (never bake secrets into the image)
+.env
+.env.*
+!.env.example
+
+# Docs & meta (not needed for the build)
+docs
+README.md
+LICENSE
+
+# Deploy assets, except the entrypoint the Dockerfile copies in
+deploy/*
+!deploy/docker-entrypoint.sh
+
+# Editor / OS noise
+.vscode
+.idea
+*.log
+Thumbs.db
+.DS_Store

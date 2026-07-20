@@ -1,0 +1,151 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { sha256Hex } from "@/lib/crypto";
+import { encodeArchive } from "./export";
+import { decodeArchive, previewRestore } from "./import";
+import { currentSecretFingerprint, revive } from "./revive";
+import { BACKUP_FORMAT_VERSION, type BackupArchive } from "./types";
+
+/**
+ * Pure, DB-free coverage of the backup engine: the gzip+JSON round-trip, the
+ * type reconstruction (BigInt/Date/Json), the secret-fingerprint comparison, and
+ * decode-time rejection of bad/future archives.
+ */
+
+function makeArchive(overrides: Partial<BackupArchive["manifest"]> = {}): BackupArchive {
+  return {
+    manifest: {
+      formatVersion: BACKUP_FORMAT_VERSION,
+      appVersion: "0.1.0",
+      createdAt: "2026-07-17T23:12:45.678Z",
+      instanceName: "Test Lab",
+      appSecretFingerprint: "deadbeefdeadbeef",
+      counts: { device: 1, trafficCounterSample: 1 },
+      models: ["device", "trafficCounterSample"],
+      ...overrides,
+    },
+    data: {
+      device: [
+        {
+          id: "dev1",
+          name: "pve",
+          // BigInt column, exported as a decimal string
+          memoryBytes: "8589934592",
+          metadata: { node: "pve", nested: { ok: true } },
+          lastSeenAt: "2026-07-17T20:00:00.000Z",
+          createdAt: "2026-07-01T00:00:00.000Z",
+          updatedAt: "2026-07-10T00:00:00.000Z",
+        },
+      ],
+      trafficCounterSample: [
+        {
+          id: "t1",
+          integrationId: "int1",
+          kind: "interface",
+          externalId: "wan",
+          sampledAt: "2026-07-17T23:00:00.000Z",
+          bytes: "18446744073709551615",
+          bytesIn: "1000",
+          bytesOut: null,
+          delta: null,
+          deltaSeconds: 30,
+        },
+      ],
+    },
+  };
+}
+
+describe("encodeArchive / decodeArchive round-trip", () => {
+  it("gzips and restores the exact manifest + data", () => {
+    const archive = makeArchive();
+    const bytes = encodeArchive(archive);
+    expect(Buffer.isBuffer(bytes)).toBe(true);
+    // gzip magic number
+    expect(bytes[0]).toBe(0x1f);
+    expect(bytes[1]).toBe(0x8b);
+
+    const decoded = decodeArchive(bytes);
+    expect(decoded).toEqual(archive);
+    // BigInt values remain strings through the JSON round-trip
+    expect(decoded.data.device?.[0]?.memoryBytes).toBe("8589934592");
+  });
+});
+
+describe("revive type reconstruction", () => {
+  it("turns BigInt-string columns back into bigint", () => {
+    const row = revive("device", { id: "d", memoryBytes: "8589934592" });
+    expect(typeof row.memoryBytes).toBe("bigint");
+    expect(row.memoryBytes).toBe(BigInt("8589934592"));
+  });
+
+  it("handles very large unsigned BigInt counters", () => {
+    const row = revive("trafficCounterSample", { id: "t", bytes: "18446744073709551615" });
+    expect(row.bytes).toBe(BigInt("18446744073709551615"));
+  });
+
+  it("turns ISO-string DateTime columns back into Date", () => {
+    const row = revive("device", { id: "d", createdAt: "2026-07-01T00:00:00.000Z" });
+    expect(row.createdAt).toBeInstanceOf(Date);
+    expect((row.createdAt as Date).toISOString()).toBe("2026-07-01T00:00:00.000Z");
+  });
+
+  it("passes Json columns through as objects and leaves null/missing alone", () => {
+    const row = revive("device", { id: "d", metadata: { a: 1, b: [2, 3] }, memoryBytes: null });
+    expect(row.metadata).toEqual({ a: 1, b: [2, 3] });
+    expect(row.memoryBytes).toBeNull();
+    expect("createdAt" in row).toBe(false);
+  });
+
+  it("does not mutate the input row", () => {
+    const input = { id: "d", memoryBytes: "1" };
+    revive("device", input);
+    expect(input.memoryBytes).toBe("1");
+  });
+});
+
+describe("previewRestore fingerprint match", () => {
+  const ORIGINAL = process.env.APP_SECRET;
+  beforeEach(() => {
+    process.env.APP_SECRET = "unit-test-app-secret-value-32-chars-long!";
+  });
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.APP_SECRET;
+    else process.env.APP_SECRET = ORIGINAL;
+  });
+
+  it("reports secretMatches=true when the fingerprint matches this instance", () => {
+    const fp = currentSecretFingerprint();
+    // sanity: fingerprint is the truncated sha256 of APP_SECRET
+    expect(fp).toBe(sha256Hex(process.env.APP_SECRET ?? "").slice(0, 16));
+    const summary = previewRestore(makeArchive({ appSecretFingerprint: fp }));
+    expect(summary.secretMatches).toBe(true);
+    expect(summary.totalRows).toBe(2);
+    expect(summary.counts.device).toBe(1);
+  });
+
+  it("reports secretMatches=false for a foreign fingerprint", () => {
+    const summary = previewRestore(makeArchive({ appSecretFingerprint: "0000000000000000" }));
+    expect(summary.secretMatches).toBe(false);
+  });
+});
+
+describe("decodeArchive validation", () => {
+  it("rejects non-gzip / non-backup bytes", () => {
+    expect(() => decodeArchive(Buffer.from("this is not a backup"))).toThrow(/not a valid PolySIEM backup/i);
+  });
+
+  it("rejects a future format version with an actionable message", () => {
+    const future = encodeArchive(makeArchive({ formatVersion: BACKUP_FORMAT_VERSION + 1 }));
+    expect(() => decodeArchive(future)).toThrow(/newer version of PolySIEM/i);
+  });
+
+  it("rejects an archive whose data references an unknown model", () => {
+    const archive = makeArchive();
+    (archive.data as Record<string, unknown>).notAModel = [];
+    expect(() => decodeArchive(encodeArchive(archive))).toThrow(/unknown model/i);
+  });
+
+  it("rejects bytes with no manifest", () => {
+    const bytes = encodeArchive({ data: {} } as unknown as BackupArchive);
+    expect(() => decodeArchive(bytes)).toThrow(/missing a valid manifest/i);
+  });
+});

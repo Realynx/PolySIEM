@@ -1,0 +1,1264 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- enums ----------
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum Source {
+  MANUAL
+  PROXMOX
+  OPNSENSE
+  UNIFI
+  CLOUDFLARE
+  TAILSCALE
+  EDGE_NAT_SERVER
+}
+
+enum EntityStatus {
+  ACTIVE
+  STALE
+  REMOVED
+}
+
+enum PowerState {
+  RUNNING
+  STOPPED
+  PAUSED
+  UNKNOWN
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCESS
+  PARTIAL
+  FAILED
+}
+
+enum IntegrationType {
+  PROXMOX
+  OPNSENSE
+  ELASTICSEARCH
+  UNIFI
+  OTX
+  CLOUDFLARE
+  TAILSCALE
+  EDGE_NAT_SERVER
+  CENSYS
+  SECURITYTRAILS
+}
+
+enum FirewallAction {
+  PASS
+  BLOCK
+  REJECT
+}
+
+enum TicketStatus {
+  OPEN
+  CLOSED
+}
+
+enum TicketSeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+// ---------- auth / accounts ----------
+
+model User {
+  id              String   @id @default(cuid())
+  username        String   @unique
+  displayName     String?
+  passwordHash    String
+  role            Role     @default(USER)
+  disabled        Boolean  @default(false)
+  themeColor      String   @default("blue")
+  themeMode       String   @default("system")
+  /**
+   * Personal AlienVault OTX API key (encrypted); overrides the instance feed for this user.
+   */
+  encryptedOtxKey String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  sessions      Session[]
+  apiTokens     ApiToken[]
+  auditLogs     AuditLog[]
+  docPages      DocPage[]              @relation("DocAuthor")
+  closedTickets SecurityTicket[]       @relation("TicketCloser")
+  researchPages SecurityResearchPage[] @relation("ResearchPageCreator")
+  workflows     Workflow[]             @relation("WorkflowCreator")
+}
+
+model Session {
+  id        String   @id // sha256(sessionToken); raw token only lives in the cookie
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  ip        String?
+  userAgent String?
+
+  @@index([userId])
+}
+
+model ApiToken {
+  id          String    @id @default(cuid())
+  name        String
+  tokenHash   String    @unique // sha256 of "ps_<random>"
+  tokenPrefix String // first chars for display
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scopes      String[]  @default(["read"])
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ---------- integrations ----------
+
+model IntegrationConfig {
+  id                   String          @id @default(cuid())
+  type                 IntegrationType
+  name                 String
+  enabled              Boolean         @default(true)
+  baseUrl              String
+  encryptedCredentials String
+  verifyTls            Boolean         @default(true)
+  syncIntervalMinutes  Int             @default(15)
+  settings             Json? // integration-specific extras (e.g. Elasticsearch index pattern)
+  lastSyncAt           DateTime?
+  lastSyncStatus       SyncStatus?
+  lastSyncError        String?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  syncRuns                  SyncRun[]
+  devices                   Device[]
+  virtualMachines           VirtualMachine[]
+  containers                Container[]
+  networks                  Network[]
+  networkInterfaces         NetworkInterface[]
+  storagePools              StoragePool[]
+  firewallRules             FirewallRule[]
+  firewallAliases           FirewallAlias[]
+  dhcpLeases                DhcpLease[]
+  networkNeighbors          NetworkNeighbor[]
+  wirelessNetworks          WirelessNetwork[]
+  wirelessAps               WirelessAp[]
+  portForwards              PortForward[]
+  dyndnsHosts               DyndnsHost[]
+  networkGateways           NetworkGateway[]
+  trafficSamples            TrafficCounterSample[]
+  edgeNatRules              EdgeNatRule[]
+  services                  Service[]
+  censysLookupCache         CensysLookupCache[]
+  censysApiUsage            CensysApiUsage[]
+  securityTrailsLookupCache SecurityTrailsLookupCache[]
+  securityTrailsApiUsage    SecurityTrailsApiUsage[]
+
+  @@unique([type, name])
+}
+
+/// A narrowly-scoped inbound DNAT rule owned by one Edge NAT Server.
+/// Rules are rendered only into PolySIEM-dedicated iptables chains.
+model EdgeNatRule {
+  id            String            @id @default(cuid())
+  integrationId String
+  integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  name          String
+  protocol      String
+  publicPort    Int
+  targetAddress String
+  targetPort    Int
+  sourceCidr    String?
+  enabled       Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@unique([integrationId, protocol, publicPort])
+  @@index([integrationId, enabled])
+}
+
+/// Cached Censys Platform responses. Host lookups are reused for four days so
+/// assistant, MCP, and workflow callers do not repeatedly spend API credits.
+model CensysLookupCache {
+  id                   String            @id @default(cuid())
+  integrationId        String
+  integration          IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  lookupKind           String            @default("host")
+  cacheKey             String
+  response             Json
+  responseHash         String
+  previousResponseHash String?
+  changed              Boolean           @default(false)
+  fetchedBy            String
+  fetchedAt            DateTime          @default(now())
+  expiresAt            DateTime
+  lastAccessedAt       DateTime          @default(now())
+  hitCount             Int               @default(0)
+
+  @@unique([integrationId, lookupKind, cacheKey])
+  @@index([integrationId, fetchedAt])
+  @@index([expiresAt])
+}
+
+/// One row per Censys lookup attempt. Live AI/MCP rows enforce the admin's
+/// rolling 24-hour budget; cache hits are recorded but do not consume it.
+model CensysApiUsage {
+  id            String            @id @default(cuid())
+  integrationId String
+  integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  source        String
+  operation     String
+  cacheKey      String
+  cacheHit      Boolean
+  createdAt     DateTime          @default(now())
+
+  @@index([integrationId, source, cacheHit, createdAt])
+  @@index([createdAt])
+}
+
+/// Cached read-only SecurityTrails enrichment responses. Every operation/query
+/// pair is shared for four days across callers to conserve provider quota.
+model SecurityTrailsLookupCache {
+  id                   String            @id @default(cuid())
+  integrationId        String
+  integration          IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  lookupKind           String
+  cacheKey             String
+  response             Json
+  responseHash         String
+  previousResponseHash String?
+  changed              Boolean           @default(false)
+  fetchedBy            String
+  fetchedAt            DateTime          @default(now())
+  expiresAt            DateTime
+  lastAccessedAt       DateTime          @default(now())
+  hitCount             Int               @default(0)
+
+  @@unique([integrationId, lookupKind, cacheKey])
+  @@index([integrationId, fetchedAt])
+  @@index([expiresAt])
+}
+
+/// SecurityTrails request accounting. Cached hits are retained for visibility,
+/// while only live AI/MCP misses consume the rolling 24-hour admin budget.
+model SecurityTrailsApiUsage {
+  id            String            @id @default(cuid())
+  integrationId String
+  integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  source        String
+  operation     String
+  cacheKey      String
+  cacheHit      Boolean
+  createdAt     DateTime          @default(now())
+
+  @@index([integrationId, source, cacheHit, createdAt])
+  @@index([createdAt])
+}
+
+model SyncRun {
+  id            String            @id @default(cuid())
+  integrationId String
+  integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  status        SyncStatus        @default(RUNNING)
+  trigger       String // "interval" | "manual" | "mcp"
+  startedAt     DateTime          @default(now())
+  finishedAt    DateTime?
+  stats         Json?
+  error         String?
+
+  @@index([integrationId, startedAt])
+}
+
+// ---------- inventory ----------
+
+model Device {
+  id            String             @id @default(cuid())
+  name          String
+  kind          String             @default("server") // server|hypervisor|firewall|switch|nas|other
+  source        Source             @default(MANUAL)
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  externalId    String?
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  lastSeenAt    DateTime?
+  description   String?            @db.Text
+  manufacturer  String?
+  model         String?
+  location      String?
+  cpuModel      String?
+  cpuCores      Int?
+  memoryBytes   BigInt?
+  osName        String?
+  osVersion     String?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  vms                   VirtualMachine[]
+  containers            Container[]
+  interfaces            NetworkInterface[]
+  services              Service[]
+  storagePools          StoragePool[]
+  tags                  TagAssignment[]
+  switchConfig          SwitchConfig?
+  switchPortConnections SwitchPort[]       @relation("SwitchPortConnections")
+  wirelessAps           WirelessAp[]       @relation("ApDevice")
+  tunnels               Tunnel[]
+  sshKeyDeployments     SshKeyDeployment[]
+
+  @@unique([integrationId, externalId])
+  @@index([name])
+}
+
+/// A pasted switch configuration (e.g. Cisco IOS running-config), parsed into
+/// VLANs and ports. Owned by a Device of kind "switch".
+model SwitchConfig {
+  id        String   @id @default(cuid())
+  deviceId  String   @unique
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  vendor    String   @default("cisco-ios")
+  hostname  String?
+  rawConfig String   @db.Text
+  parsedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ports SwitchPort[]
+  vlans SwitchVlan[]
+}
+
+model SwitchPort {
+  id                String       @id @default(cuid())
+  switchConfigId    String
+  switchConfig      SwitchConfig @relation(fields: [switchConfigId], references: [id], onDelete: Cascade)
+  name              String // "GigabitEthernet1/0/1", "Port-channel1"
+  shortName         String // "Gi1/0/1", "Po1"
+  description       String?
+  mode              String? // access | trunk | routed | unknown
+  accessVlanId      Int?
+  voiceVlanId       Int?
+  nativeVlanId      Int?
+  allowedVlans      String? // raw range spec, e.g. "2-5,10,260"
+  channelGroup      Int? // member of Port-channel<N>
+  channelMode       String? // active | passive | on | desirable | auto
+  isPortChannel     Boolean      @default(false)
+  isShutdown        Boolean      @default(false)
+  ipAddress         String? // routed ports
+  connectedDeviceId String?
+  connectedDevice   Device?      @relation("SwitchPortConnections", fields: [connectedDeviceId], references: [id], onDelete: SetNull)
+  sortOrder         Int          @default(0)
+
+  @@index([switchConfigId])
+}
+
+model SwitchVlan {
+  id             String       @id @default(cuid())
+  switchConfigId String
+  switchConfig   SwitchConfig @relation(fields: [switchConfigId], references: [id], onDelete: Cascade)
+  vlanId         Int
+  name           String?
+  svIpAddress    String? // "interface Vlan<N>" SVI address, if any
+  networkId      String?
+  network        Network?     @relation(fields: [networkId], references: [id], onDelete: SetNull)
+
+  @@unique([switchConfigId, vlanId])
+}
+
+model VirtualMachine {
+  id            String             @id @default(cuid())
+  name          String
+  source        Source             @default(MANUAL)
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  externalId    String? // "qemu/<vmid>@<node>"
+  vmid          Int?
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  powerState    PowerState         @default(UNKNOWN)
+  lastSeenAt    DateTime?
+  description   String?            @db.Text
+  hostId        String?
+  host          Device?            @relation(fields: [hostId], references: [id], onDelete: SetNull)
+  cpuCores      Int?
+  memoryBytes   BigInt?
+  diskBytes     BigInt?
+  osName        String?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  interfaces        NetworkInterface[]
+  containers        Container[]
+  services          Service[]
+  tags              TagAssignment[]
+  sshKeyDeployments SshKeyDeployment[]
+  tunnels           Tunnel[]
+
+  @@unique([integrationId, externalId])
+  @@index([name])
+}
+
+model Container {
+  id            String             @id @default(cuid())
+  name          String
+  runtime       String             @default("lxc") // lxc|docker|podman
+  source        Source             @default(MANUAL)
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  externalId    String? // "lxc/<vmid>@<node>"
+  vmid          Int?
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  powerState    PowerState         @default(UNKNOWN)
+  lastSeenAt    DateTime?
+  description   String?            @db.Text
+  hostId        String?
+  host          Device?            @relation(fields: [hostId], references: [id], onDelete: SetNull)
+  vmId          String?
+  vm            VirtualMachine?    @relation(fields: [vmId], references: [id], onDelete: SetNull)
+  cpuCores      Int?
+  memoryBytes   BigInt?
+  diskBytes     BigInt?
+  osName        String?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  interfaces        NetworkInterface[]
+  services          Service[]
+  tags              TagAssignment[]
+  sshKeyDeployments SshKeyDeployment[]
+  tunnels           Tunnel[]
+
+  @@unique([integrationId, externalId])
+  @@index([name])
+}
+
+model Network {
+  id            String             @id @default(cuid())
+  name          String
+  vlanId        Int?
+  cidr          String? // "10.0.20.0/24"
+  gateway       String?
+  domain        String?
+  purpose       String?
+  source        Source             @default(MANUAL)
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  externalId    String?
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  lastSeenAt    DateTime?
+  description   String?            @db.Text
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  ipAddresses      IpAddress[]
+  interfaces       NetworkInterface[]
+  dhcpLeases       DhcpLease[]
+  neighbors        NetworkNeighbor[]
+  tags             TagAssignment[]
+  switchVlans      SwitchVlan[]
+  wirelessNetworks WirelessNetwork[]
+
+  @@unique([integrationId, externalId])
+  @@index([name])
+}
+
+model IpAddress {
+  id          String            @id @default(cuid())
+  address     String
+  networkId   String?
+  network     Network?          @relation(fields: [networkId], references: [id], onDelete: SetNull)
+  interfaceId String?           @unique
+  interface   NetworkInterface? @relation(fields: [interfaceId], references: [id], onDelete: Cascade)
+  source      Source            @default(MANUAL)
+  description String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@unique([address, networkId])
+  @@index([address])
+}
+
+model NetworkInterface {
+  id            String             @id @default(cuid())
+  name          String // eth0, vmbr0, igb1
+  macAddress    String?
+  deviceId      String?
+  device        Device?            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  vmId          String?
+  vm            VirtualMachine?    @relation(fields: [vmId], references: [id], onDelete: Cascade)
+  containerId   String?
+  container     Container?         @relation(fields: [containerId], references: [id], onDelete: Cascade)
+  networkId     String?
+  network       Network?           @relation(fields: [networkId], references: [id], onDelete: SetNull)
+  source        Source             @default(MANUAL)
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  externalId    String?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  ip IpAddress?
+
+  @@unique([integrationId, externalId])
+}
+
+model Service {
+  id            String             @id @default(cuid())
+  name          String
+  url           String?
+  port          Int?
+  protocol      String? // http|https|tcp|udp
+  description   String?            @db.Text
+  deviceId      String?
+  device        Device?            @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  vmId          String?
+  vm            VirtualMachine?    @relation(fields: [vmId], references: [id], onDelete: SetNull)
+  containerId   String?
+  container     Container?         @relation(fields: [containerId], references: [id], onDelete: SetNull)
+  source        Source             @default(MANUAL)
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  externalId    String?
+  metadata      Json?
+  status        EntityStatus       @default(ACTIVE)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  tags TagAssignment[]
+
+  @@unique([integrationId, externalId])
+  @@index([name])
+}
+
+model StoragePool {
+  id            String             @id @default(cuid())
+  name          String
+  type          String? // zfs, lvm, dir, nfs, cifs
+  deviceId      String?
+  device        Device?            @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  totalBytes    BigInt?
+  usedBytes     BigInt?
+  source        Source             @default(MANUAL)
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  externalId    String? // "<storage>@<node>"
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  lastSeenAt    DateTime?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+}
+
+// ---------- firewall ----------
+
+model FirewallRule {
+  id              String             @id @default(cuid())
+  integrationId   String?
+  integration     IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  externalId      String? // rule uuid
+  sequence        Int?
+  action          FirewallAction     @default(PASS)
+  interfaceName   String?
+  direction       String?
+  protocol        String?
+  sourceSpec      String?
+  destSpec        String?
+  destPort        String?
+  descriptionText String?
+  enabled         Boolean            @default(true)
+  source          Source             @default(OPNSENSE)
+  status          EntityStatus       @default(ACTIVE)
+  missCount       Int                @default(0)
+  lastSeenAt      DateTime?
+  annotation      String?            @db.Text // PolySIEM-owned operator note; survives sync
+  metadata        Json?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+  @@index([interfaceName])
+}
+
+model FirewallAlias {
+  id              String             @id @default(cuid())
+  name            String
+  aliasType       String?
+  content         String[]           @default([])
+  descriptionText String?
+  integrationId   String?
+  integration     IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  externalId      String?
+  status          EntityStatus       @default(ACTIVE)
+  missCount       Int                @default(0)
+  lastSeenAt      DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+}
+
+model DhcpLease {
+  id            String             @id @default(cuid())
+  ipAddress     String
+  macAddress    String?
+  hostname      String?
+  isStatic      Boolean            @default(false)
+  networkId     String?
+  network       Network?           @relation(fields: [networkId], references: [id], onDelete: SetNull)
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  externalId    String?
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  lastSeenAt    DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+  @@index([ipAddress])
+}
+
+/// A device detected on the network via the firewall's ARP/neighbor table.
+/// Catches everything the DHCP lease list misses: static-IP devices, other
+/// routers/APs, and anything that talked through the firewall recently.
+model NetworkNeighbor {
+  id            String             @id @default(cuid())
+  ipAddress     String
+  macAddress    String?
+  hostname      String?
+  /// NIC vendor from the OUI database, e.g. "TP-Link Systems Inc".
+  manufacturer  String?
+  /// Firewall-side interface device the entry was learned on, e.g. "vlan0.1".
+  interfaceKey  String?
+  /// Permanent ARP entries are the firewall's own addresses.
+  permanent     Boolean            @default(false)
+  networkId     String?
+  network       Network?           @relation(fields: [networkId], references: [id], onDelete: SetNull)
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  externalId    String?
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  lastSeenAt    DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+  @@index([ipAddress])
+}
+
+// ---------- edge / footprint ----------
+
+/// A destination-NAT (port-forward) rule synced from the firewall — an inbound
+/// attack-surface vector on the footprint map.
+model PortForward {
+  id              String             @id @default(cuid())
+  integrationId   String?
+  integration     IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  externalId      String? // rule uuid
+  sequence        Int?
+  interfaceName   String?
+  protocol        String?
+  sourceSpec      String? // inbound source restriction, if any
+  destSpec        String? // WAN-side destination ("wanip")
+  destPort        String? // WAN-side port
+  targetIp        String
+  targetPort      String?
+  descriptionText String?
+  enabled         Boolean            @default(true)
+  source          Source             @default(OPNSENSE)
+  status          EntityStatus       @default(ACTIVE)
+  missCount       Int                @default(0)
+  lastSeenAt      DateTime?
+  annotation      String?            @db.Text // PolySIEM-owned operator note; survives sync
+  metadata        Json?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+}
+
+/// A dynamic-DNS hostname synced from the firewall (one row per hostname).
+model DyndnsHost {
+  id            String             @id @default(cuid())
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  externalId    String? // "<accountUuid>/<hostname>"
+  hostname      String
+  service       String?
+  enabled       Boolean            @default(true)
+  interfaceName String?
+  currentIp     String?
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  lastSeenAt    DateTime?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+}
+
+/// A routing gateway synced from the firewall (default WAN, backup, VPN hops).
+model NetworkGateway {
+  id            String             @id @default(cuid())
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  externalId    String? // gateway uuid (or name)
+  name          String
+  interfaceName String?
+  ipAddress     String?
+  isDefault     Boolean            @default(false)
+  online        Boolean?
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  lastSeenAt    DateTime?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+}
+
+/// One reading of a cumulative firewall traffic counter — a pf rule's byte
+/// counter (kind "rule", externalId = rule uuid, matching
+/// FirewallRule.externalId; "system" aggregates unlabeled/auto rules) or an
+/// interface's in/out byte counters (kind "interface", externalId = the
+/// OPNsense interface key). `delta` is bytes since the previous sample and is
+/// null on the first sample after a counter reset (rule counters reset on
+/// every filter reload, interface counters on reboot). Raw samples are pruned
+/// after 7 days by the poller.
+model TrafficCounterSample {
+  id            String            @id @default(cuid())
+  integrationId String
+  integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  kind          String // "rule" | "interface"
+  externalId    String // rule uuid / interface key
+  sampledAt     DateTime          @default(now())
+  bytes         BigInt // cumulative reading as-read
+  bytesIn       BigInt? // interface kind only
+  bytesOut      BigInt? // interface kind only
+  delta         BigInt? // bytes since previous sample; null = baseline (first sample or reset)
+  deltaSeconds  Int?
+
+  @@index([integrationId, kind, externalId, sampledAt])
+  @@index([integrationId, sampledAt])
+}
+
+/// A documented ingress tunnel (e.g. a cloudflared connector). Manual
+/// documentation — never synced, and tunnel run tokens/secrets are never
+/// stored (there is deliberately no column for them).
+model Tunnel {
+  id               String          @id @default(cuid())
+  name             String
+  provider         String          @default("cloudflare")
+  tunnelExternalId String? // provider-side tunnel UUID (identifier only)
+  originIp         String? // lab-side connector address
+  ingressHostnames String[]        @default([])
+  deviceId         String?
+  device           Device?         @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  vmId             String?
+  vm               VirtualMachine? @relation(fields: [vmId], references: [id], onDelete: SetNull)
+  containerId      String?
+  container        Container?      @relation(fields: [containerId], references: [id], onDelete: SetNull)
+  notes            String?         @db.Text
+  source           Source          @default(MANUAL)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  hostnames TunnelHostname[]
+
+  @@index([name])
+}
+
+/// One ingress hostname of a Tunnel, with its last public-DNS resolution.
+/// Rows are reconciled from Tunnel.ingressHostnames on create/update; the
+/// resolved edge addresses tell us which CDN edge fronts the hostname (and
+/// flag hostnames that resolve straight to the WAN — an exposure).
+model TunnelHostname {
+  id             String    @id @default(cuid())
+  tunnelId       String
+  tunnel         Tunnel    @relation(fields: [tunnelId], references: [id], onDelete: Cascade)
+  hostname       String
+  resolvedIps    String[]  @default([])
+  proxied        Boolean? // true = all records inside the provider's edge ranges; null = unresolved
+  lastResolvedAt DateTime?
+  lastError      String?
+  metadata       Json?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([tunnelId, hostname])
+}
+
+// ---------- ssh keys ----------
+
+/// A documented SSH public key. Only the PUBLIC half is ever stored — there is
+/// deliberately no column for private key material.
+model SshKey {
+  id          String   @id @default(cuid())
+  name        String
+  keyType     String // "ssh-ed25519" | "ssh-rsa" | "ecdsa-sha2-nistp256" | ...
+  publicKey   String   @db.Text // full authorized_keys line, single line
+  fingerprint String   @unique // "SHA256:<base64, no padding>" (ssh-keygen -lf format)
+  bits        Int? // 256 for ed25519, modulus bits for RSA
+  comment     String? // trailing comment from the key line
+  purpose     String?  @db.Text // what the key is for / operator notes
+  ownerLabel  String? // whose key it is
+  source      Source   @default(MANUAL)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  deployments SshKeyDeployment[]
+
+  @@index([name])
+}
+
+/// A machine+account where an SSH key is authorized. Typed FKs follow the
+/// TagAssignment pattern; hostLabel covers machines not in the inventory.
+model SshKeyDeployment {
+  id         String  @id @default(cuid())
+  sshKeyId   String
+  sshKey     SshKey  @relation(fields: [sshKeyId], references: [id], onDelete: Cascade)
+  username   String  @default("root") // account on the target machine
+  method     String  @default("manual") // manual | proxmox-cloudinit | script
+  notes      String?
+  entityType String // device|vm|container|other
+
+  deviceId    String?
+  device      Device?         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  vmId        String?
+  vm          VirtualMachine? @relation(fields: [vmId], references: [id], onDelete: Cascade)
+  containerId String?
+  container   Container?      @relation(fields: [containerId], references: [id], onDelete: Cascade)
+  hostLabel   String? // free-text host for entityType "other"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sshKeyId])
+}
+
+// ---------- documentation ----------
+
+model DocPage {
+  id         String    @id @default(cuid())
+  title      String
+  slug       String    @unique
+  content    String    @db.Text
+  parentId   String?
+  parent     DocPage?  @relation("DocTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children   DocPage[] @relation("DocTree")
+  authorId   String?
+  author     User?     @relation("DocAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  createdVia String    @default("ui") // "ui" | "mcp"
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  tags TagAssignment[]
+
+  @@index([title])
+}
+
+model Tag {
+  id    String @id @default(cuid())
+  name  String @unique
+  color String @default("gray")
+
+  assignments TagAssignment[]
+}
+
+model TagAssignment {
+  id         String @id @default(cuid())
+  tagId      String
+  tag        Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  entityType String // device|vm|container|network|service|doc
+  entityId   String
+
+  // typed FKs so relation queries work; exactly one is set, enforced in the service layer
+  deviceId    String?
+  device      Device?         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  vmId        String?
+  vm          VirtualMachine? @relation(fields: [vmId], references: [id], onDelete: Cascade)
+  containerId String?
+  container   Container?      @relation(fields: [containerId], references: [id], onDelete: Cascade)
+  networkId   String?
+  network     Network?        @relation(fields: [networkId], references: [id], onDelete: Cascade)
+  serviceId   String?
+  service     Service?        @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  docPageId   String?
+  docPage     DocPage?        @relation(fields: [docPageId], references: [id], onDelete: Cascade)
+
+  @@unique([tagId, entityType, entityId])
+  @@index([entityType, entityId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorType  String // "user" | "api_token" | "system"
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiTokenId String?
+  action     String // "vm.update", "integration.sync", "user.create", ...
+  entityType String?
+  entityId   String?
+  detail     Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+}
+
+// ---------- threat watch (AI log scanning) ----------
+
+/// A security ticket in the SOAR-style response panel. Created by the AI log
+/// scanner (createdBy "ai") or manually by a user. Re-scans that detect the
+/// same underlying issue upsert on dedupeKey instead of duplicating.
+model SecurityTicket {
+  id                     String         @id @default(cuid())
+  title                  String
+  summary                String         @db.Text
+  severity               TicketSeverity @default(MEDIUM)
+  status                 TicketStatus   @default(OPEN)
+  category               String         @default("anomaly") // anomaly|ids-alert|correlation|recon|auth|traffic|other
+  createdBy              String         @default("ai") // "ai" | "user"
+  dedupeKey              String?        @unique // stable hash of the underlying issue
+  evidence               Json? // { samples: [...], scope, timeRange }
+  suggestions            String?        @db.Text // AI-suggested response steps
+  sourceRefs             Json? // { srcIps, destIps, signatures, hosts }
+  /// Structured AI investigation report (InvestigationReport in agent/contract.ts).
+  investigation          Json?
+  /// When the agentic investigation last ran (completed).
+  investigatedAt         DateTime?
+  /// Background investigation lifecycle: null | "queued" | "running" | "success" | "failed".
+  investigationStatus    String?
+  /// When the current/last background investigation was enqueued/started.
+  investigationStartedAt DateTime?
+  /// Live progress while running (InvestigationProgress: tool calls + partial text), cleared on success.
+  investigationProgress  Json?
+  /// Failure message from the last background investigation, if it failed.
+  investigationError     String?        @db.Text
+  timesSeen              Int            @default(1)
+  lastSeenAt             DateTime       @default(now())
+  scanRunId              String?
+  scanRun                AiScanRun?     @relation(fields: [scanRunId], references: [id], onDelete: SetNull)
+  closedAt               DateTime?
+  closedById             String?
+  closedBy               User?          @relation("TicketCloser", fields: [closedById], references: [id], onDelete: SetNull)
+  resolution             String?        @db.Text // note entered when closing
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+
+  @@index([status, severity])
+  @@index([createdAt])
+}
+
+/// A durable notebook page for investigating one suspicious IP address or
+/// domain. Unlike a response ticket, it remains open-ended and editable while
+/// its evidence snapshots are append-only.
+model SecurityResearchPage {
+  id               String    @id @default(cuid())
+  title            String
+  subject          String
+  subjectType      String // "ip" | "domain"
+  status           String    @default("open") // "open" | "archived"
+  verdict          String    @default("unknown") // unknown|benign|suspicious|malicious
+  notes            String?   @db.Text
+  createdById      String?
+  createdBy        User?     @relation("ResearchPageCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  lastResearchedAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  evidence SecurityResearchEvidence[]
+
+  @@index([status, updatedAt])
+  @@index([subject])
+  @@index([createdById])
+}
+
+/// An immutable provider result captured during a research run. `runId`
+/// groups DNS, logs, inventory, Censys and SecurityTrails results captured at
+/// the same point in time without overwriting prior evidence.
+model SecurityResearchEvidence {
+  id         String               @id @default(cuid())
+  pageId     String
+  page       SecurityResearchPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  runId      String
+  provider   String
+  kind       String
+  status     String               @default("success")
+  title      String
+  summary    String?              @db.Text
+  query      String?
+  sourceUrl  String?
+  data       Json
+  capturedAt DateTime             @default(now())
+
+  @@index([pageId, capturedAt])
+  @@index([runId])
+  @@index([provider, capturedAt])
+}
+
+/// One execution of the AI log scanner (manual or interval-triggered).
+model AiScanRun {
+  id            String     @id @default(cuid())
+  status        SyncStatus @default(RUNNING)
+  trigger       String // "manual" | "interval"
+  model         String
+  startedAt     DateTime   @default(now())
+  finishedAt    DateTime?
+  timeRangeFrom DateTime
+  timeRangeTo   DateTime
+  stats         Json? // { docsScanned, suricataAlerts, ticketsCreated, ticketsUpdated, scopesRun }
+  error         String?    @db.Text
+
+  tickets SecurityTicket[]
+
+  @@index([startedAt])
+}
+
+// ---------- vector embeddings (RAG) ----------
+
+/// A chunk of source text plus its embedding vector, for RAG similarity search.
+/// Vectors are stored as a plain double-precision array (Float[]); similarity is
+/// computed in-app (cosine) — homelab-scale corpora make a dedicated vector
+/// index unnecessary. Rows are (re)generated when their source changes.
+model EmbeddingChunk {
+  id         String   @id @default(cuid())
+  /// What the chunk came from: "doc" | "device" | "vm" | "container" | "network" | "service".
+  sourceType String
+  /// Id of the source row (DocPage.id, Device.id, …).
+  sourceId   String
+  /// 0-based index of this chunk within its source.
+  chunkIndex Int      @default(0)
+  /// Display title of the source (doc title / entity name).
+  title      String
+  /// The chunk text that was embedded.
+  content    String   @db.Text
+  /// The embedding vector.
+  embedding  Float[]
+  /// Embedding model that produced the vector (invalidate on change).
+  model      String
+  /// In-app link to the source, for search results.
+  href       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([sourceType, sourceId, chunkIndex])
+  @@index([sourceType, sourceId])
+}
+
+// ---------- wireless (UniFi) ----------
+
+/// A wireless network (SSID) synced from a UniFi controller.
+model WirelessNetwork {
+  id            String             @id @default(cuid())
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  externalId    String? // UniFi wlanconf _id
+  source        Source             @default(UNIFI)
+  name          String // SSID
+  enabled       Boolean            @default(true)
+  security      String? // open | wpapsk | wpaeap
+  wpaMode       String? // wpa2 | wpa3 | wpa3-transition
+  band          String? // both | 2g | 5g | 6e
+  hidden        Boolean            @default(false)
+  isGuest       Boolean            @default(false)
+  vlanId        Int?
+  networkId     String?
+  network       Network?           @relation(fields: [networkId], references: [id], onDelete: SetNull)
+  apCount       Int? // broadcasting AP count
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  lastSeenAt    DateTime?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+  @@index([name])
+}
+
+/// A wireless access point synced from a UniFi controller.
+model WirelessAp {
+  id            String             @id @default(cuid())
+  integrationId String?
+  integration   IntegrationConfig? @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  externalId    String? // UniFi device _id or MAC
+  source        Source             @default(UNIFI)
+  name          String
+  model         String?
+  mac           String?
+  ipAddress     String?
+  adopted       Boolean            @default(false)
+  state         String? // online | offline | pending
+  deviceId      String?
+  device        Device?            @relation("ApDevice", fields: [deviceId], references: [id], onDelete: SetNull)
+  status        EntityStatus       @default(ACTIVE)
+  missCount     Int                @default(0)
+  lastSeenAt    DateTime?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@unique([integrationId, externalId])
+}
+
+/// Incremental cache of OTX threat-intel pulses, keyed per feed source
+/// (integration id or "personal:<userId>"). Backfilled once, then kept fresh
+/// with modified_since delta fetches — the same pulse is never re-downloaded.
+model OtxPulseCache {
+  sourceKey String
+  pulseId   String
+  modified  DateTime
+  created   DateTime
+  /// { view: PulseView, ips: string[], domains: string[] } — precomputed IOCs.
+  data      Json
+  fetchedAt DateTime @default(now())
+
+  @@id([sourceKey, pulseId])
+  @@index([sourceKey, modified(sort: Desc)])
+}
+
+// ---------- workflows (automation rules engine) ----------
+
+enum WorkflowRunStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum WorkflowStepStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+/// A user-built automation workflow: a DAG of trigger/action/condition nodes
+/// stored as a WorkflowGraph JSON blob (see src/lib/workflows/types.ts).
+model Workflow {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  enabled     Boolean  @default(true)
+  graph       Json
+  createdById String?
+  createdBy   User?    @relation("WorkflowCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  runs WorkflowRun[]
+
+  @@index([name])
+}
+
+/// One execution of a workflow. Step outputs are persisted with secret output
+/// keys redacted; secret values only exist in the one-time run response.
+model WorkflowRun {
+  id         String            @id @default(cuid())
+  workflowId String
+  workflow   Workflow          @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  status     WorkflowRunStatus @default(RUNNING)
+  trigger    String            @default("manual")
+  input      Json
+  error      String?           @db.Text
+  startedAt  DateTime          @default(now())
+  finishedAt DateTime?
+
+  steps WorkflowRunStep[]
+  logs  WorkflowRunLog[]
+
+  @@index([workflowId, startedAt])
+}
+
+/// Console output of a run: one row per line, ordered by `seq` within the run.
+/// Tailed live while the run is going (poll for seq > cursor) and kept for
+/// historic runs. `nodeId` is null for run-level lines.
+model WorkflowRunLog {
+  id        String           @id @default(cuid())
+  runId     String
+  run       WorkflowRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  nodeId    String?
+  level     WorkflowLogLevel @default(INFO)
+  message   String           @db.Text
+  seq       Int
+  createdAt DateTime         @default(now())
+
+  @@unique([runId, seq])
+  @@index([runId, seq])
+}
+
+enum WorkflowLogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
+
+/// One node execution within a workflow run, in topological order.
+model WorkflowRunStep {
+  id         String             @id @default(cuid())
+  runId      String
+  run        WorkflowRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  nodeId     String
+  kind       String
+  label      String
+  status     WorkflowStepStatus @default(PENDING)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  output     Json?
+  error      String?            @db.Text
+  sortOrder  Int                @default(0)
+
+  @@index([runId])
+}
+
+/// A credential the admin explicitly allows AI assistants to read through the
+/// MCP server (gated behind the "credentials" token scope). Secret encrypted
+/// with APP_SECRET; never returned by the REST API, only by the MCP tool.
+model AiCredential {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  description     String?  @db.Text
+  username        String?
+  encryptedSecret String
+  url             String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

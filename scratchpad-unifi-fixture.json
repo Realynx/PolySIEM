@@ -1,0 +1,17 @@
+{
+ "note": "Real UniFi Network 8.3.32 data (read-only). Mongo collections mirror the HTTP REST API responses: wlanconf=/rest/wlanconf, networkconf=/rest/networkconf, device=/stat/device. All under {meta:{rc:ok},data:[...]}.",
+ "wlanconf": [
+  {"_id":"63e98468419602435856d0e5","name":"element-5d2d200b8a7b215f","enabled":true,"security":"wpapsk","wpa_mode":"wpa2","hide_ssid":true,"wlan_band":"both"},
+  {"_id":"63e9892e419602435856d117","name":"UwU","enabled":true,"security":"wpapsk","wpa_mode":"wpa2","wpa3_support":false,"wpa3_transition":false,"networkconf_id":"6964462fb53bf24a11784c46","is_guest":false,"hide_ssid":true,"wlan_band":"both","ap_group_ids":["63e98468419602435856d0fd"]},
+  {"_id":"6487a6511b62c06e1c53e0da","name":"Devices","enabled":true,"security":"wpapsk","wpa_mode":"wpa2","networkconf_id":"6964462fb53bf24a11784c46","is_guest":false,"hide_ssid":false,"wlan_band":"2g","ap_group_ids":["63e98468419602435856d0fd"]},
+  {"_id":"654ac3f8511bca3218822e15","name":"Devices5g","enabled":true,"security":"wpapsk","wpa_mode":"wpa2","networkconf_id":"6964462fb53bf24a11784c46","is_guest":false,"hide_ssid":false,"wlan_band":"5g","ap_group_ids":["63e98468419602435856d0fd"]}
+ ],
+ "networkconf": [
+  {"_id":"63e98468419602435856d0f4","purpose":"corporate","ip_subnet":"192.168.1.1/24","networkgroup":"LAN","vlan_enabled":false,"name":"Default"},
+  {"_id":"6964462fb53bf24a11784c46","vlan":4,"purpose":"vlan-only","name":"WirelessLan","vlan_enabled":true},
+  {"_id":"696e234728670a5de1adf04c","vlan":3,"purpose":"vlan-only","name":"LocalServers","vlan_enabled":true}
+ ],
+ "device": [
+  {"_id":"63e9cf70419602435856d139","type":"uap","model":"UAL6","ip":"10.0.3.94","version":"6.7.31.15618","mac":"60:22:32:47:15:90","adopted":true,"state":1,"name":"U6 Lite"}
+ ]
+}

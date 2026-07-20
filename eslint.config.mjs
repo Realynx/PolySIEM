@@ -14,7 +14,10 @@ const eslintConfig = [
   {
     ignores: [
       "node_modules/**",
-      ".next/**",
+      ".next*/**",
+      ".codex-tmp/**",
+      ".codex-realpath-preload.cjs",
+      "public/ort/**",
       "out/**",
       "build/**",
       "next-env.d.ts",

@@ -1,0 +1,91 @@
+# ============================================================================
+# Filebeat  —  Proxmox VE host log shipping  →  Elasticsearch
+# ----------------------------------------------------------------------------
+#   Target : data stream  filebeat-proxmox-<agent.version>
+#   ILM    : proxmox-logs-90d   (hot: rollover 30d/50gb, delete at 90d)
+#   Managed by PolySIEM. Canonical source: deploy/filebeat/filebeat.proxmox.yml
+#
+# Log-source decision:
+#   Debian 12+/PVE 8+ store system logs in the *systemd journal only*
+#   (there is no /var/log/syslog or /var/log/auth.log on these hosts). We ship
+#   the journal as the SINGLE source. This deliberately avoids the classic
+#   rsyslog+journald double-ingest and needs no log-file paths. The journal
+#   already contains syslog, auth (sshd/sudo), kernel, systemd, and every
+#   pve*/corosync/pmxcfs cluster daemon.
+#
+# Retention/rotation is handled server-side by ILM (not by filebeat), so this
+# config sets setup.ilm.enabled:false / setup.template.enabled:false — the
+# policy + data-stream template are created once by es-setup.sh.
+# ============================================================================
+
+# ---- Inputs ---------------------------------------------------------------
+filebeat.inputs:
+  - type: journald
+    id: proxmox-journal
+    # First run only: start at the tail so we don't replay months of historical
+    # journal into a fresh index. On every restart after that, filebeat resumes
+    # from the cursor saved in its registry automatically (no gap, no replay) —
+    # `seek` is consulted only when no cursor state exists yet.
+    seek: tail
+
+# ---- Processors -----------------------------------------------------------
+processors:
+  - add_host_metadata:
+      netinfo.enabled: true
+  # Stable labels so each host/cluster is trivially filterable in Kibana/PolySIEM.
+  - add_fields:
+      target: ""
+      fields:
+        log_source: proxmox
+        cluster: poofycluster
+  # Drop the journal's raw syslog timestamp text (e.g. "Jul 17 09:49:50 ").
+  # It is redundant with @timestamp, and ecs@mappings' dynamic `ecs_date` rule
+  # matches any *_timestamp field and maps it to `date` — the human syslog
+  # string then fails date parsing and Elasticsearch REJECTS THE WHOLE DOCUMENT.
+  # That silently drops every syslog-transport event (sshd, cron, pve daemons).
+  # Dropping the field here is the reliable fix (template date_detection:false
+  # can't win because composed-component dynamic templates are evaluated first).
+  - drop_fields:
+      fields: ["journald.custom.syslog_timestamp"]
+      ignore_missing: true
+  # Convenience tag for Proxmox/cluster daemons. Field may be absent for some
+  # journal entries — processors silently skip on missing fields, so this never
+  # blocks shipping; it only adds the tag when it matches.
+  - if:
+      regexp:
+        process.name: "^(pve|pmxcfs|corosync|qmeventd|watchdog-mux|spiceproxy|pvestatd|pvescheduler|pve-firewall|pve-ha-)"
+    then:
+      - add_tags:
+          tags: [pve]
+
+# ---- Output ---------------------------------------------------------------
+output.elasticsearch:
+  hosts: ["https://10.0.3.16:9200"]
+  protocol: https
+  index: "filebeat-proxmox-%{[agent.version]}"
+  username: "filebeat_proxmox"
+  # Password lives in the filebeat keystore (see install script), never here.
+  password: "${ES_PWD}"
+  # Self-signed cluster cert. TODO(hardening): pin the CA instead of disabling
+  # verification — ssl.certificate_authorities: ["/etc/filebeat/es-ca.crt"].
+  ssl.verification_mode: none
+  compression_level: 1
+  bulk_max_size: 1600
+
+# ---- Index/ILM management: OFF (owned by es-setup.sh) ----------------------
+setup.template.enabled: false
+setup.ilm.enabled: false
+setup.dashboards.enabled: false
+
+# ---- Filebeat's own logs (rotated locally) --------------------------------
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: "0640"
+  rotateeverybytes: 10485760 # 10 MB
+
+# ---- Housekeeping ---------------------------------------------------------
+monitoring.enabled: false

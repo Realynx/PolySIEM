@@ -1,0 +1,26 @@
+[Unit]
+Description=PolySIEM homelab documentation dashboard
+Documentation=https://github.com/Realynx/PolySIEM
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polysiem
+Group=polysiem
+WorkingDirectory=/opt/polysiem/run
+EnvironmentFile=/opt/polysiem/.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=0.0.0.0
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
