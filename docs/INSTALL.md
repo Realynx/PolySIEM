@@ -1,6 +1,6 @@
 # PolySIEM — Installation, upgrade & troubleshooting
 
-This is the long-form companion to the [README quick start](../README.md#quick-start).
+This is the long-form companion to the [README quick start](../README.md#quick-start). See the [documentation hub](README.md) for the rest of the guides.
 
 ## Contents
 
@@ -92,7 +92,7 @@ Database migrations run automatically every time the `polysiem` container starts
 Either use the installer flag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Realynx/PolySIEM/main/deploy/install.sh | bash -s -- --source
+curl -fsSL https://raw.githubusercontent.com/Realynx/PolySIEM/master/deploy/install.sh | bash -s -- --source
 ```
 
 …or manually from a checkout (`.env` at the repo root, `DATABASE_URL` host must be `db`):

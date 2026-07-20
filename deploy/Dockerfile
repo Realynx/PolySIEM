@@ -14,8 +14,12 @@
 # ---------------------------------------------------------------------------
 # deps: install dependencies
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS deps
-RUN apk add --no-cache libc6-compat openssl
+FROM node:22-bookworm-slim AS deps
+# onnxruntime-node publishes glibc-linked Linux binaries. Alpine uses musl and
+# cannot load them (for example, __vsnprintf_chk is unavailable there).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libgomp1 openssl \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -23,27 +27,32 @@ RUN npm ci
 # ---------------------------------------------------------------------------
 # builder: generate prisma client and build the Next.js standalone bundle
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS builder
-RUN apk add --no-cache libc6-compat openssl
+FROM node:22-bookworm-slim AS builder
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libgomp1 openssl \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # Build-time placeholders only: `next build` must never need a live database.
 ENV SKIP_ENV_VALIDATION=1 \
-    NEXT_TELEMETRY_DISABLED=1 \
-    DATABASE_URL=postgresql://build:build@localhost:5432/build \
-    APP_SECRET=build-secret-placeholder-32-characters
+    NEXT_TELEMETRY_DISABLED=1
 
 RUN npx prisma generate
-RUN npm run build
+RUN DATABASE_URL=postgresql://build:build@localhost:5432/build \
+    APP_SECRET=build-secret-placeholder-32-characters \
+    npm run build
 
 # ---------------------------------------------------------------------------
 # runner: minimal runtime image
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS runner
+FROM node:22-bookworm-slim AS runner
 # OpenSSH client supplies ssh + ssh-keyscan for strictly host-key-pinned Edge NAT sessions.
-RUN apk add --no-cache libc6-compat openssl openssh-client
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         ca-certificates libgomp1 openssh-client openssl wget \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 ARG POLYSIEM_VERSION=0.1.0
@@ -53,7 +62,8 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
-RUN addgroup -g 1001 -S nodejs && adduser -S -u 1001 -G nodejs polysiem
+RUN groupadd --gid 1001 nodejs \
+    && useradd --system --uid 1001 --gid nodejs --create-home polysiem
 
 # Next.js standalone output (server.js + traced node_modules)
 COPY --from=builder --chown=polysiem:nodejs /app/.next/standalone ./
