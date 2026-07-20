@@ -31,9 +31,22 @@ export const PATCH = handleApi(async (req: NextRequest) => {
       displayName: input.displayName === undefined ? undefined : input.displayName,
       themeColor: input.themeColor,
       themeMode: input.themeMode,
+      anonymousMode: input.anonymousMode,
+      shieldOnCapture: input.shieldOnCapture,
+      shieldOnBlur: input.shieldOnBlur,
       passwordHash,
     },
-    select: { id: true, username: true, displayName: true, role: true, themeColor: true, themeMode: true },
+    select: {
+      id: true,
+      username: true,
+      displayName: true,
+      role: true,
+      themeColor: true,
+      themeMode: true,
+      anonymousMode: true,
+      shieldOnCapture: true,
+      shieldOnBlur: true,
+    },
   });
   await audit({ type: "user", userId: user.id }, "profile.update", undefined, { fields: Object.keys(input) });
 

@@ -24,6 +24,8 @@
 ## Edge networks
 
 - **Edge NAT Server** — A small remote Linux host that owns a public packet boundary and forwards only explicitly managed listeners toward the private lab. Its public address replaces the home WAN address at the packet layer, but it is not proof that applications, DNS, logs, or WebRTC cannot reveal other addresses.
+- **Edge NAT listener interface** — The Linux interface on which published traffic arrives. It describes a traffic role, not a permanently “public” network zone.
+- **Edge NAT target-path interface** — The Linux interface selected by the route toward the DNAT target. It may be the same as the listener interface when a single-NIC edge server forwards to a public residential address, or a tunnel interface such as `tailscale0` when the target is private.
 - **Edge NAT Rule** — PolySIEM's desired TCP or UDP mapping on one Edge NAT Server. A saved rule is not evidence of reachability until the server confirms that revision was applied.
 - **Applied edge rule** — A desired Edge NAT Rule whose managed remote firewall state has been verified. Only applied rules may contribute reachable paths to topology views.
 - **Edge Networks** — A derived operational view combining Edge NAT, Tailscale, Cloudflare, firewall, and observed routing evidence. It does not own or silently merge the underlying providers' source data.

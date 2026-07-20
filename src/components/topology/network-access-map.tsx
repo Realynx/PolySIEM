@@ -2572,6 +2572,8 @@ export function NetworkAccessMap({
   tailscale = [],
   pve = null,
   pveHomeNetworkId = null,
+  chromeless = false,
+  heightClassName,
 }: {
   graph: AccessGraph;
   members: Record<string, NetworkMember[]>;
@@ -2583,6 +2585,10 @@ export function NetworkAccessMap({
   tailscale?: TailscaleMapTailnet[];
   pve?: PveAccessView | null;
   pveHomeNetworkId?: string | null;
+  /** Hide the desktop legend overlay for embedded/phone use. */
+  chromeless?: boolean;
+  /** Height utilities forwarded to the canvas card (default: desktop sizing). */
+  heightClassName?: string;
 }) {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -2723,7 +2729,7 @@ export function NetworkAccessMap({
         setHoveredNodeId(null);
       }}
       fitPadding={0.12}
-      heightClassName="h-[clamp(680px,76vh,900px)]"
+      heightClassName={heightClassName ?? "h-[clamp(680px,76vh,900px)]"}
     >
       {selectedNodeId && (() => {
         const selectedName = names.get(selectedNodeId);
@@ -2739,18 +2745,20 @@ export function NetworkAccessMap({
           </div>
         );
       })()}
-      <AccessMapLegend
-        unmapped={graph.unmapped}
-        pveUnresolved={pve?.unresolved ?? []}
-        hasPve={pve !== null}
-        hasCloudflare={cloudflare.length > 0}
-        hasTailscale={tailscale.length > 0}
-        onResetLayout={clearPositions}
-        hasSaved={hasSaved}
-        bandwidth={bandwidth}
-        bwWindow={bwWindow}
-        onBwWindowChange={setBwWindow}
-      />
+      {!chromeless && (
+        <AccessMapLegend
+          unmapped={graph.unmapped}
+          pveUnresolved={pve?.unresolved ?? []}
+          hasPve={pve !== null}
+          hasCloudflare={cloudflare.length > 0}
+          hasTailscale={tailscale.length > 0}
+          onResetLayout={clearPositions}
+          hasSaved={hasSaved}
+          bandwidth={bandwidth}
+          bwWindow={bwWindow}
+          onBwWindowChange={setBwWindow}
+        />
+      )}
       {selectedDetail && (
         <EdgeDetails
           detail={selectedDetail}

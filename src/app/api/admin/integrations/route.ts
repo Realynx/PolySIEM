@@ -34,7 +34,7 @@ export const POST = handleApi(async (req: NextRequest) => {
   if (input.type === "EDGE_NAT_SERVER") {
     test = {
       ok: false,
-      detail: "SSH key generated. Run the restricted enrollment script on the edge server, then scan and confirm its host-key fingerprint.",
+      detail: "SSH key generated. Open Edge Networks to authorize one setup connection, confirm the host identity, and let PolySIEM install the restricted service.",
     };
   } else {
     try {

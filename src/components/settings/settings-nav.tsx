@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   DatabaseBackup,
+  EyeOff,
   Info,
   KeyRound,
   Palette,
@@ -17,19 +18,20 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-interface SettingsNavItem {
+export interface SettingsNavItem {
   title: string;
   href: string;
   icon: LucideIcon;
 }
 
-const ACCOUNT_ITEMS: SettingsNavItem[] = [
+export const ACCOUNT_ITEMS: SettingsNavItem[] = [
   { title: "Profile", href: "/settings/profile", icon: User },
   { title: "Appearance", href: "/settings/appearance", icon: Palette },
+  { title: "Privacy", href: "/settings/privacy", icon: EyeOff },
 ];
 
 /** Admin-only settings; System (instance-wide defaults) leads the section. */
-const ADMIN_ITEMS: SettingsNavItem[] = [
+export const ADMIN_ITEMS: SettingsNavItem[] = [
   { title: "System", href: "/settings/system", icon: SlidersHorizontal },
   { title: "Users", href: "/settings/users", icon: Users },
   { title: "Integrations", href: "/settings/integrations", icon: Plug },

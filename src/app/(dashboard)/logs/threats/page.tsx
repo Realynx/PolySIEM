@@ -1,7 +1,10 @@
 import { requirePageUser } from "@/lib/auth/guards";
+import { isMobileView } from "@/lib/device";
 import { listLogSources } from "@/lib/services/logs";
 import { listOtxSources } from "@/lib/services/threat-intel";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { ThreatsHub, type ThreatsTab } from "@/components/logs/threats-hub";
+import { MobileThreatsHub } from "@/components/mobile/pages/security/mobile-threats-hub";
 
 export const dynamic = "force-dynamic";
 
@@ -14,13 +17,25 @@ export default async function ThreatsPage({
   searchParams: Promise<{ tab?: string }>;
 }) {
   const { user } = await requirePageUser();
-  const [{ tab }, logSources, otxSources] = await Promise.all([
+  const [{ tab }, rawLogSources, rawOtxSources] = await Promise.all([
     searchParams,
     listLogSources(),
     listOtxSources(user.id),
   ]);
+  const logSources = await anonymizeForDisplay(rawLogSources);
+  const otxSources = await anonymizeForDisplay(rawOtxSources);
 
   const initialTab: ThreatsTab = tab === "intel" ? "intel" : "watch";
+  if (await isMobileView()) {
+    return (
+      <MobileThreatsHub
+        tab={initialTab}
+        logSources={logSources}
+        otxSources={otxSources}
+        isAdmin={user.role === "ADMIN"}
+      />
+    );
+  }
   return (
     <ThreatsHub
       initialTab={initialTab}

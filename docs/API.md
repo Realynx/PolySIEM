@@ -36,6 +36,8 @@ One rule worth repeating: all mutations go through the `src/lib/services/*` func
 | POST | /api/integrations/[id]/sync | admin | B |
 | GET | /api/integrations/status | session | B |
 | GET | /api/integrations/[id]/runs | session | B |
+| GET/POST | /api/network/edge-networks/servers/[id]/host-key (scan/pin SSH host identity) | admin | B |
+| POST | /api/network/edge-networks/servers/[id]/provision (pin identity, install restricted helper through transient admin authorization, then verify) | admin | B |
 | GET/POST | /api/keys (POST: create from pasted authorized_keys text) | session | H |
 | POST | /api/keys/generate (returns the private key ONCE; only the public half is stored) | session | H |
 | GET/PATCH/DELETE | /api/keys/[id] (PATCH: name/ownerLabel/purpose) | session | H |

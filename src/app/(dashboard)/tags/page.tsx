@@ -1,6 +1,9 @@
 import { Tags } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listTags } from "@/lib/services/tags";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
+import { MobileTagsPage } from "@/components/mobile/pages/docs/mobile-tags-page";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import {
@@ -20,7 +23,9 @@ export const metadata = { title: "Tags" };
 
 export default async function TagsPage() {
   await requirePageUser();
-  const tags = await listTags();
+  const tags = await anonymizeForDisplay(await listTags());
+
+  if (await isMobileView()) return <MobileTagsPage tags={tags} />;
 
   return (
     <div>

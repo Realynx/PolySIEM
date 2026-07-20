@@ -1,5 +1,7 @@
 import { requirePageUser } from "@/lib/auth/guards";
 import { listDocs } from "@/lib/services/docs";
+import { isMobileView } from "@/lib/device";
+import { MobileDocEditorPage } from "@/components/mobile/pages/docs/mobile-doc-editor-page";
 import { PageHeader } from "@/components/shared/page-header";
 import { DocEditor } from "@/components/docs/doc-editor";
 import type { PageSearchParams } from "@/components/inventory/query";
@@ -17,6 +19,18 @@ export default async function NewDocPage({
   const docs = await listDocs();
   const pages = docs.map((d) => ({ id: d.id, title: d.title, slug: d.slug }));
   const defaultParentId = parentParam && pages.some((p) => p.id === parentParam) ? parentParam : null;
+
+  if (await isMobileView()) {
+    return (
+      <MobileDocEditorPage
+        title="New page"
+        backHref="/docs"
+        mode="create"
+        pages={pages}
+        defaultParentId={defaultParentId}
+      />
+    );
+  }
 
   return (
     <div>

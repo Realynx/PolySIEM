@@ -20,6 +20,7 @@ import {
   Router,
   ScanLine,
   Server,
+  Share2,
   ShieldCheck,
   Trash2,
   TriangleAlert,
@@ -27,6 +28,7 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/format";
+import { buildEdgeBootstrapCommand } from "@/lib/integrations/edge-nat/bootstrap";
 import { apiFetch } from "@/components/shared/api-client";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
@@ -59,6 +61,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   edgeOverviewCounts,
   edgeReconciliation,
@@ -87,6 +90,7 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
   const counts = edgeOverviewCounts(overview);
   const hasEdgeServers = overview.edgeServers.length > 0;
   const hasAnyNetwork = overview.edgeServers.length > 0 || overview.tailscale.length > 0 || cloudflare.length > 0;
+  const defaultTab = hasEdgeServers ? "edge" : overview.tailscale.length > 0 ? "tailscale" : "cloudflare";
 
   return (
     <div>
@@ -142,64 +146,158 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
       )}
 
       {!overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && (
-        <div className="space-y-6">
-          {hasEdgeServers && (
-            <>
-              <TrafficBoundary servers={overview.edgeServers} />
+        <Tabs defaultValue={defaultTab} className="gap-5">
+          <div className="overflow-x-auto pb-1">
+            <TabsList className="grid h-10 min-w-[19rem] w-full grid-cols-3 sm:inline-grid sm:w-auto">
+              <EdgeNetworkTab value="edge" label="SSH edge boxes" mobileLabel="SSH" count={overview.edgeServers.length} icon={Server} />
+              <EdgeNetworkTab value="tailscale" label="Tailscale" mobileLabel="Tailnet" count={overview.tailscale.length} icon={Share2} />
+              <EdgeNetworkTab value="cloudflare" label="Cloudflare" mobileLabel="Cloudflare" count={cloudflare.length} icon={Cloud} />
+            </TabsList>
+          </div>
 
-              <div className="grid gap-3 sm:grid-cols-3">
-                <SummaryCard label="Edge servers online" value={`${counts.onlineServers}/${overview.edgeServers.length}`} icon={Server} />
-                <SummaryCard label="Enabled NAT rules" value={String(counts.enabledRules)} icon={Route} />
-                <SummaryCard label="Servers needing review" value={String(counts.needsReconcile)} icon={TriangleAlert} />
-              </div>
+          <TabsContent value="edge" className="space-y-6">
+            {hasEdgeServers ? (
+              <>
+                <TrafficBoundary servers={overview.edgeServers} />
 
-              <section className="space-y-3" aria-labelledby="edge-nat-heading">
-                <div className="flex flex-wrap items-end justify-between gap-3">
-                  <div>
-                    <h2 id="edge-nat-heading" className="text-lg font-semibold">Edge NAT servers</h2>
-                    <p className="text-sm text-muted-foreground">Only the selected edge IP and listening ports are published.</p>
-                  </div>
-                  {isAdmin && (
-                    <Button variant="outline" size="sm" asChild>
-                      <Link href="/settings/integrations?add=EDGE_NAT_SERVER"><Plus /> Add server</Link>
-                    </Button>
-                  )}
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <SummaryCard label="Edge servers online" value={`${counts.onlineServers}/${overview.edgeServers.length}`} icon={Server} />
+                  <SummaryCard label="Enabled NAT rules" value={String(counts.enabledRules)} icon={Route} />
+                  <SummaryCard label="Servers needing review" value={String(counts.needsReconcile)} icon={TriangleAlert} />
                 </div>
-                <Alert>
-                  <TriangleAlert />
-                  <AlertTitle>Disabling PolySIEM management does not remove remote NAT rules</AlertTitle>
-                  <AlertDescription>Previously applied rules can keep forwarding traffic until the edge server confirms an empty ruleset. Disabled servers stay listed here so cleanup remains visible and auditable.</AlertDescription>
-                </Alert>
-                <div className="space-y-4">
-                  {overview.edgeServers.map((server) => (
-                    <EdgeServerCard key={server.id} server={server} isAdmin={isAdmin} />
+
+                <section className="space-y-3" aria-labelledby="edge-nat-heading">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <h2 id="edge-nat-heading" className="text-lg font-semibold">SSH-managed edge boxes</h2>
+                      <p className="text-sm text-muted-foreground">Only the selected edge IP and listening ports are published.</p>
+                    </div>
+                    {isAdmin && (
+                      <Button variant="outline" size="sm" asChild>
+                        <Link href="/settings/integrations?add=EDGE_NAT_SERVER"><Plus /> Add server</Link>
+                      </Button>
+                    )}
+                  </div>
+                  <Alert>
+                    <TriangleAlert />
+                    <AlertTitle>Disabling PolySIEM management does not remove remote NAT rules</AlertTitle>
+                    <AlertDescription>Previously applied rules can keep forwarding traffic until the edge server confirms an empty ruleset. Disabled servers stay listed here so cleanup remains visible and auditable.</AlertDescription>
+                  </Alert>
+                  <div className="space-y-4">
+                    {overview.edgeServers.map((server) => (
+                      <EdgeServerCard key={server.id} server={server} isAdmin={isAdmin} />
+                    ))}
+                  </div>
+                </section>
+              </>
+            ) : (
+              <EdgeNetworkTabEmpty
+                icon={Server}
+                title="No SSH-managed edge boxes"
+                description="Add an Edge NAT server to publish selected services through a remote IP."
+                addHref="/settings/integrations?add=EDGE_NAT_SERVER"
+                addLabel="Add Edge NAT server"
+                isAdmin={isAdmin}
+              />
+            )}
+          </TabsContent>
+
+          <TabsContent value="tailscale">
+            {overview.tailscale.length > 0 ? (
+              <section className="space-y-3" aria-labelledby="tailscale-edge-heading">
+                <div>
+                  <h2 id="tailscale-edge-heading" className="text-lg font-semibold">Tailscale</h2>
+                  <p className="text-sm text-muted-foreground">Private overlay entry points, subnet routes, exit nodes, and DNS identity.</p>
+                </div>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {overview.tailscale.map((network, index) => (
+                    <TailscaleCard key={network.id ?? network.integrationId ?? index} network={network} />
                   ))}
                 </div>
               </section>
-            </>
-          )}
+            ) : (
+              <EdgeNetworkTabEmpty
+                icon={Share2}
+                title="No Tailscale integration"
+                description="Connect a tailnet to inventory private routes, exit nodes, devices, and DNS identity."
+                addHref="/settings/integrations?add=TAILSCALE"
+                addLabel="Connect Tailscale"
+                isAdmin={isAdmin}
+              />
+            )}
+          </TabsContent>
 
-          {overview.tailscale.length > 0 && (
-            <section className="space-y-3" aria-labelledby="tailscale-edge-heading">
-              <div>
-                <h2 id="tailscale-edge-heading" className="text-lg font-semibold">Tailscale</h2>
-                <p className="text-sm text-muted-foreground">Private overlay entry points, subnet routes, exit nodes, and DNS identity.</p>
-              </div>
-              <div className="grid gap-4 xl:grid-cols-2">
-                {overview.tailscale.map((network, index) => (
-                  <TailscaleCard key={network.id ?? network.integrationId ?? index} network={network} />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {cloudflare.length > 0 && (
-            <CloudflarePublishedRoutes integrations={cloudflare} isAdmin={isAdmin} />
-          )}
-
-        </div>
+          <TabsContent value="cloudflare">
+            {cloudflare.length > 0 ? (
+              <CloudflarePublishedRoutes integrations={cloudflare} isAdmin={isAdmin} />
+            ) : (
+              <EdgeNetworkTabEmpty
+                icon={Cloud}
+                title="No Cloudflare integration"
+                description="Connect a Cloudflare account to document and manage published tunnel routes."
+                addHref="/settings/integrations?add=CLOUDFLARE"
+                addLabel="Connect Cloudflare"
+                isAdmin={isAdmin}
+              />
+            )}
+          </TabsContent>
+        </Tabs>
       )}
     </div>
+  );
+}
+
+function EdgeNetworkTab({
+  value,
+  label,
+  mobileLabel,
+  count,
+  icon: Icon,
+}: {
+  value: string;
+  label: string;
+  mobileLabel: string;
+  count: number;
+  icon: typeof Server;
+}) {
+  return (
+    <TabsTrigger value={value} className="min-w-0 gap-1.5 px-2" aria-label={`${label}, ${count} configured`}>
+      <Icon className="size-4" aria-hidden="true" />
+      <span className="truncate sm:hidden">{mobileLabel}</span>
+      <span className="hidden sm:inline">{label}</span>
+      <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1.5 text-[0.6875rem] tabular-nums" aria-hidden="true">
+        {count}
+      </Badge>
+    </TabsTrigger>
+  );
+}
+
+function EdgeNetworkTabEmpty({
+  icon,
+  title,
+  description,
+  addHref,
+  addLabel,
+  isAdmin,
+}: {
+  icon: typeof Server;
+  title: string;
+  description: string;
+  addHref: string;
+  addLabel: string;
+  isAdmin: boolean;
+}) {
+  return (
+    <EmptyState
+      icon={icon}
+      title={title}
+      description={description}
+      action={isAdmin ? (
+        <Button asChild>
+          <Link href={addHref}><Plus className="size-4" /> {addLabel}</Link>
+        </Button>
+      ) : undefined}
+    />
   );
 }
 
@@ -670,9 +768,10 @@ interface HostKeyProbe {
 function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatServer; open: boolean; onOpenChange: (open: boolean) => void }) {
   const queryClient = useQueryClient();
   const [selectedFingerprint, setSelectedFingerprint] = useState("");
+  const [adminUsername, setAdminUsername] = useState("");
   const settings = server.settings ?? {};
-  const authorizedKey = settings.authorizedKey ?? settings.publicKey ?? "";
-  const installScript = settings.installScript ?? "";
+  const publicKey = settings.publicKey ?? "";
+  const bootstrapCommand = publicKey ? buildEdgeBootstrapCommand(publicKey) : "";
   const hostKeyQuery = useQuery({
     queryKey: ["edge-server-host-key", server.id],
     queryFn: () => apiFetch<HostKeyProbe>(`/api/network/edge-networks/servers/${server.id}/host-key`),
@@ -681,14 +780,17 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
   });
   const selected = selectedFingerprint || hostKeyQuery.data?.enrolledFingerprint || (hostKeyQuery.data?.keys.length === 1 ? hostKeyQuery.data.keys[0]?.fingerprint : "");
   const enrollMutation = useMutation({
-    mutationFn: (fingerprint: string) => apiFetch<{ enrolled: boolean; test: { ok: boolean; detail: string } }>(`/api/network/edge-networks/servers/${server.id}/host-key`, { method: "POST", body: JSON.stringify({ fingerprint }) }),
+    mutationFn: ({ fingerprint, username }: { fingerprint: string; username: string }) =>
+      apiFetch<{ installed: boolean; detail: string }>(`/api/network/edge-networks/servers/${server.id}/provision`, {
+        method: "POST",
+        body: JSON.stringify({ adminUsername: username, fingerprint }),
+      }),
     onSuccess: (result) => {
-      if (result.test.ok) toast.success(result.test.detail || "Host identity pinned and SSH verified");
-      else toast.error(`Host key pinned, but the SSH probe failed: ${result.test.detail}`);
+      toast.success(result.detail || "Edge service installed and SSH verified");
       void queryClient.invalidateQueries({ queryKey: ["edge-networks"] });
-      if (result.test.ok) onOpenChange(false);
+      onOpenChange(false);
     },
-    onError: (error: Error) => toast.error(`Could not enroll host key: ${error.message}`),
+    onError: (error: Error) => toast.error(`Could not install the Edge service: ${error.message}`),
   });
   const copy = async (value: string, label: string) => {
     try { await navigator.clipboard.writeText(value); toast.success(`${label} copied`); }
@@ -700,17 +802,29 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Set up SSH for {server.name}</DialogTitle>
-          <DialogDescription>PolySIEM generated a dedicated key for this server. The private key stays encrypted in PolySIEM; only the public half is installed remotely.</DialogDescription>
+          <DialogDescription>PolySIEM generated a dedicated key for this server. You authorize it once, confirm the server identity, and PolySIEM installs and verifies the restricted service for you.</DialogDescription>
         </DialogHeader>
         <div className="space-y-5">
-          <EnrollmentStep number="1" title="Install the generated public key">
-            <p className="text-sm text-muted-foreground">Sign in to the edge server with your existing administrator access, then run the generated installer. It creates the restricted <code>polysiem-edge</code> account.</p>
-            {installScript ? (
-              <CopyBlock value={installScript} label="Install script" onCopy={copy} />
-            ) : authorizedKey ? (
+          <EnrollmentStep number="1" title="Authorize one setup connection">
+            <div className="grid gap-2">
+              <Label htmlFor={`edge-admin-${server.id}`}>Existing SSH administrator</Label>
+              <Input
+                id={`edge-admin-${server.id}`}
+                value={adminUsername}
+                onChange={(event) => setAdminUsername(event.target.value)}
+                placeholder="ubuntu"
+                autoComplete="username"
+                maxLength={32}
+              />
+              <p className="text-xs text-muted-foreground">Use the account you normally SSH into. It must be root or have passwordless <code>sudo</code> for this one installation. The username is sent only for this request and is not saved.</p>
+            </div>
+            <p className="text-sm text-muted-foreground">Sign in to that account and run this short command. It adds a forced, temporary installer key—not a general shell key.</p>
+            {bootstrapCommand ? (
+              <CopyBlock value={bootstrapCommand} label="Setup command" onCopy={copy} />
+            ) : publicKey ? (
               <>
-                <CopyBlock value={authorizedKey} label="Public key" onCopy={copy} />
-                <p className="text-xs text-warning">The automatic installer was not returned. Install this key for the dedicated SSH account configured on the integration.</p>
+                <CopyBlock value={publicKey} label="Public key" onCopy={copy} />
+                <p className="text-xs text-warning">The setup command could not be generated. Recreate this integration before continuing.</p>
               </>
             ) : (
               <Alert variant="destructive"><TriangleAlert /><AlertTitle>Generated public key unavailable</AlertTitle><AlertDescription>Edit or recreate the integration before continuing.</AlertDescription></Alert>
@@ -721,7 +835,16 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
           <EnrollmentStep number="2" title="Scan the server identity">
             <p className="text-sm text-muted-foreground">Compare an observed fingerprint with the server console before trusting it. Pinning this key prevents a changed or impersonated SSH host from being accepted silently.</p>
             {hostKeyQuery.isLoading && <div className="space-y-2"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div>}
-            {hostKeyQuery.isError && <Alert variant="destructive"><TriangleAlert /><AlertTitle>Could not scan the SSH host key</AlertTitle><AlertDescription>{(hostKeyQuery.error as Error).message}</AlertDescription></Alert>}
+            {hostKeyQuery.isError && (
+              <Alert
+                variant="destructive"
+                aria-label={`Could not scan the SSH host key: ${(hostKeyQuery.error as Error).message}`}
+              >
+                <TriangleAlert />
+                <AlertTitle>Could not scan the SSH host key:</AlertTitle>
+                <AlertDescription>{` ${(hostKeyQuery.error as Error).message}`}</AlertDescription>
+              </Alert>
+            )}
             {hostKeyQuery.data && (
               <div className="space-y-2">
                 <p className="text-xs text-muted-foreground">Observed at <code>{hostKeyQuery.data.host}:{hostKeyQuery.data.port}</code></p>
@@ -736,13 +859,22 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
             <Button type="button" variant="outline" size="sm" disabled={hostKeyQuery.isFetching} onClick={() => void hostKeyQuery.refetch()}><RefreshCw className={cn(hostKeyQuery.isFetching && "animate-spin")} /> Scan again</Button>
           </EnrollmentStep>
 
-          <EnrollmentStep number="3" title="Pin the key and verify SSH">
-            <p className="text-sm text-muted-foreground">PolySIEM rescans before saving the selected fingerprint, then immediately runs a read-only status probe through the restricted account.</p>
+          <EnrollmentStep number="3" title="Let PolySIEM install the service">
+            <p className="text-sm text-muted-foreground">PolySIEM rescans and pins the selected host identity, connects through the temporary installer key, installs the restricted <code>polysiem-edge</code> service, removes the temporary admin authorization, and verifies the service.</p>
+            {enrollMutation.isPending && (
+              <Alert><Loader2 className="animate-spin" /><AlertTitle>Installing the restricted Edge service</AlertTitle><AlertDescription>Keep this window open. PolySIEM is connecting over pinned SSH, installing the helper, removing its temporary setup access, and checking the result.</AlertDescription></Alert>
+            )}
           </EnrollmentStep>
         </div>
         <DialogFooter>
           <DialogClose asChild><Button type="button" variant="outline">Finish later</Button></DialogClose>
-          <Button disabled={!selected || enrollMutation.isPending || !authorizedKey} onClick={() => selected && enrollMutation.mutate(selected)}>{enrollMutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}Trust host and verify</Button>
+          <Button
+            disabled={!selected || enrollMutation.isPending || !publicKey || !/^(?!polysiem-edge$)[A-Za-z_][A-Za-z0-9_-]{0,31}$/.test(adminUsername.trim())}
+            onClick={() => selected && enrollMutation.mutate({ fingerprint: selected, username: adminUsername.trim() })}
+          >
+            {enrollMutation.isPending ? <Loader2 className="animate-spin" /> : <ShieldCheck />}
+            {enrollMutation.isPending ? "Installing service…" : "Trust host and install service"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

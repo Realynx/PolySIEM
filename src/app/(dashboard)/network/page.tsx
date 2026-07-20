@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Network, Plus } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listNetworks } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { SourceBadge, StatusBadge } from "@/components/shared/badges";
@@ -22,6 +24,7 @@ import { PaginationNav } from "@/components/inventory/pagination-nav";
 import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { TagList } from "@/components/inventory/tag-badge";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
+import { MobileNetworksPage } from "@/components/mobile/pages/network/mobile-networks-page";
 
 export const metadata = { title: "Networks" };
 
@@ -32,8 +35,20 @@ export default async function NetworksPage({
 }) {
   await requirePageUser();
   const query = parseListParams(await searchParams);
-  const { items, total } = await listNetworks(query);
+  const { items, total } = await anonymizeForDisplay(await listNetworks(query));
   const filtered = Boolean(query.q || query.source);
+
+  if (await isMobileView()) {
+    return (
+      <MobileNetworksPage
+        items={items}
+        total={total}
+        page={query.page}
+        pageSize={query.pageSize}
+        filtered={filtered}
+      />
+    );
+  }
 
   const addButton = (
     <EntityFormDialog

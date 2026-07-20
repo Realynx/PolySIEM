@@ -43,6 +43,24 @@ describe("apiFetch", () => {
     );
   });
 
+  it("surfaces an actionable structured server error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        error: {
+          code: "ssh_keyscan_unavailable",
+          message: "SSH host-key scanning is unavailable on the PolySIEM server. Install the OpenSSH client package, then try again.",
+        },
+      }), {
+        status: 502,
+        headers: { "Content-Type": "application/json" },
+      })),
+    );
+
+    await expect(apiFetch("/api/network/edge-networks/servers/edge-one/host-key"))
+      .rejects.toThrow("SSH host-key scanning is unavailable on the PolySIEM server. Install the OpenSSH client package, then try again.");
+  });
+
   it("keeps the old settings export as the same compatibility function", () => {
     expect(compatibilityApiFetch).toBe(apiFetch);
   });

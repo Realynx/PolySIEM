@@ -1,9 +1,19 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { LogOut, Menu, Moon, Search, Settings, Sun, User as UserIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  LogOut,
+  Menu,
+  Moon,
+  Search,
+  Settings,
+  Smartphone,
+  Sun,
+  User as UserIcon,
+} from "lucide-react";
 import { useTheme } from "next-themes";
+import { MOBILE_UA_PATTERN, setViewMode } from "@/lib/view-mode";
+import { useLogout } from "./use-logout";
 import Link from "next/link";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -25,21 +35,18 @@ interface TopbarProps {
 }
 
 export function Topbar({ instanceName, user }: TopbarProps) {
-  const router = useRouter();
   const { resolvedTheme, setTheme } = useTheme();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
-
-  async function logout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/login");
-    router.refresh();
-  }
+  const logout = useLogout();
+  // A phone showing the desktop view (override cookie) gets a way back.
+  const [onPhone, setOnPhone] = useState(false);
+  useEffect(() => setOnPhone(MOBILE_UA_PATTERN.test(navigator.userAgent)), []);
 
   const initials = (user.displayName ?? user.username).slice(0, 2).toUpperCase();
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/75">
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/75 no-gpu:bg-background">
       {/* Mobile nav */}
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
         <SheetTrigger asChild>
@@ -108,6 +115,11 @@ export function Topbar({ instanceName, user }: TopbarProps) {
                 <Settings className="size-4" /> Settings
               </Link>
             </DropdownMenuItem>
+            {onPhone && (
+              <DropdownMenuItem onSelect={() => setViewMode("mobile")}>
+                <Smartphone className="size-4" /> Switch to mobile view
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={logout}>
               <LogOut className="size-4" /> Sign out

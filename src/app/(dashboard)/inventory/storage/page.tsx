@@ -2,6 +2,8 @@ import Link from "next/link";
 import { HardDrive, Plus, Server } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listStoragePools } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
 import { formatBytes } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -21,6 +23,7 @@ import { EntityFormDialog } from "@/components/inventory/entity-form-dialog";
 import { ListCard } from "@/components/inventory/list-card";
 import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
+import { MobileStoragePage } from "@/components/mobile/pages/inventory/mobile-storage-page";
 
 export const metadata = { title: "Storage" };
 
@@ -38,7 +41,7 @@ export default async function StoragePage({
 }) {
   await requirePageUser();
   const query = parseListParams(await searchParams, 200);
-  const { items, total } = await listStoragePools(query);
+  const { items, total } = await anonymizeForDisplay(await listStoragePools(query));
   const filtered = Boolean(query.q || query.source);
 
   // Group pools by owning host.
@@ -52,6 +55,8 @@ export default async function StoragePage({
   const sortedGroups = [...groups.values()].sort((a, b) =>
     (a.host?.name ?? "￿").localeCompare(b.host?.name ?? "￿"),
   );
+
+  if (await isMobileView()) return <MobileStoragePage groups={sortedGroups} query={query} />;
 
   const addButton = (
     <EntityFormDialog

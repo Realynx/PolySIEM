@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { Cable } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
+import { isMobileView } from "@/lib/device";
 import { listSwitches } from "@/lib/services/switches";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -17,6 +19,7 @@ import {
 import { ListCard } from "@/components/inventory/list-card";
 import { AddSwitchDialog } from "@/components/switches/add-switch-dialog";
 import { DeleteSwitchButton } from "@/components/switches/delete-switch-button";
+import { MobileSwitches } from "@/components/mobile/pages/network-edge/mobile-switches";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +29,9 @@ const VENDOR_LABELS: Record<string, string> = { "cisco-ios": "Cisco IOS" };
 
 export default async function SwitchesPage() {
   await requirePageUser();
-  const switches = await listSwitches();
+  const switches = await anonymizeForDisplay(await listSwitches());
+
+  if (await isMobileView()) return <MobileSwitches switches={switches} />;
 
   return (
     <div>

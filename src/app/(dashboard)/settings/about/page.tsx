@@ -2,11 +2,17 @@ import { randomInt } from "node:crypto";
 import { ExternalLink } from "lucide-react";
 import { requirePageAdmin } from "@/lib/auth/guards";
 import { prisma } from "@/lib/db";
+import { isMobileView } from "@/lib/device";
 import { PageHeader } from "@/components/shared/page-header";
+import { MobileSettingsSubpage } from "@/components/mobile/pages/settings/settings-subpage";
 import { AppLogo } from "@/components/shell/app-logo";
 import { UpdateCheck } from "@/components/settings/update-check";
+import { BashQuoteBlock } from "@/components/settings/bash-quote";
 import { getInstanceName } from "@/lib/settings";
 import { getCurrentVersion, getGitHubRepository } from "@/lib/updates/release";
+import { formatBytes } from "@/lib/format";
+import { computeMetricsReport } from "@/lib/services/compute-metrics";
+import type { ComputeMetricSummary } from "@/lib/compute/metrics";
 
 export const metadata = { title: "About" };
 export const dynamic = "force-dynamic";
@@ -25,6 +31,42 @@ async function getSystemStatus(): Promise<SystemStatus> {
     return { database: "connected", integrations };
   } catch {
     return { database: "unreachable", integrations: null };
+  }
+}
+
+interface LabSummary {
+  summary: ComputeMetricSummary;
+  containersRunning: number;
+  containersTotal: number;
+  vmsRunning: number;
+  vmsTotal: number;
+  /** Per-cluster collection failures, e.g. a rejected Proxmox API token. */
+  errors: string[];
+}
+
+/**
+ * Cluster-wide totals for the neofetch panel. Returns null only when no compute
+ * integration is wired up at all — a cluster that is configured but failing
+ * still comes back so the panel can say so instead of rendering nothing, which
+ * is indistinguishable from having no lab.
+ */
+async function getLabSummary(): Promise<LabSummary | null> {
+  try {
+    const { summary, resources, errors } = await computeMetricsReport();
+    if (summary.nodesTotal === 0 && errors.length === 0) return null;
+    const guests = resources.filter((resource) => resource.kind !== "node");
+    const containers = guests.filter((guest) => guest.kind === "lxc");
+    const vms = guests.filter((guest) => guest.kind === "qemu");
+    return {
+      summary,
+      containersRunning: containers.filter((c) => c.status === "running").length,
+      containersTotal: containers.length,
+      vmsRunning: vms.filter((vm) => vm.status === "running").length,
+      vmsTotal: vms.length,
+      errors,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -177,6 +219,149 @@ const INSTALL_LABELS: Record<string, string> = {
   "docker-source": "Docker / source build",
 };
 
+const BAR_WIDTH = 16;
+
+/** neofetch-style block meter, e.g. [███████░░░░░░░░░]. */
+function UsageBar({ fraction }: { fraction: number }) {
+  const clamped = Math.min(1, Math.max(0, fraction));
+  const filled = Math.round(clamped * BAR_WIDTH);
+  const tone =
+    clamped >= 0.9
+      ? "text-destructive"
+      : clamped >= 0.75
+        ? "text-warning"
+        : "text-primary";
+  return (
+    <span
+      aria-hidden="true"
+      className="ml-2 hidden tracking-[-0.05em] sm:inline"
+    >
+      <span className="text-muted-foreground">[</span>
+      <span className={tone}>{"█".repeat(filled)}</span>
+      <span className="text-muted-foreground/40">
+        {"░".repeat(BAR_WIDTH - filled)}
+      </span>
+      <span className="text-muted-foreground">]</span>
+    </span>
+  );
+}
+
+/** `12.4 GiB / 62.7 GiB (20%)` plus a meter, or an em dash when unmeasurable. */
+function Usage({ used, total }: { used: number | null; total: number | null }) {
+  if (used === null || total === null || total <= 0) return <>unavailable</>;
+  const fraction = used / total;
+  return (
+    <>
+      {formatBytes(used)} / {formatBytes(total)}{" "}
+      <span className="text-muted-foreground">
+        ({Math.round(fraction * 100)}%)
+      </span>
+      <UsageBar fraction={fraction} />
+    </>
+  );
+}
+
+/** The aggregated-lab rows, or a diagnostic row when collection failed. */
+function labFacts(lab: LabSummary): { label: string; value: React.ReactNode }[] {
+  const { summary } = lab;
+
+  if (summary.nodesTotal === 0) {
+    return [
+      {
+        label: "Cluster",
+        value: (
+          <span className="text-destructive">
+            unreachable — {lab.errors[0] ?? "no nodes reported"}
+          </span>
+        ),
+      },
+    ];
+  }
+
+  return [
+    {
+      label: "Cluster",
+      value: (
+        <>
+          {summary.clusters} {summary.clusters === 1 ? "cluster" : "clusters"} ·{" "}
+          <span
+            className={
+              summary.nodesOnline === summary.nodesTotal
+                ? "text-success"
+                : "text-warning"
+            }
+          >
+            {summary.nodesOnline}/{summary.nodesTotal} nodes online
+          </span>
+          {lab.errors.length > 0 ? (
+            <span className="text-destructive"> · {lab.errors.length} failing</span>
+          ) : null}
+        </>
+      ),
+    },
+    {
+      label: "CPU",
+      value: (
+        <>
+          {summary.cpuTotalCores} cores
+          {summary.cpuUsage !== null ? (
+            <>
+              {" "}
+              <span className="text-muted-foreground">
+                ({Math.round(summary.cpuUsage * 100)}% used)
+              </span>
+              <UsageBar fraction={summary.cpuUsage} />
+            </>
+          ) : null}
+        </>
+      ),
+    },
+    {
+      label: "Memory",
+      value: (
+        <Usage
+          used={summary.memoryUsedBytes}
+          total={summary.memoryTotalBytes}
+        />
+      ),
+    },
+    // Backing pools, not node root filesystems — `diskTotalBytes` would report
+    // only boot disks, which understates real lab capacity by an order of
+    // magnitude. Omitted when no pool reports a size.
+    ...(summary.storageTotalBytes > 0
+      ? [
+          {
+            label: "Storage",
+            value: (
+              <Usage
+                used={summary.storageUsedBytes}
+                total={summary.storageTotalBytes}
+              />
+            ),
+          },
+        ]
+      : []),
+    {
+      label: "Containers",
+      value: (
+        <>
+          <span className="text-success">{lab.containersRunning}</span> running /{" "}
+          {lab.containersTotal} total
+        </>
+      ),
+    },
+    {
+      label: "VMs",
+      value: (
+        <>
+          <span className="text-success">{lab.vmsRunning}</span> running /{" "}
+          {lab.vmsTotal} total
+        </>
+      ),
+    },
+  ];
+}
+
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-[7.25rem_minmax(0,1fr)] gap-2 sm:grid-cols-[8.5rem_minmax(0,1fr)]">
@@ -193,9 +378,10 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 
 export default async function AboutSettingsPage() {
   await requirePageAdmin();
-  const [status, instanceName] = await Promise.all([
+  const [status, instanceName, lab] = await Promise.all([
     getSystemStatus(),
     getInstanceName(),
+    getLabSummary(),
   ]);
   const currentVersion = getCurrentVersion();
   const repository = getGitHubRepository();
@@ -212,39 +398,51 @@ export default async function AboutSettingsPage() {
           ? `curl -fsSL https://raw.githubusercontent.com/${repository}/master/deploy/install.sh | sudo bash -s -- --source`
           : "sudo /opt/polysiem/update.sh";
 
-  const facts = [
-    ["OS", `${instanceName} / PolySIEM Homelab Edition`],
-    ["Host", "Self-hosted infrastructure"],
-    ["Version", `v${currentVersion}`],
-    ["Install", INSTALL_LABELS[installType] ?? installType],
-    ["Kernel", `Node.js ${process.version.replace(/^v/, "")}`],
-    ["Uptime", formatUptime(process.uptime())],
-    ["Shell", "Next.js 15 App Router"],
-    ["DE", "React 19 + TypeScript"],
-    ["WM", "Tailwind CSS 4 + shadcn/ui"],
-    [
-      "Database",
-      status.database === "connected"
-        ? "PostgreSQL / Prisma 6 — connected"
-        : "PostgreSQL / Prisma 6 — unreachable",
-    ],
-    [
-      "Integrations",
-      status.integrations === null
-        ? "unknown"
-        : `${status.integrations} configured`,
-    ],
-    ["AI", "Ollama or hosted provider (optional)"],
-  ] as const;
+  const facts: { label: string; value: React.ReactNode }[] = [
+    { label: "OS", value: `${instanceName} / PolySIEM Homelab Edition` },
+    { label: "Host", value: "Self-hosted infrastructure" },
+    { label: "Version", value: `v${currentVersion}` },
+    { label: "Install", value: INSTALL_LABELS[installType] ?? installType },
+    {
+      label: "Kernel",
+      value: `Node.js ${process.version.replace(/^v/, "")}`,
+    },
+    { label: "Uptime", value: formatUptime(process.uptime()) },
+    // Lab-wide hardware, aggregated across every connected cluster. Omitted
+    // entirely when nothing is hooked up — an empty row beats the wrong host.
+    ...(lab ? labFacts(lab) : []),
+    { label: "Shell", value: "Next.js 15 App Router" },
+    { label: "DE", value: "React 19 + TypeScript" },
+    { label: "WM", value: "Tailwind CSS 4 + shadcn/ui" },
+    {
+      label: "Database",
+      value: (
+        <span
+          className={
+            status.database === "connected"
+              ? "text-success"
+              : "text-destructive"
+          }
+        >
+          PostgreSQL / Prisma 6 —{" "}
+          {status.database === "connected" ? "connected" : "unreachable"}
+        </span>
+      ),
+    },
+    {
+      label: "Integrations",
+      value:
+        status.integrations === null
+          ? "unknown"
+          : `${status.integrations} configured`,
+    },
+    { label: "AI", value: "Ollama or hosted provider (optional)" },
+  ];
 
-  return (
-    <div>
-      <PageHeader
-        title="About"
-        description="System information, but make it unnecessarily terminal."
-      />
-
-      <section className="relative overflow-hidden rounded-xl border border-primary/20 bg-card font-mono text-[10px] leading-[1.45] shadow-xl shadow-primary/5 sm:text-[11px]">
+  // Built once and shared by both presentations — the terminal already
+  // degrades to a single column at phone widths.
+  const terminal = (
+    <section className="relative overflow-hidden rounded-xl border border-primary/20 bg-card font-mono text-[10px] leading-[1.45] shadow-xl shadow-primary/5 no-gpu:shadow-md sm:text-[11px]">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 opacity-[0.025] [background-image:linear-gradient(to_bottom,currentColor_1px,transparent_1px)] [background-size:100%_4px]"
@@ -315,19 +513,9 @@ export default async function AboutSettingsPage() {
                 <p className="text-muted-foreground">──────────────────</p>
               </div>
               <dl className="space-y-1.5">
-                {facts.map(([label, value]) => (
+                {facts.map(({ label, value }) => (
                   <Fact key={label} label={label}>
-                    <span
-                      className={
-                        label === "Database"
-                          ? status.database === "connected"
-                            ? "text-success"
-                            : "text-destructive"
-                          : undefined
-                      }
-                    >
-                      {value}
-                    </span>
+                    {value}
                   </Fact>
                 ))}
                 <Fact label="Repository">
@@ -376,32 +564,7 @@ export default async function AboutSettingsPage() {
           </div>
 
           <div className="mt-7 border-t border-dashed border-border pt-5">
-            <p className="mb-3">
-              <span className="font-bold text-primary">polysiem@homelab</span>
-              <span className="text-muted-foreground">:</span>
-              <span className="font-bold text-chart-2">~</span>
-              <span className="text-muted-foreground">$</span> cat
-              ~/.polysiem/roadmap
-            </p>
-            <div className="space-y-1.5">
-              <p>
-                <span className="text-success">[✓]</span> backups &amp; export
-                <span className="text-muted-foreground"> # shipped</span>
-              </p>
-              <p>
-                <span className="text-warning">[ ]</span> active network
-                discovery
-                <span className="text-muted-foreground">
-                  {" "}# scanner VM is still compiling excuses
-                </span>
-              </p>
-              <p>
-                <span className="text-primary">[~]</span> more integrations
-                <span className="text-muted-foreground">
-                  {" "}# the homelab is never truly finished
-                </span>
-              </p>
-            </div>
+            <BashQuoteBlock />
           </div>
 
           <p className="mt-7 text-muted-foreground">
@@ -409,6 +572,19 @@ export default async function AboutSettingsPage() {
           </p>
         </div>
       </section>
+  );
+
+  if (await isMobileView()) {
+    return <MobileSettingsSubpage title="About">{terminal}</MobileSettingsSubpage>;
+  }
+
+  return (
+    <div>
+      <PageHeader
+        title="About"
+        description="System information, but make it unnecessarily terminal."
+      />
+      {terminal}
     </div>
   );
 }

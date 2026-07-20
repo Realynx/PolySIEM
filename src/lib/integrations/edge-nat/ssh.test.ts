@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { generateEd25519Keypair } from "@/lib/ssh/keys";
 import type { DriverConfig } from "../types";
-import { runCommand, runVerifiedSsh, scanEdgeHostKeys, type CommandRunner } from "./ssh";
+import { parseEdgeSshUrl, runCommand, runVerifiedSsh, scanEdgeHostKeys, type CommandRunner } from "./ssh";
 
 const hostPair = generateEd25519Keypair("host");
 const clientPair = generateEd25519Keypair("client");
@@ -20,6 +20,50 @@ describe("Edge NAT SSH transport", () => {
   it("normalizes ssh-keyscan output to SHA256 fingerprints", async () => {
     const keys = await scanEdgeHostKeys(cfg().baseUrl, async () => ({ stdout: `${hostLine}\n`, stderr: "", code: 0 }));
     expect(keys).toMatchObject([{ algorithm: "ssh-ed25519", fingerprint: hostPair.fingerprint }]);
+  });
+
+  it.each([
+    ["ssh://edge.example.test", "edge.example.test", 22],
+    ["ssh://192.0.2.10:2200", "192.0.2.10", 2200],
+    ["ssh://[2001:db8::10]:2200", "2001:db8::10", 2200],
+  ])("parses %s for OpenSSH tools", (url, host, port) => {
+    expect(parseEdgeSshUrl(url)).toEqual({ host, port });
+  });
+
+  it("scans an IPv6 literal without URL brackets and forces IPv6", async () => {
+    let receivedArgs: string[] = [];
+    await scanEdgeHostKeys("ssh://[2001:db8::10]:2222", async (_command, args) => {
+      receivedArgs = args;
+      return { stdout: `[2001:db8::10]:2222 ${hostPair.publicKeyLine}\n`, stderr: "", code: 0 };
+    });
+    expect(receivedArgs).toEqual(["-6", "-T", "5", "-p", "2222", "2001:db8::10"]);
+  });
+
+  it("gives an actionable error when ssh-keyscan is not installed without exposing the process error", async () => {
+    const missing = Object.assign(new Error("spawn C:\\secret\\ssh-keyscan ENOENT"), { code: "ENOENT" });
+    await expect(scanEdgeHostKeys(cfg().baseUrl, async () => { throw missing; })).rejects.toMatchObject({
+      code: "ssh_keyscan_unavailable",
+      message: "SSH host-key scanning is unavailable on the PolySIEM server. Install the OpenSSH client package, then try again.",
+    });
+  });
+
+  it("turns scanner diagnostics into safe connection guidance", async () => {
+    await expect(scanEdgeHostKeys(cfg().baseUrl, async () => ({
+      stdout: "",
+      stderr: "connect (`top-secret-internal-name'): Connection refused",
+      code: 1,
+    }))).rejects.toMatchObject({
+      code: "ssh_host_unreachable",
+      message: "The SSH service at edge.example.test:2222 refused the connection. Check the SSH port and that sshd is running.",
+    });
+  });
+
+  it("reports scanner timeouts with the target and next checks", async () => {
+    await expect(scanEdgeHostKeys(cfg().baseUrl, async () => { throw new Error("ssh-keyscan timed out"); }))
+      .rejects.toMatchObject({
+        code: "ssh_keyscan_timeout",
+        message: "The SSH host-key scan for edge.example.test:2222 timed out. Check the address, SSH port, firewall, and that sshd is running.",
+      });
   });
 
   it("refuses a changed host key before invoking ssh", async () => {

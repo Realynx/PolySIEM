@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Monitor, Plus } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listVms } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
 import { formatBytes } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -23,13 +25,15 @@ import { PaginationNav } from "@/components/inventory/pagination-nav";
 import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { TagList } from "@/components/inventory/tag-badge";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
+import { MobileVmsPage } from "@/components/mobile/pages/inventory/mobile-vms-page";
 
 export const metadata = { title: "Virtual machines" };
 
 export default async function VmsPage({ searchParams }: { searchParams: Promise<PageSearchParams> }) {
   await requirePageUser();
   const query = parseListParams(await searchParams);
-  const { items, total } = await listVms(query);
+  const { items, total } = await anonymizeForDisplay(await listVms(query));
+  if (await isMobileView()) return <MobileVmsPage items={items} total={total} query={query} />;
   const filtered = Boolean(query.q || query.source);
 
   const addButton = (

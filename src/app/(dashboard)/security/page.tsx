@@ -1,5 +1,7 @@
 import { requirePageUser } from "@/lib/auth/guards";
+import { isMobileView } from "@/lib/device";
 import { SecurityPanel } from "@/components/security/security-panel";
+import { MobileSecurityScore } from "@/components/mobile/pages/security/mobile-security-score";
 
 export const dynamic = "force-dynamic";
 
@@ -12,5 +14,7 @@ export const metadata = { title: "Security score" };
  */
 export default async function SecurityScorePage() {
   const { user } = await requirePageUser();
-  return <SecurityPanel isAdmin={user.role === "ADMIN"} />;
+  const isAdmin = user.role === "ADMIN";
+  if (await isMobileView()) return <MobileSecurityScore isAdmin={isAdmin} />;
+  return <SecurityPanel isAdmin={isAdmin} />;
 }

@@ -47,3 +47,10 @@ export const updateEdgeNatRuleSchema = edgeNatRuleSchema.partial().refine(
 export const enrollEdgeHostKeySchema = z.object({
   fingerprint: z.string().trim().regex(/^SHA256:[A-Za-z0-9+/]{20,100}$/, "Use an observed SHA256 host-key fingerprint"),
 });
+
+export const provisionEdgeNatSchema = enrollEdgeHostKeySchema.extend({
+  adminUsername: z.string().trim().regex(
+    /^(?!polysiem-edge$)[A-Za-z_][A-Za-z0-9_-]{0,31}$/,
+    "Use your existing Linux administrator username",
+  ),
+});

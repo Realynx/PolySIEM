@@ -90,6 +90,9 @@ model User {
   disabled        Boolean  @default(false)
   themeColor      String   @default("blue")
   themeMode       String   @default("system")
+  anonymousMode   Boolean  @default(false)
+  shieldOnCapture Boolean  @default(false)
+  shieldOnBlur    Boolean  @default(false)
   /**
    * Personal AlienVault OTX API key (encrypted); overrides the instance feed for this user.
    */

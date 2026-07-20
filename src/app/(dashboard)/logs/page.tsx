@@ -2,6 +2,10 @@ import Link from "next/link";
 import { ScrollText } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listLogSources } from "@/lib/services/logs";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
+import { MobileLogExplorer } from "@/components/mobile/pages/logs/mobile-log-explorer";
+import { MobileLogsEmpty } from "@/components/mobile/pages/logs/mobile-logs-empty";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
@@ -13,9 +17,11 @@ export const metadata = { title: "Log explorer" };
 
 export default async function LogsPage() {
   const { user } = await requirePageUser();
-  const sources = await listLogSources();
+  const sources = await anonymizeForDisplay(await listLogSources());
+  const mobile = await isMobileView();
 
   if (sources.length === 0) {
+    if (mobile) return <MobileLogsEmpty isAdmin={user.role === "ADMIN"} />;
     return (
       <>
         <PageHeader
@@ -38,5 +44,6 @@ export default async function LogsPage() {
     );
   }
 
+  if (mobile) return <MobileLogExplorer sources={sources} />;
   return <LogExplorer sources={sources} />;
 }

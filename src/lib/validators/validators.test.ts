@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDeviceSchema, updateDeviceSchema, createNetworkSchema, listQuerySchema } from "./inventory";
-import { createIntegrationSchema } from "./integrations";
+import { createIntegrationSchema, edgeNatSettingsSchema } from "./integrations";
 import { setupProgressSchema, setupSchema } from "./auth";
 
 describe("inventory validators", () => {
@@ -40,6 +40,16 @@ describe("inventory validators", () => {
 });
 
 describe("integration validators", () => {
+  it("permits one Edge NAT interface for both listener and target traffic", () => {
+    const settings = edgeNatSettingsSchema.parse({
+      publicInterface: "ens3",
+      outboundInterface: "ens3",
+    });
+
+    expect(settings.publicInterface).toBe("ens3");
+    expect(settings.outboundInterface).toBe("ens3");
+  });
+
   it("requires type-specific credentials", () => {
     expect(() =>
       createIntegrationSchema.parse({

@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { Pencil } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { getNetwork } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { SourceBadge, StatusBadge } from "@/components/shared/badges";
@@ -30,6 +32,7 @@ import { MetadataCard } from "@/components/inventory/metadata-card";
 import { InterfacesTable, SubTableEmpty } from "@/components/inventory/sub-tables";
 import { TagPicker } from "@/components/inventory/tag-picker";
 import { DescriptionEditor } from "@/components/docs/description-editor";
+import { MobileNetworkDetail } from "@/components/mobile/pages/network/mobile-network-detail";
 
 export async function generateMetadata({
   params,
@@ -37,15 +40,16 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
-  const net = await getNetwork(id).catch(() => null);
+  const net = await anonymizeForDisplay(await getNetwork(id).catch(() => null));
   return { title: net?.name ?? "Network" };
 }
 
 export default async function NetworkDetailPage({ params }: { params: Promise<{ id: string }> }) {
   await requirePageUser();
   const { id } = await params;
-  const net = await getNetwork(id).catch(() => null);
-  if (!net) notFound();
+  const found = await getNetwork(id).catch(() => null);
+  if (!found) notFound();
+  const net = await anonymizeForDisplay(found);
 
   // ARP-detected devices not already listed as a documented IP or DHCP lease.
   const knownIps = new Set<string>([
@@ -54,15 +58,20 @@ export default async function NetworkDetailPage({ params }: { params: Promise<{ 
   ]);
   const detected = net.neighbors.filter((n) => !n.permanent && !knownIps.has(n.ipAddress));
 
+  // Edit-form seed stays real: anonymized values must never round-trip into a mutation.
   const initial = {
-    name: net.name,
-    vlanId: net.vlanId?.toString() ?? "",
-    cidr: net.cidr ?? "",
-    gateway: net.gateway ?? "",
-    domain: net.domain ?? "",
-    purpose: net.purpose ?? "",
-    description: net.description ?? "",
+    name: found.name,
+    vlanId: found.vlanId?.toString() ?? "",
+    cidr: found.cidr ?? "",
+    gateway: found.gateway ?? "",
+    domain: found.domain ?? "",
+    purpose: found.purpose ?? "",
+    description: found.description ?? "",
   };
+
+  if (await isMobileView()) {
+    return <MobileNetworkDetail net={net} detected={detected} initial={initial} />;
+  }
 
   return (
     <div>
@@ -212,7 +221,7 @@ export default async function NetworkDetailPage({ params }: { params: Promise<{ 
             <SectionCard title="Description">
               <DescriptionEditor
                 apiPath={`/api/inventory/networks/${net.id}`}
-                initialValue={net.description}
+                initialValue={found.description}
                 entity={{ type: "network", id: net.id }}
               />
             </SectionCard>

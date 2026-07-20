@@ -36,7 +36,9 @@ export interface EdgeNatServerSettings {
   lastAppliedAt?: string;
   lastApplyError?: string;
   lastVerifiedAt?: string;
+  /** Interface receiving published traffic (legacy API name: publicInterface). */
   publicInterface?: string;
+  /** Interface used to reach the target; may be the same interface as publicInterface. */
   outboundInterface?: string;
   enableIpForwarding?: boolean;
   syncedSnapshot?: {

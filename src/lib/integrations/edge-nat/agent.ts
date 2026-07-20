@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { assertEdgeBootstrapUsername, edgeBootstrapAuthorizedKey } from "./bootstrap";
 
 /** Fixed forced-command path installed by the enrollment bundle. */
 export const EDGE_AGENT_PATH = "/usr/local/libexec/polysiem-edge-agent";
@@ -246,13 +247,18 @@ export function restrictedAuthorizedKey(publicKey: string): string {
   return `restrict,command="sudo -n ${EDGE_AGENT_PATH}" ${publicKey}`;
 }
 
-export function buildEdgeAgentInstallScript(publicKey: string, username = "polysiem-edge"): string {
+export function buildEdgeAgentInstallScript(
+  publicKey: string,
+  username = "polysiem-edge",
+  bootstrapUsername?: string,
+): string {
   if (!/^[a-z_][a-z0-9_-]{0,31}$/i.test(username) || username === "root") throw new Error("Invalid service username");
   const authorizedKey = restrictedAuthorizedKey(publicKey);
+  const bootstrapCleanup = bootstrapUsername === undefined ? "" : buildBootstrapCleanup(publicKey, bootstrapUsername);
   return `#!/bin/sh
 set -eu
 [ "$(id -u)" -eq 0 ] || { printf 'Run this installer as root.\\n' >&2; exit 1; }
-for binary in useradd getent install sudo visudo iptables iptables-restore ip awk grep sed cut mktemp sysctl flock sha256sum chmod mv rm wc tr; do
+for binary in useradd getent install sudo visudo iptables iptables-restore ip awk grep sed cut mktemp sysctl flock sha256sum chmod chown mv rm wc tr; do
   command -v "$binary" >/dev/null 2>&1 || { printf 'Missing required command: %s\\nInstall sudo, iproute2, iptables, util-linux, and coreutils first.\\n' "$binary" >&2; exit 1; }
 done
 USER_NAME='${username}'
@@ -303,7 +309,30 @@ POLYSIEM_UNIT
   systemctl daemon-reload
   systemctl enable polysiem-edge-nat.service >/dev/null
 fi
+${bootstrapCleanup}
 printf 'PolySIEM Edge NAT helper installed.\\n'
+`;
+}
+
+function buildBootstrapCleanup(publicKey: string, bootstrapUsername: string): string {
+  const adminName = assertEdgeBootstrapUsername(bootstrapUsername);
+  const bootstrapKey = edgeBootstrapAuthorizedKey(publicKey);
+  return `ADMIN_NAME='${adminName}'
+ADMIN_HOME="$(getent passwd "$ADMIN_NAME" | cut -d: -f6)"
+[ -n "$ADMIN_HOME" ] || { printf 'Installed the helper, but could not find the bootstrap account to remove its temporary key. Remove it manually before retrying.\\n' >&2; exit 1; }
+ADMIN_KEYS="$ADMIN_HOME/.ssh/authorized_keys"
+[ -f "$ADMIN_KEYS" ] || { printf 'Installed the helper, but the temporary bootstrap authorization disappeared unexpectedly. Verify the admin account authorized_keys file before retrying.\\n' >&2; exit 1; }
+BOOTSTRAP_KEY='${bootstrapKey}'
+grep -qxF -- "$BOOTSTRAP_KEY" "$ADMIN_KEYS" || { printf 'Installed the helper, but could not identify the exact temporary bootstrap key. Remove it manually before retrying.\\n' >&2; exit 1; }
+if grep -Fvx -- "$BOOTSTRAP_KEY" "$ADMIN_KEYS" > "$ADMIN_KEYS.polysiem-new"; then :; else
+  cleanup_status=$?
+  [ "$cleanup_status" -eq 1 ] || { rm -f "$ADMIN_KEYS.polysiem-new"; printf 'Installed the helper, but could not remove its temporary bootstrap key. Remove it manually before retrying.\\n' >&2; exit 1; }
+fi
+ADMIN_UID="$(id -u "$ADMIN_NAME")"
+ADMIN_GID="$(id -g "$ADMIN_NAME")"
+chown "$ADMIN_UID:$ADMIN_GID" "$ADMIN_KEYS.polysiem-new"
+chmod 0600 "$ADMIN_KEYS.polysiem-new"
+mv "$ADMIN_KEYS.polysiem-new" "$ADMIN_KEYS"
 `;
 }
 
@@ -316,7 +345,9 @@ export interface EdgeApplyRule {
 }
 
 export interface EdgeApplyConfig {
+  /** Interface on which the published listener receives packets. */
   publicInterface: string;
+  /** Interface selected by the route to the DNAT target; it may equal publicInterface. */
   outboundInterface: string;
   enableIpForwarding: boolean;
   rules: EdgeApplyRule[];

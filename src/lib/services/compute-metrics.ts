@@ -1,11 +1,15 @@
 import "server-only";
 import { prisma } from "@/lib/db";
 import { toDriverConfig } from "@/lib/integrations/config";
-import { fetchProxmoxLiveMetrics } from "@/lib/integrations/proxmox/client";
+import {
+  fetchProxmoxLiveMetrics,
+  fetchProxmoxStoragePools,
+} from "@/lib/integrations/proxmox/client";
 import {
   summarizeComputeMetrics,
   type ComputeMetricsPayload,
   type ComputeResourceMetric,
+  type ComputeStoragePool,
 } from "@/lib/compute/metrics";
 
 /**
@@ -25,14 +29,22 @@ async function collectComputeMetrics(): Promise<ComputeMetricsPayload> {
     orderBy: { name: "asc" },
   });
   const resources: ComputeResourceMetric[] = [];
+  const pools: ComputeStoragePool[] = [];
   const errors: string[] = [];
 
   await Promise.all(
     integrations.map(async (integration) => {
+      const cfg = toDriverConfig(integration);
       try {
-        resources.push(...(await fetchProxmoxLiveMetrics(toDriverConfig(integration))));
+        resources.push(...(await fetchProxmoxLiveMetrics(cfg)));
       } catch (error) {
         errors.push(`${integration.name}: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+      try {
+        pools.push(...(await fetchProxmoxStoragePools(cfg)));
+      } catch {
+        // Storage totals are supplementary; node/guest metrics still stand.
       }
     }),
   );
@@ -40,7 +52,7 @@ async function collectComputeMetrics(): Promise<ComputeMetricsPayload> {
   resources.sort((a, b) => a.clusterName.localeCompare(b.clusterName) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
   return {
     capturedAt: new Date().toISOString(),
-    summary: summarizeComputeMetrics(resources),
+    summary: summarizeComputeMetrics(resources, pools),
     resources,
     errors,
   };

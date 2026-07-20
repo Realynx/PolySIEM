@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Globe, Plus } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listIps } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { SourceBadge } from "@/components/shared/badges";
@@ -21,14 +23,27 @@ import { ListCard } from "@/components/inventory/list-card";
 import { PaginationNav } from "@/components/inventory/pagination-nav";
 import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
+import { MobileIpsPage } from "@/components/mobile/pages/network/mobile-ips-page";
 
 export const metadata = { title: "IP addresses" };
 
 export default async function IpsPage({ searchParams }: { searchParams: Promise<PageSearchParams> }) {
   await requirePageUser();
   const query = parseListParams(await searchParams);
-  const { items, total } = await listIps(query);
+  const { items, total } = await anonymizeForDisplay(await listIps(query));
   const filtered = Boolean(query.q);
+
+  if (await isMobileView()) {
+    return (
+      <MobileIpsPage
+        items={items}
+        total={total}
+        page={query.page}
+        pageSize={query.pageSize}
+        filtered={filtered}
+      />
+    );
+  }
 
   const addButton = (
     <EntityFormDialog

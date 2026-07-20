@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { requirePageUser } from "@/lib/auth/guards";
+import { isMobileView } from "@/lib/device";
 import { getSwitch } from "@/lib/services/switches";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { expandVlanSpec } from "@/lib/switch/cisco";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
@@ -17,6 +19,7 @@ import {
 } from "@/components/ui/table";
 import { EntityLink, SectionCard } from "@/components/inventory/detail-bits";
 import { RawConfig } from "@/components/switches/raw-config";
+import { MobileSwitchDetail } from "@/components/mobile/pages/network-edge/mobile-switch-detail";
 import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -32,7 +35,7 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
-  const sw = await getSwitch(id).catch(() => null);
+  const sw = await anonymizeForDisplay(await getSwitch(id).catch(() => null));
   return { title: sw?.device.name ?? "Switch" };
 }
 
@@ -162,8 +165,9 @@ function PortChannelCard({ channel, members }: { channel: SwitchPort; members: S
 export default async function SwitchDetailPage({ params }: { params: Promise<{ id: string }> }) {
   await requirePageUser();
   const { id } = await params;
-  const sw = await getSwitch(id).catch(() => null);
-  if (!sw) notFound();
+  const found = await getSwitch(id).catch(() => null);
+  if (!found) notFound();
+  const sw = await anonymizeForDisplay(found);
 
   const portChannels = sw.ports.filter((p) => p.isPortChannel);
   const channelGroups = new Set(
@@ -180,6 +184,17 @@ export default async function SwitchDetailPage({ params }: { params: Promise<{ i
   const physicalPorts = sw.ports.filter(
     (p) => !p.isPortChannel && (p.channelGroup === null || !channelGroups.has(p.channelGroup)),
   );
+
+  if (await isMobileView()) {
+    return (
+      <MobileSwitchDetail
+        sw={sw}
+        portChannels={portChannels}
+        physicalPorts={physicalPorts}
+        membersOf={membersOf}
+      />
+    );
+  }
 
   return (
     <div>

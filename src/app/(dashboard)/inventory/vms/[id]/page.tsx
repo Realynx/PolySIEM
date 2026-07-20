@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { Pencil } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { getVm } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatBytes, formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { PowerBadge, SourceBadge, StatusBadge } from "@/components/shared/badges";
@@ -28,6 +29,8 @@ import {
 } from "@/components/inventory/sub-tables";
 import { TagPicker } from "@/components/inventory/tag-picker";
 import { DescriptionEditor } from "@/components/docs/description-editor";
+import { isMobileView } from "@/lib/device";
+import { MobileVmDetail } from "@/components/mobile/pages/inventory-detail/mobile-vm-detail";
 
 export async function generateMetadata({
   params,
@@ -36,14 +39,15 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   const vm = await getVm(id).catch(() => null);
-  return { title: vm?.name ?? "Virtual machine" };
+  return { title: vm ? await anonymizeForDisplay(vm.name) : "Virtual machine" };
 }
 
 export default async function VmDetailPage({ params }: { params: Promise<{ id: string }> }) {
   await requirePageUser();
   const { id } = await params;
-  const vm = await getVm(id).catch(() => null);
-  if (!vm) notFound();
+  const vmData = await getVm(id).catch(() => null);
+  if (!vmData) notFound();
+  const vm = await anonymizeForDisplay(vmData);
 
   const initial = {
     name: vm.name,
@@ -55,6 +59,10 @@ export default async function VmDetailPage({ params }: { params: Promise<{ id: s
     osName: vm.osName ?? "",
     description: vm.description ?? "",
   };
+
+  if (await isMobileView()) {
+    return <MobileVmDetail vm={vm} initial={initial} />;
+  }
 
   return (
     <div>

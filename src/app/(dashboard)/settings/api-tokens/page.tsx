@@ -1,6 +1,8 @@
 import { requirePageAdmin } from "@/lib/auth/guards";
 import { listApiTokens } from "@/lib/services/api-tokens";
+import { isMobileView } from "@/lib/device";
 import { ApiTokensManager, type ApiTokenView } from "@/components/settings/api-tokens-manager";
+import { MobileApiTokensSettingsPage } from "@/components/mobile/pages/settings/mobile-api-tokens";
 
 export const metadata = { title: "API tokens" };
 export const dynamic = "force-dynamic";
@@ -19,6 +21,10 @@ export default async function ApiTokensSettingsPage() {
     revokedAt: t.revokedAt?.toISOString() ?? null,
     username: t.user.username,
   }));
+
+  if (await isMobileView()) {
+    return <MobileApiTokensSettingsPage initialTokens={initialTokens} />;
+  }
 
   return <ApiTokensManager initialTokens={initialTokens} appUrl={process.env.APP_URL ?? ""} />;
 }

@@ -223,6 +223,9 @@ export const edgeNatSettingsSchema = z.object({
   authorizedKey: z.string().startsWith("restrict,command=").max(12_000).optional(),
   installScript: z.string().max(100_000).optional(),
   hostKeyFingerprint: z.string().startsWith("SHA256:").max(128).nullable().default(null),
+  // These describe traffic direction, not trusted/untrusted network zones.
+  // A public target reached through the server's WAN route legitimately uses
+  // the same Linux interface for both values (for example eth0 -> eth0).
   publicInterface: edgeInterfaceSchema.default("eth0"),
   outboundInterface: edgeInterfaceSchema.default("tailscale0"),
   enableIpForwarding: z.boolean().default(true),

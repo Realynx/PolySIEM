@@ -5,7 +5,6 @@ import { ApiError } from "@/lib/api";
 import { audit, type AuditActor } from "@/lib/audit";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { generateEd25519Keypair } from "@/lib/ssh/keys";
-import { buildEdgeAgentInstallScript, restrictedAuthorizedKey } from "@/lib/integrations/edge-nat/agent";
 import {
   elasticsearchSettingsSchema,
   elasticsearchCredentialsSchema,
@@ -134,8 +133,6 @@ export async function createIntegration(
                 ...(input.settings ?? {}),
                 publicKey: edgePair!.publicKeyLine,
                 publicKeyFingerprint: edgePair!.fingerprint,
-                authorizedKey: restrictedAuthorizedKey(edgePair!.publicKeyLine),
-                installScript: buildEdgeAgentInstallScript(edgePair!.publicKeyLine),
               })
             : undefined;
   try {

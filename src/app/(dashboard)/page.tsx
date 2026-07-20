@@ -22,11 +22,14 @@ import {
 } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { requirePageUser } from "@/lib/auth/guards";
+import { isMobileView } from "@/lib/device";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatBytes, formatRelative } from "@/lib/format";
 import { isLiveQueryType, type IntegrationTypeValue } from "@/lib/types";
 import { loadFootprintInput } from "@/lib/topology/footprint-data";
 import { deriveFootprint } from "@/lib/topology/footprint";
 import { FootprintMap } from "@/components/topology/footprint-map";
+import { MobileHome } from "@/components/mobile/pages/home/mobile-home";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { SyncStatusBadge } from "@/components/shared/badges";
@@ -64,7 +67,7 @@ export default async function DashboardHomePage() {
   const isAdmin = user.role === "ADMIN";
 
   const notRemoved = { status: { not: "REMOVED" as const } };
-  const [footprintInput, hosts, vms, containers, networks, services, docs, integrations, pools] =
+  const [footprintInput, hosts, vms, containers, networks, services, docs, rawIntegrations, rawPools] =
     await Promise.all([
       loadFootprintInput(),
       prisma.device.count({ where: notRemoved }),
@@ -91,8 +94,10 @@ export default async function DashboardHomePage() {
       }),
     ]);
 
-  const footprint = deriveFootprint(footprintInput);
+  const footprint = await anonymizeForDisplay(deriveFootprint(footprintInput));
   const hasFootprint = footprintInput.machines.length > 0;
+  const integrations = await anonymizeForDisplay(rawIntegrations);
+  const pools = await anonymizeForDisplay(rawPools);
 
   const tiles: StatTile[] = [
     { title: "Hosts", href: "/inventory/hosts", icon: Server, count: hosts },
@@ -111,6 +116,20 @@ export default async function DashboardHomePage() {
     })
     .sort((a, b) => b.pct - a.pct)
     .slice(0, 6);
+
+  if (await isMobileView()) {
+    return (
+      <MobileHome
+        tiles={tiles}
+        footprint={footprint}
+        hasFootprint={hasFootprint}
+        integrations={integrations}
+        integrationIcons={INTEGRATION_ICONS}
+        pools={topPools}
+        isAdmin={isAdmin}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">

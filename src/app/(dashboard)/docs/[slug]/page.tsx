@@ -5,6 +5,9 @@ import { notFound } from "next/navigation";
 import { FileText, Pencil } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { getDoc, listDocs } from "@/lib/services/docs";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
+import { MobileDocViewer } from "@/components/mobile/pages/docs/mobile-doc-viewer";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import {
@@ -29,7 +32,7 @@ export async function generateMetadata({
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const doc = await getDoc(slug).catch(() => null);
+  const doc = await anonymizeForDisplay(await getDoc(slug).catch(() => null));
   return {
     title: doc
       ? conciseChildTitle(doc.title, doc.parent?.title ?? "")
@@ -40,8 +43,9 @@ export async function generateMetadata({
 export default async function DocPage({ params }: { params: Promise<{ slug: string }> }) {
   await requirePageUser();
   const { slug } = await params;
-  const doc = await getDoc(slug).catch(() => null);
-  if (!doc) notFound();
+  const rawDoc = await getDoc(slug).catch(() => null);
+  if (!rawDoc) notFound();
+  const doc = await anonymizeForDisplay(rawDoc);
 
   // Breadcrumb chain: walk parentId links using the (single-query) full list.
   const all = await listDocs();
@@ -58,6 +62,9 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
     });
     cursor = parent.parentId;
   }
+  const crumbs = await anonymizeForDisplay(chain);
+
+  if (await isMobileView()) return <MobileDocViewer doc={doc} crumbs={crumbs} />;
 
   return (
     <div>
@@ -68,7 +75,7 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
               <Link href="/docs">Documentation</Link>
             </BreadcrumbLink>
           </BreadcrumbItem>
-          {chain.map((crumb) => (
+          {crumbs.map((crumb) => (
             <Fragment key={crumb.slug}>
               <BreadcrumbSeparator />
               <BreadcrumbItem>

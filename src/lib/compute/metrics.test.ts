@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { computeMetricKey, summarizeComputeMetrics, type ComputeResourceMetric } from "./metrics";
+import {
+  computeMetricKey,
+  summarizeComputeMetrics,
+  summarizeStoragePools,
+  type ComputeResourceMetric,
+  type ComputeStoragePool,
+} from "./metrics";
 
 function metric(partial: Partial<ComputeResourceMetric>): ComputeResourceMetric {
   return {
@@ -54,5 +60,54 @@ describe("compute metrics", () => {
       diskTotalBytes: 200,
     });
     expect(summary.cpuUsage).toBeCloseTo(1 / 3);
+  });
+});
+
+function pool(over: Partial<ComputeStoragePool> = {}): ComputeStoragePool {
+  return {
+    id: "storage/n1/local",
+    name: "local",
+    node: "n1",
+    shared: false,
+    usedBytes: 10,
+    totalBytes: 100,
+    ...over,
+  };
+}
+
+describe("summarizeStoragePools", () => {
+  it("sums node-local pools separately even when they share a name", () => {
+    expect(
+      summarizeStoragePools([
+        pool({ id: "storage/n1/local", node: "n1" }),
+        pool({ id: "storage/n2/local", node: "n2" }),
+      ]),
+    ).toEqual({ usedBytes: 20, totalBytes: 200 });
+  });
+
+  it("counts a shared pool once no matter how many nodes report it", () => {
+    expect(
+      summarizeStoragePools([
+        pool({ id: "storage/n1/ceph", name: "ceph", node: "n1", shared: true }),
+        pool({ id: "storage/n2/ceph", name: "ceph", node: "n2", shared: true }),
+        pool({ id: "storage/n3/ceph", name: "ceph", node: "n3", shared: true }),
+      ]),
+    ).toEqual({ usedBytes: 10, totalBytes: 100 });
+  });
+
+  it("skips pools with no usable capacity", () => {
+    expect(
+      summarizeStoragePools([
+        pool({ totalBytes: null }),
+        pool({ id: "storage/n2/x", totalBytes: 0 }),
+      ]),
+    ).toEqual({ usedBytes: 0, totalBytes: 0 });
+  });
+
+  it("counts capacity even when usage is unknown", () => {
+    expect(summarizeStoragePools([pool({ usedBytes: null })])).toEqual({
+      usedBytes: 0,
+      totalBytes: 100,
+    });
   });
 });

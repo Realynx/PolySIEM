@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { requirePageUser } from "@/lib/auth/guards";
+import { isMobileView } from "@/lib/device";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatRelative } from "@/lib/format";
 import { FirewallTrafficDashboard, type FirewallTrafficProvider } from "@/components/firewall/firewall-traffic-dashboard";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -21,6 +23,8 @@ import { SyncStatusBadge } from "@/components/shared/badges";
 import { SyncNowButton } from "@/components/integrations-sync/sync-now-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { MobilePage } from "@/components/mobile/ui/mobile-page";
+import { MobileFirewallOverview } from "@/components/mobile/pages/firewall/mobile-firewall-overview";
 
 export const metadata = { title: "Firewall" };
 
@@ -55,7 +59,7 @@ export default async function FirewallOverviewPage() {
   });
 
   if (integrations.length === 0) {
-    return (
+    const empty = (
       <EmptyState
         icon={Shield}
         title="No firewall integration configured"
@@ -63,9 +67,12 @@ export default async function FirewallOverviewPage() {
         action={<Button asChild><Link href="/settings/integrations">Add an integration</Link></Button>}
       />
     );
+    if (await isMobileView()) return <MobilePage>{empty}</MobilePage>;
+    return empty;
   }
 
-  const providers = await Promise.all(integrations.map(async (integration) => {
+  // Anonymize once after assembly — every displayed value below derives from `providers`.
+  const providers = await anonymizeForDisplay(await Promise.all(integrations.map(async (integration) => {
     const where = { integrationId: integration.id, status: { not: "REMOVED" as const } };
     const [byAction, byInterface, rules, aliasCount, leaseCount, networkCount, publishedPorts, unrestrictedPorts, gateways, trafficSampleCount] = await Promise.all([
       prisma.firewallRule.groupBy({ by: ["action"], where: { ...where, enabled: true }, _count: { _all: true } }),
@@ -101,7 +108,7 @@ export default async function FirewallOverviewPage() {
       gateways,
       trafficSampleCount,
     };
-  }));
+  })));
 
   const totals = providers.reduce((summary, provider) => ({
     actions: {
@@ -127,6 +134,21 @@ export default async function FirewallOverviewPage() {
   }
   const interfaces = [...interfaceTotals.entries()].map(([name, counts]) => ({ name, ...counts, total: counts.PASS + counts.BLOCK + counts.REJECT })).sort((a, b) => b.total - a.total).slice(0, 8);
   const maxInterfaceRules = Math.max(1, ...interfaces.map((iface) => iface.total));
+  if (await isMobileView()) {
+    return (
+      <MobileFirewallOverview
+        isAdmin={user.role === "ADMIN"}
+        providers={providers}
+        totals={totals}
+        totalRules={totalRules}
+        blockedRules={blockedRules}
+        interfaces={interfaces}
+        maxInterfaceRules={maxInterfaceRules}
+        providerName={providerName}
+      />
+    );
+  }
+
   const trafficProviders: FirewallTrafficProvider[] = providers.filter((provider) =>
     provider.integration.enabled && (provider.integration.type === "OPNSENSE" || provider.trafficSampleCount > 0),
   ).map((provider) => ({

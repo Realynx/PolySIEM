@@ -157,7 +157,7 @@ export function ChatDock() {
             type="button"
             onClick={() => setOpen(true)}
             aria-label="Ask PolySIEM (Ctrl+J)"
-            className="fixed right-4 bottom-4 z-40 flex size-11 items-center justify-center rounded-full border border-primary/20 bg-primary text-primary-foreground shadow-lg outline-none transition-transform hover:scale-105 focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none motion-reduce:hover:scale-100 print:hidden"
+            className="fixed right-4 bottom-[calc(1rem+var(--dock-offset,0px))] z-40 flex size-11 items-center justify-center rounded-full border border-primary/20 bg-primary text-primary-foreground shadow-lg outline-none transition-transform hover:scale-105 focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none motion-reduce:hover:scale-100 print:hidden"
           >
             <Sparkles className="size-5" aria-hidden />
           </button>
@@ -173,7 +173,7 @@ export function ChatDock() {
           className={cn(
             "gap-0 overflow-hidden p-0 data-[side=right]:w-full motion-reduce:transition-none data-[side=right]:sm:w-[420px] data-[side=right]:sm:max-w-[420px] sm:transition-[top,right,bottom,width,max-width,height,border-radius,transform,box-shadow] sm:duration-500 sm:ease-[cubic-bezier(0.22,1,0.36,1)] sm:will-change-[top,right,width,height,transform]",
             expanded &&
-              "sm:!top-1/2 sm:!right-1/2 sm:!bottom-auto sm:!h-[min(88svh,860px)] sm:!w-[min(900px,calc(100vw-3rem))] sm:!max-w-none sm:!translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-2xl sm:border sm:shadow-2xl sm:shadow-primary/10",
+              "sm:!top-1/2 sm:!right-1/2 sm:!bottom-auto sm:!h-[min(88svh,860px)] sm:!w-[min(900px,calc(100vw-3rem))] sm:!max-w-none sm:!translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-2xl sm:border sm:shadow-2xl sm:shadow-primary/10 no-gpu:sm:shadow-md",
           )}
         >
           <div

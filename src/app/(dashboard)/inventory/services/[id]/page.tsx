@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ExternalLink, Pencil } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { getService } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { SourceBadge, StatusBadge } from "@/components/shared/badges";
@@ -21,6 +22,8 @@ import {
 import { EntityFormDialog } from "@/components/inventory/entity-form-dialog";
 import { TagPicker } from "@/components/inventory/tag-picker";
 import { DescriptionEditor } from "@/components/docs/description-editor";
+import { isMobileView } from "@/lib/device";
+import { MobileServiceDetail } from "@/components/mobile/pages/inventory-detail/mobile-service-detail";
 
 function cloudflareEvidence(metadata: unknown) {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
@@ -44,14 +47,15 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   const svc = await getService(id).catch(() => null);
-  return { title: svc?.name ?? "Service" };
+  return { title: svc ? await anonymizeForDisplay(svc.name) : "Service" };
 }
 
 export default async function ServiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
   await requirePageUser();
   const { id } = await params;
-  const svc = await getService(id).catch(() => null);
-  if (!svc) notFound();
+  const svcData = await getService(id).catch(() => null);
+  if (!svcData) notFound();
+  const svc = await anonymizeForDisplay(svcData);
   const evidence = cloudflareEvidence(svc.metadata);
 
   const initial = {
@@ -64,6 +68,10 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
     containerId: svc.container?.id ?? "",
     description: svc.description ?? "",
   };
+
+  if (await isMobileView()) {
+    return <MobileServiceDetail svc={svc} evidence={evidence} initial={initial} />;
+  }
 
   return (
     <div>

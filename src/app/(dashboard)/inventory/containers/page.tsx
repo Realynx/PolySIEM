@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Container, Plus } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listContainers } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
 import { formatBytes } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -25,6 +27,7 @@ import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { TagList } from "@/components/inventory/tag-badge";
 import { ProvisionContainerDialog } from "@/components/inventory/provision-container-dialog";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
+import { MobileContainersPage } from "@/components/mobile/pages/inventory/mobile-containers-page";
 
 export const metadata = { title: "Containers" };
 
@@ -35,7 +38,8 @@ export default async function ContainersPage({
 }) {
   const { user } = await requirePageUser();
   const query = parseListParams(await searchParams);
-  const { items, total } = await listContainers(query);
+  const { items, total } = await anonymizeForDisplay(await listContainers(query));
+  if (await isMobileView()) return <MobileContainersPage items={items} total={total} query={query} />;
   const filtered = Boolean(query.q || query.source);
 
   const addButton = (

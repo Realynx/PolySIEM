@@ -1,7 +1,9 @@
 import { prisma } from "@/lib/db";
 import { requirePageUser } from "@/lib/auth/guards";
+import { isMobileView } from "@/lib/device";
 import { PageHeader } from "@/components/shared/page-header";
 import { ProfileForms } from "@/components/settings/profile-forms";
+import { MobileSettingsSubpage } from "@/components/mobile/pages/settings/settings-subpage";
 
 export const metadata = { title: "Profile" };
 export const dynamic = "force-dynamic";
@@ -12,6 +14,18 @@ export default async function ProfileSettingsPage() {
     where: { id: user.id },
     select: { encryptedOtxKey: true },
   });
+
+  if (await isMobileView()) {
+    return (
+      <MobileSettingsSubpage title="Profile">
+        <ProfileForms
+          username={user.username}
+          initialDisplayName={user.displayName ?? ""}
+          hasOtxKey={Boolean(row?.encryptedOtxKey)}
+        />
+      </MobileSettingsSubpage>
+    );
+  }
 
   return (
     <div>

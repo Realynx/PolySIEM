@@ -4,6 +4,7 @@ import { fetchJson, HttpError } from "../http";
 import {
   computeMetricKey,
   type ComputeResourceMetric,
+  type ComputeStoragePool,
 } from "@/lib/compute/metrics";
 import {
   emptyPveClusterFirewall,
@@ -134,6 +135,17 @@ interface RawClusterResource {
   uptime?: number | string;
 }
 
+interface RawStorageResource {
+  id?: string;
+  type?: string;
+  node?: string;
+  storage?: string;
+  status?: string;
+  shared?: number | boolean;
+  disk?: number | string;
+  maxdisk?: number | string;
+}
+
 interface RawGuestListItem {
   vmid: number | string;
   name?: string;
@@ -237,6 +249,39 @@ export async function fetchProxmoxLiveMetrics(cfg: DriverConfig): Promise<Comput
       diskUsedBytes: liveNumber(row.disk),
       diskTotalBytes: liveNumber(row.maxdisk),
       uptimeSec: liveNumber(row.uptime),
+    }];
+  });
+}
+
+/**
+ * Backing storage pools for the whole cluster in one call. Node rows only carry
+ * their root filesystem, so this is the only source of real lab capacity.
+ * Unavailable pools are skipped — Proxmox reports them with a stale maxdisk.
+ */
+export async function fetchProxmoxStoragePools(cfg: DriverConfig): Promise<ComputeStoragePool[]> {
+  if (isMock(cfg)) {
+    const { generateDemoScenarioFromUrl } = await import("@/lib/demo/scenario");
+    return generateDemoScenarioFromUrl(cfg.baseUrl).proxmox.storage.map((pool) => ({
+      id: `storage/${pool.node}/${pool.name}`,
+      name: pool.name,
+      node: pool.node,
+      shared: pool.shared,
+      usedBytes: pool.usedBytes === null ? null : Number(pool.usedBytes),
+      totalBytes: pool.totalBytes === null ? null : Number(pool.totalBytes),
+    }));
+  }
+
+  const rows = await pveGet<RawStorageResource[]>(cfg, "/cluster/resources?type=storage");
+  return rows.flatMap((row): ComputeStoragePool[] => {
+    const name = row.storage;
+    if (!name || (row.status && row.status !== "available")) return [];
+    return [{
+      id: row.id ?? `storage/${row.node ?? "cluster"}/${name}`,
+      name,
+      node: row.node ?? null,
+      shared: row.shared === 1 || row.shared === true,
+      usedBytes: liveNumber(row.disk),
+      totalBytes: liveNumber(row.maxdisk),
     }];
   });
 }

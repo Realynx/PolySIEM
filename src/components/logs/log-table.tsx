@@ -27,8 +27,9 @@ export function LogTable({ entries }: { entries: LogEntry[] }) {
         <TableBody>
           {entries.map((entry, i) => {
             const expanded = expandedId === entry.id;
+            // _id is only unique per index and the query spans several.
             return (
-              <Fragment key={entry.id}>
+              <Fragment key={`${entry.index}:${entry.id}`}>
                 <TableRow
                   role="button"
                   tabIndex={0}

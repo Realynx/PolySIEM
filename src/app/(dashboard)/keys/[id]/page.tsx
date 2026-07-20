@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { requirePageUser } from "@/lib/auth/guards";
+import { isMobileView } from "@/lib/device";
 import { prisma } from "@/lib/db";
 import { getSshKey } from "@/lib/services/ssh-keys";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { buildInstallScripts } from "@/lib/ssh/keys";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
@@ -15,6 +17,7 @@ import { DeploymentsCard, type DeploymentRow } from "@/components/ssh/deployment
 import { EditKeyDialog } from "@/components/ssh/edit-key-dialog";
 import { InstallCard, type PveVmOption } from "@/components/ssh/install-card";
 import { keyTypeLabel } from "@/components/ssh/key-type";
+import { MobileSshKeyDetail } from "@/components/mobile/pages/security/mobile-ssh-key-detail";
 
 export async function generateMetadata({
   params,
@@ -22,7 +25,7 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
-  const key = await getSshKey(id).catch(() => null);
+  const key = await anonymizeForDisplay(await getSshKey(id).catch(() => null));
   return { title: key?.name ?? "SSH key" };
 }
 
@@ -60,17 +63,31 @@ export default async function SshKeyDetailPage({ params }: { params: Promise<{ i
     });
 
   const scripts = buildInstallScripts(key.publicKey);
-  const deployments: DeploymentRow[] = key.deployments.map((d) => ({
-    id: d.id,
-    entityType: d.entityType,
-    username: d.username,
-    method: d.method,
-    notes: d.notes,
-    hostLabel: d.hostLabel,
-    device: d.device,
-    vm: d.vm,
-    container: d.container,
-  }));
+  const deployments: DeploymentRow[] = await anonymizeForDisplay(
+    key.deployments.map((d) => ({
+      id: d.id,
+      entityType: d.entityType,
+      username: d.username,
+      method: d.method,
+      notes: d.notes,
+      hostLabel: d.hostLabel,
+      device: d.device,
+      vm: d.vm,
+      container: d.container,
+    })),
+  );
+
+  if (await isMobileView()) {
+    return (
+      <MobileSshKeyDetail
+        keyRow={key}
+        deployments={deployments}
+        options={{ devices, vms, containers }}
+        scripts={scripts}
+        pveVms={pveVms}
+      />
+    );
+  }
 
   return (
     <div>

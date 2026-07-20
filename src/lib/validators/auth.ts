@@ -47,6 +47,9 @@ export const updateProfileSchema = z.object({
   displayName: z.string().max(64).nullish(),
   themeColor: z.enum(["blue", "emerald", "violet", "amber", "rose"]).optional(),
   themeMode: z.enum(["light", "dark", "system"]).optional(),
+  anonymousMode: z.boolean().optional(),
+  shieldOnCapture: z.boolean().optional(),
+  shieldOnBlur: z.boolean().optional(),
   currentPassword: z.string().optional(),
   newPassword: passwordSchema.optional(),
 });

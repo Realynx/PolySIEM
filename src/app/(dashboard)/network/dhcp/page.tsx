@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Wifi } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listDhcpLeases, listNetworkNeighbors } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -21,6 +23,7 @@ import { ListCard } from "@/components/inventory/list-card";
 import { PaginationNav } from "@/components/inventory/pagination-nav";
 import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
+import { MobileClientsPage } from "@/components/mobile/pages/network/mobile-clients-page";
 
 export const metadata = { title: "Network clients" };
 
@@ -45,7 +48,9 @@ export default async function NetworkClientsPage({ searchParams }: { searchParam
   const { user } = await requirePageUser();
   const query = parseListParams(await searchParams);
   const q = query.q?.toLowerCase().trim() ?? "";
-  const [leases, neighbors] = await Promise.all([listDhcpLeases(), listNetworkNeighbors()]);
+  const [leases, neighbors] = await anonymizeForDisplay(
+    await Promise.all([listDhcpLeases(), listNetworkNeighbors()]),
+  );
 
   // One row per address: DHCP leases first (they know static vs dynamic),
   // enriched with the ARP table's manufacturer; everything else the firewall
@@ -97,6 +102,19 @@ export default async function NetworkClientsPage({ searchParams }: { searchParam
     : clients;
   const total = matched.length;
   const items = matched.slice((query.page - 1) * query.pageSize, query.page * query.pageSize);
+
+  if (await isMobileView()) {
+    return (
+      <MobileClientsPage
+        items={items}
+        total={total}
+        page={query.page}
+        pageSize={query.pageSize}
+        hasClients={clients.length > 0}
+        isAdmin={user.role === "ADMIN"}
+      />
+    );
+  }
 
   return (
     <div>

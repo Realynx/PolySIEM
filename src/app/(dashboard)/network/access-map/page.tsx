@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Waypoints } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { prisma } from "@/lib/db";
+import { isMobileView } from "@/lib/device";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { deriveAccessGraph } from "@/lib/topology/access";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -28,6 +30,7 @@ import {
   type NetworkMember,
   type NetworkWifi,
 } from "@/components/topology/network-access-map";
+import { MobileAccessMap } from "@/components/mobile/pages/maps/mobile-access-map";
 
 export const dynamic = "force-dynamic";
 
@@ -637,6 +640,45 @@ export default async function AccessMapPage() {
         )
       : null;
 
+  // Anonymize the final assembled map payload once, at the render boundary.
+  const display = await anonymizeForDisplay({
+    graph,
+    members,
+    carriers,
+    wireless,
+    wifiAps: wifiApNodes,
+    switches: switchNodes,
+    cloudflare: cloudflareAccounts,
+    tailscale,
+    pve,
+  });
+
+  if (await isMobileView()) {
+    return (
+      <MobileAccessMap
+        graph={display.graph}
+        members={display.members}
+        carriers={display.carriers}
+        wireless={display.wireless}
+        wifiAps={display.wifiAps}
+        switches={display.switches}
+        cloudflare={display.cloudflare}
+        tailscale={display.tailscale}
+        pve={display.pve}
+        pveHomeNetworkId={homeNetworkId ?? null}
+        evidence={integrationEvidence}
+        hasSwitchConfigs={switchConfigs.length > 0}
+        empty={
+          rules.length === 0 &&
+          groupRuleInputs.length === 0 &&
+          cloudflareAccounts.length === 0 &&
+          tailscale.length === 0
+        }
+        isAdmin={user.role === "ADMIN"}
+      />
+    );
+  }
+
   return (
     <div>
       <PageHeader
@@ -669,15 +711,15 @@ export default async function AccessMapPage() {
         />
       ) : (
         <NetworkAccessMap
-          graph={graph}
-          members={members}
-          carriers={carriers}
-          wireless={wireless}
-          wifiAps={wifiApNodes}
-          switches={switchNodes}
-          cloudflare={cloudflareAccounts}
-          tailscale={tailscale}
-          pve={pve}
+          graph={display.graph}
+          members={display.members}
+          carriers={display.carriers}
+          wireless={display.wireless}
+          wifiAps={display.wifiAps}
+          switches={display.switches}
+          cloudflare={display.cloudflare}
+          tailscale={display.tailscale}
+          pve={display.pve}
           pveHomeNetworkId={homeNetworkId ?? null}
         />
       )}

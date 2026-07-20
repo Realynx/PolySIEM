@@ -10,7 +10,16 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, fixed from login
 
 export type SessionUser = Pick<
   User,
-  "id" | "username" | "displayName" | "role" | "themeColor" | "themeMode" | "disabled"
+  | "id"
+  | "username"
+  | "displayName"
+  | "role"
+  | "themeColor"
+  | "themeMode"
+  | "anonymousMode"
+  | "shieldOnCapture"
+  | "shieldOnBlur"
+  | "disabled"
 >;
 
 export interface SessionInfo {
@@ -53,6 +62,9 @@ export async function validateSessionToken(token: string): Promise<SessionInfo |
           role: true,
           themeColor: true,
           themeMode: true,
+          anonymousMode: true,
+          shieldOnCapture: true,
+          shieldOnBlur: true,
           disabled: true,
         },
       },

@@ -19,6 +19,21 @@ export interface ComputeResourceMetric {
   uptimeSec: number | null;
 }
 
+/**
+ * A backing storage pool (Proxmox `type=storage`). Kept separate from
+ * ComputeResourceMetric so pools never land in node/workload counts.
+ */
+export interface ComputeStoragePool {
+  /** Cluster-unique row id, e.g. "storage/zen/local". */
+  id: string;
+  /** Pool name, shared across nodes when `shared` is true, e.g. "local". */
+  name: string;
+  node: string | null;
+  shared: boolean;
+  usedBytes: number | null;
+  totalBytes: number | null;
+}
+
 export interface ComputeMetricSummary {
   clusters: number;
   nodesOnline: number;
@@ -32,6 +47,9 @@ export interface ComputeMetricSummary {
   memoryTotalBytes: number;
   diskUsedBytes: number;
   diskTotalBytes: number;
+  /** Backing pool capacity — the real lab storage, not node root filesystems. */
+  storageUsedBytes: number;
+  storageTotalBytes: number;
 }
 
 export interface ComputeMetricsPayload {
@@ -49,8 +67,35 @@ function finite(value: number | null): value is number {
   return value !== null && Number.isFinite(value);
 }
 
+/**
+ * Sum pool capacity, counting each pool once. A `shared` pool (Ceph, NFS) is
+ * reported by every node that can see it, so it is keyed by name; node-local
+ * pools are keyed by their per-node row id.
+ */
+export function summarizeStoragePools(
+  pools: readonly ComputeStoragePool[],
+): { usedBytes: number; totalBytes: number } {
+  const seen = new Set<string>();
+  let usedBytes = 0;
+  let totalBytes = 0;
+
+  for (const pool of pools) {
+    if (!finite(pool.totalBytes) || pool.totalBytes <= 0) continue;
+    const key = pool.shared ? `shared:${pool.name}` : pool.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    totalBytes += pool.totalBytes;
+    if (finite(pool.usedBytes)) usedBytes += pool.usedBytes;
+  }
+
+  return { usedBytes, totalBytes };
+}
+
 /** Aggregate cluster totals from node metrics without double-counting guests. */
-export function summarizeComputeMetrics(resources: readonly ComputeResourceMetric[]): ComputeMetricSummary {
+export function summarizeComputeMetrics(
+  resources: readonly ComputeResourceMetric[],
+  pools: readonly ComputeStoragePool[] = [],
+): ComputeMetricSummary {
   const nodes = resources.filter((resource) => resource.kind === "node");
   const workloads = resources.filter((resource) => resource.kind !== "node");
   let cpuUsedCores = 0;
@@ -71,6 +116,8 @@ export function summarizeComputeMetrics(resources: readonly ComputeResourceMetri
     if (finite(node.diskTotalBytes)) diskTotalBytes += node.diskTotalBytes;
   }
 
+  const storage = summarizeStoragePools(pools);
+
   return {
     clusters: new Set(resources.map((resource) => resource.integrationId)).size,
     nodesOnline: nodes.filter((node) => node.status === "online").length,
@@ -84,5 +131,7 @@ export function summarizeComputeMetrics(resources: readonly ComputeResourceMetri
     memoryTotalBytes,
     diskUsedBytes,
     diskTotalBytes,
+    storageUsedBytes: storage.usedBytes,
+    storageTotalBytes: storage.totalBytes,
   };
 }

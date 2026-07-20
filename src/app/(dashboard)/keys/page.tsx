@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { KeyRound } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
+import { isMobileView } from "@/lib/device";
 import { listSshKeys } from "@/lib/services/ssh-keys";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -15,6 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ListCard } from "@/components/inventory/list-card";
+import { MobileSshKeys } from "@/components/mobile/pages/security/mobile-ssh-keys";
 import { AddKeyDialog } from "@/components/ssh/add-key-dialog";
 import { GenerateKeyDialog } from "@/components/ssh/generate-key-dialog";
 import { DeleteKeyButton } from "@/components/ssh/delete-key-button";
@@ -27,7 +30,8 @@ export const metadata = { title: "SSH keys" };
 
 export default async function SshKeysPage() {
   await requirePageUser();
-  const keys = await listSshKeys();
+  const keys = await anonymizeForDisplay(await listSshKeys());
+  if (await isMobileView()) return <MobileSshKeys keys={keys} />;
 
   const actions = (
     <>

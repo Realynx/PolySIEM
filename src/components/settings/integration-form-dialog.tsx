@@ -177,7 +177,9 @@ function emptyForm(integration: IntegrationView | null): FormState {
     securityTrailsApiKey: "",
     securityTrailsAiDailyCallLimit: securityTrailsAiDailyLimit(integration?.settings),
     edgePublicInterface: (integration?.settings?.publicInterface as string | undefined) ?? "eth0",
-    edgeOutboundInterface: (integration?.settings?.outboundInterface as string | undefined) ?? "tailscale0",
+    edgeOutboundInterface: integration
+      ? (integration.settings?.outboundInterface as string | undefined) ?? "tailscale0"
+      : "eth0",
     edgeEnableIpForwarding: (integration?.settings?.enableIpForwarding as boolean | undefined) ?? true,
   };
 }
@@ -401,12 +403,12 @@ const SETUP_GUIDES: Record<IntegrationTypeValue, { title: string; intro: string;
     ],
   },
   EDGE_NAT_SERVER: {
-    title: "A restricted key is created for you",
-    intro: "PolySIEM generates a dedicated Ed25519 key after you save this connection. The private half stays encrypted inside PolySIEM.",
+    title: "PolySIEM installs the restricted service for you",
+    intro: "PolySIEM generates a dedicated Ed25519 key after you save. Its private half stays encrypted inside PolySIEM.",
     steps: [
-      <span key="create">Enter the remote server&apos;s SSH address and the two interfaces PolySIEM should manage.</span>,
-      <span key="install">After saving, open <strong>Network → Edge networks</strong> and copy the generated installer to the server. It creates a non-root <code>polysiem-edge</code> account with a forced, NAT-only command.</span>,
-      <span key="verify">Compare the scanned SSH host-key fingerprint with the server console before you trust it. PolySIEM refuses future connections if that identity changes.</span>,
+      <span key="create">Enter the remote server&apos;s SSH address and traffic path. A one-interface WAN proxy can use the same interface in both directions.</span>,
+      <span key="install">After saving, open <strong>Network → Edge networks</strong>. Run one short command while signed in with your existing SSH administrator, then PolySIEM connects and installs the service automatically.</span>,
+      <span key="verify">Compare the scanned SSH host-key fingerprint with the server console before installation. PolySIEM removes its temporary admin authorization and keeps only a forced, NAT-only service account.</span>,
     ],
   },
   UNIFI: {
@@ -609,7 +611,7 @@ const INTEGRATION_FORM_META: Record<
     namePlaceholder: "e.g. New York edge gateway",
     urlLabel: "Edge server SSH address",
     urlPlaceholder: "ssh://edge.example.com:22",
-    urlHint: "Use an address reachable from PolySIEM. The SSH user is fixed to the restricted polysiem-edge service account.",
+    urlHint: "Use an address reachable from PolySIEM. You will provide your existing SSH administrator only during setup; it is not saved.",
     credentialsTitle: "Generated SSH key",
     credentialsHint: "There is nothing to paste. PolySIEM creates the key after you save the integration.",
     icon: Router,
@@ -722,6 +724,9 @@ export function IntegrationFormDialog({
   const originalUsesMock =
     integration?.baseUrl.trim().toLowerCase().startsWith("mock://") === true;
   const changingMockToLive = isEdit && originalUsesMock && !usingMock;
+  const edgeUsesSingleInterface =
+    form.edgePublicInterface.trim() !== "" &&
+    form.edgePublicInterface.trim() === form.edgeOutboundInterface.trim();
 
   // Re-seed the form whenever the dialog opens for a (different) target.
   useEffect(() => {
@@ -785,7 +790,7 @@ export function IntegrationFormDialog({
       };
       const edgeNatSettings = {
         publicInterface: form.edgePublicInterface.trim() || "eth0",
-        outboundInterface: form.edgeOutboundInterface.trim() || "tailscale0",
+        outboundInterface: form.edgeOutboundInterface.trim() || form.edgePublicInterface.trim() || "eth0",
         enableIpForwarding: form.edgeEnableIpForwarding,
       };
       const censysSettings = {
@@ -1397,34 +1402,68 @@ export function IntegrationFormDialog({
             {form.type === "EDGE_NAT_SERVER" && (
               <div className="space-y-4 rounded-md border p-3">
                 <div className="space-y-0.5">
-                  <p className="text-sm font-medium">NAT boundary</p>
+                  <p className="text-sm font-medium">Edge NAT traffic path</p>
                   <p className="text-xs text-muted-foreground">
-                    These interface names are allowlisted in the generated helper. You can change them later before applying rules.
+                    The SSH edge server can forward back out through the same WAN interface or through a separate tunnel interface.
                   </p>
                 </div>
                 {!isEdit && <SetupGuide type="EDGE_NAT_SERVER" />}
+                <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="edge-single-interface">Use one interface for both directions</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Choose this for a one-arm NAT proxy where traffic arrives on the WAN interface and is forwarded to a public target through that same WAN interface.
+                    </p>
+                  </div>
+                  <Switch
+                    id="edge-single-interface"
+                    checked={edgeUsesSingleInterface}
+                    onCheckedChange={(checked) => setForm((current) => ({
+                      ...current,
+                      edgeOutboundInterface: checked
+                        ? current.edgePublicInterface
+                        : current.edgeOutboundInterface.trim() === current.edgePublicInterface.trim()
+                          ? "tailscale0"
+                          : current.edgeOutboundInterface,
+                    }))}
+                  />
+                </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="grid gap-2">
-                    <Label htmlFor="edge-public-interface">Public interface</Label>
+                    <Label htmlFor="edge-public-interface">Listener interface</Label>
                     <Input
                       id="edge-public-interface"
                       value={form.edgePublicInterface}
-                      onChange={(event) => set("edgePublicInterface", event.target.value)}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setForm((current) => ({
+                          ...current,
+                          edgePublicInterface: value,
+                          ...(current.edgePublicInterface.trim() === current.edgeOutboundInterface.trim()
+                            ? { edgeOutboundInterface: value }
+                            : {}),
+                        }));
+                      }}
                       placeholder="eth0"
                       required
                     />
-                    <p className="text-xs text-muted-foreground">Receives internet traffic on the edge server.</p>
+                    <p className="text-xs text-muted-foreground">Receives connections sent to the edge server&apos;s public address.</p>
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="edge-outbound-interface">Private-path interface</Label>
+                    <Label htmlFor="edge-outbound-interface">Target-path interface</Label>
                     <Input
                       id="edge-outbound-interface"
                       value={form.edgeOutboundInterface}
                       onChange={(event) => set("edgeOutboundInterface", event.target.value)}
-                      placeholder="tailscale0"
+                      placeholder={edgeUsesSingleInterface ? form.edgePublicInterface || "eth0" : "tailscale0"}
+                      disabled={edgeUsesSingleInterface}
                       required
                     />
-                    <p className="text-xs text-muted-foreground">Usually <code>tailscale0</code>, or another tunnel toward the lab.</p>
+                    <p className="text-xs text-muted-foreground">
+                      {edgeUsesSingleInterface
+                        ? <>Same WAN interface as the listener; suitable when the target is reached through the public Internet.</>
+                        : <>Use <code>tailscale0</code> or another tunnel only when that interface leads toward the target.</>}
+                    </p>
                   </div>
                 </div>
                 <div className="flex items-center justify-between gap-3 rounded-md border p-3">

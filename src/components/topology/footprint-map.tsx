@@ -1583,6 +1583,7 @@ export function FootprintMap({
   heightClassName,
   storageKey = "polysiem:footprint:positions:v12",
   initialFocusId = null,
+  chromeless = false,
 }: {
   graph: FootprintGraph;
   heightClassName?: string;
@@ -1590,6 +1591,8 @@ export function FootprintMap({
   storageKey?: string;
   /** Node or edge to persistently spotlight on the first render. */
   initialFocusId?: string | null;
+  /** Hide the desktop overlays (stat chips, refresh control, legend) for embedded/phone use. */
+  chromeless?: boolean;
 }) {
   const router = useRouter();
   const draggingRef = useRef(false);
@@ -1900,6 +1903,7 @@ export function FootprintMap({
       heightClassName={heightClassName ?? "h-[clamp(600px,72vh,820px)]"}
     >
       {/* Attack-surface summary */}
+      {!chromeless && (
       <div className="absolute left-3 top-3 z-10 flex flex-wrap gap-1.5">
         <LiveRefreshControl
           value={refreshMs}
@@ -1947,7 +1951,9 @@ export function FootprintMap({
           />
         )}
       </div>
+      )}
 
+      {!chromeless && (
       <MapLegend
         className="w-56"
         onResetLayout={clearPositions}
@@ -2043,6 +2049,7 @@ export function FootprintMap({
           </p>
         )}
       </MapLegend>
+      )}
       {selectedDetail && (
         <EdgeDetails
           detail={selectedDetail}

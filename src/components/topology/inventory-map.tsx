@@ -183,7 +183,19 @@ function LabMapMetrics({
   );
 }
 
-export function InventoryMap({ hosts, uplinks = [] }: { hosts: MapHost[]; uplinks?: MapUplink[] }) {
+export function InventoryMap({
+  hosts,
+  uplinks = [],
+  chromeless = false,
+  heightClassName,
+}: {
+  hosts: MapHost[];
+  uplinks?: MapUplink[];
+  /** Hide the desktop overlays (metrics strip, legend) for embedded/phone use. */
+  chromeless?: boolean;
+  /** Height utilities forwarded to the canvas card (default: desktop sizing). */
+  heightClassName?: string;
+}) {
   const [refreshMs, setRefreshMs] = useRefreshInterval();
   const live = useComputeMetrics(true, refreshMs);
   const metricByKey = useMemo(
@@ -233,8 +245,12 @@ export function InventoryMap({ hosts, uplinks = [] }: { hosts: MapHost[]; uplink
       onNodeDragStop={(_event, node) => savePosition(node.id, node.position)}
       fitPadding={0.08}
       edgesFocusable={false}
+      heightClassName={heightClassName}
     >
-      <LabMapMetrics data={live} refreshMs={refreshMs} onRefreshMsChange={setRefreshMs} />
+      {!chromeless && (
+        <LabMapMetrics data={live} refreshMs={refreshMs} onRefreshMsChange={setRefreshMs} />
+      )}
+      {!chromeless && (
       <MapLegend className="w-48" onResetLayout={clearPositions} hasSaved={hasSaved}>
         <ul className="space-y-1.5 text-xs text-muted-foreground">
           <li className="flex items-center gap-2">
@@ -256,6 +272,7 @@ export function InventoryMap({ hosts, uplinks = [] }: { hosts: MapHost[]; uplink
           <li className="pt-0.5 text-[11px]">Click a card header or guest chip to open it.</li>
         </ul>
       </MapLegend>
+      )}
     </TopologyCanvas>
   );
 }

@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Box, ExternalLink, Plus } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listServices } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { SourceBadge, StatusBadge } from "@/components/shared/badges";
@@ -20,6 +22,7 @@ import { PaginationNav } from "@/components/inventory/pagination-nav";
 import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { TagList } from "@/components/inventory/tag-badge";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
+import { MobileServicesPage } from "@/components/mobile/pages/inventory/mobile-services-page";
 
 export const metadata = { title: "Services" };
 
@@ -30,7 +33,8 @@ export default async function ServicesPage({
 }) {
   await requirePageUser();
   const query = parseListParams(await searchParams);
-  const { items, total } = await listServices(query);
+  const { items, total } = await anonymizeForDisplay(await listServices(query));
+  if (await isMobileView()) return <MobileServicesPage items={items} total={total} query={query} />;
   const filtered = Boolean(query.q || query.source);
 
   const addButton = (

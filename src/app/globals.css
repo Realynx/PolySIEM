@@ -3,6 +3,8 @@
 @import "shadcn/tailwind.css";
 
 @custom-variant dark (&:is(.dark *));
+/* Opt a single element out of an effect when the global overrides are too blunt. */
+@custom-variant no-gpu (&:is(.no-gpu *));
 
 @theme inline {
   --color-background: var(--background);
@@ -414,5 +416,117 @@
   }
   ::-webkit-scrollbar-thumb:hover {
     background-color: var(--scrollbar-thumb-hover);
+  }
+}
+
+/*
+ * Privacy shield. The class is added to <html> synchronously inside raw event
+ * handlers (blur/visibilitychange/PrintScreen/capture detection) so the blur
+ * lands before any React re-render. No transition on purpose: engagement must
+ * be instant. The [data-privacy-overlay] portal (shield notice + status chip)
+ * is exempted so it stays readable above the blurred app.
+ */
+html.privacy-shield body > *:not([data-privacy-overlay]) {
+  filter: blur(16px);
+  pointer-events: none;
+  user-select: none;
+}
+
+/*
+ * Reduced-effects mode. The class is set on <html> when the GPU probe reports a
+ * software rasterizer (see @/lib/render/hardware-accel) — SSR'd from a cookie on
+ * repeat visits, so degraded pages never paint the expensive version first.
+ *
+ * Overrides live here rather than in each component because the costly
+ * properties are few and global: backdrop-filter and large blur radii
+ * re-rasterize a big area every frame without a GPU. Small shadows, colour
+ * transitions and transform-only animations (spinners) are deliberately left
+ * alone — they rasterize cheaply and carry most of the polish.
+ */
+html.no-gpu *,
+html.no-gpu *::before,
+html.no-gpu *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  /* Layer promotion buys nothing when compositing happens on the CPU. */
+  will-change: auto !important;
+}
+
+/*
+ * Overlays leaned on the blur to separate the modal from the page; a 10% scrim
+ * alone reads as a glitch. Deepen it to carry the separation on its own.
+ */
+html.no-gpu [data-slot="dialog-overlay"],
+html.no-gpu [data-slot="sheet-overlay"],
+html.no-gpu [data-slot="alert-dialog-overlay"] {
+  background-color: color-mix(in oklab, black 32%, transparent);
+}
+
+/*
+ * The login aurora is three circles up to 34rem wide at blur(80px), each on an
+ * infinite drift animation — the most expensive construct in the app, on the
+ * first screen anyone sees. A radial gradient fades out at the edge the way the
+ * blur did, paints once, and keeps each blob's colour.
+ */
+html.no-gpu .login-blob {
+  filter: none;
+  animation: none;
+}
+html.no-gpu .login-blob-1 {
+  background: radial-gradient(circle, var(--primary) 0%, transparent 70%);
+}
+html.no-gpu .login-blob-2 {
+  background: radial-gradient(circle, var(--chart-3) 0%, transparent 70%);
+}
+html.no-gpu .login-blob-3 {
+  background: radial-gradient(circle, var(--chart-2) 0%, transparent 70%);
+}
+
+/* Animates box-shadow — a full repaint every frame, forever. */
+html.no-gpu .login-logo-badge {
+  animation: none;
+}
+
+/* Every <Skeleton> bakes this in; a dashboard route change mounts ~18 at once. */
+html.no-gpu .animate-pulse {
+  animation: none;
+}
+
+/*
+ * Phone view. The class is SSR'd on <html> by the root layout (UA sniff +
+ * override cookie — see lib/device.ts) so mobile-only rules never flash. The
+ * mobile component tree lives in src/components/mobile/.
+ */
+html.mobile-view {
+  /* Native-app feel: no grey tap flash; keep our type scale under font boosting. */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Lifts the AI chat launcher above the bottom tab bar (chat-dock reads it). */
+  --dock-offset: calc(3.5rem + env(safe-area-inset-bottom));
+}
+
+/* React Flow chrome on phones: the minimap covers half the canvas at 412px,
+ * and the zoom controls are too small for thumbs. */
+html.mobile-view .react-flow__minimap {
+  display: none;
+}
+html.mobile-view .react-flow__controls button {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+/* Horizontal scrollers on touch UIs hide the bar; content still scrolls. */
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
   }
 }

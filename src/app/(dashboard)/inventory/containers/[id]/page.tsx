@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { Pencil } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { getContainer } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatBytes, formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import {
@@ -35,6 +36,8 @@ import { DescriptionEditor } from "@/components/docs/description-editor";
 import { FocusedFootprint } from "@/components/topology/focused-footprint";
 import { AssociatedLogsPanel } from "@/components/inventory/associated-logs-panel";
 import { listLogSources } from "@/lib/services/logs";
+import { isMobileView } from "@/lib/device";
+import { MobileContainerDetail } from "@/components/mobile/pages/inventory-detail/mobile-container-detail";
 
 export async function generateMetadata({
   params,
@@ -43,7 +46,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   const ct = await getContainer(id).catch(() => null);
-  return { title: ct?.name ?? "Container" };
+  return { title: ct ? await anonymizeForDisplay(ct.name) : "Container" };
 }
 
 export default async function ContainerDetailPage({
@@ -53,11 +56,15 @@ export default async function ContainerDetailPage({
 }) {
   await requirePageUser();
   const { id } = await params;
-  const [ct, logSources] = await Promise.all([
+  const [ctData, logSourcesData] = await Promise.all([
     getContainer(id).catch(() => null),
     listLogSources(),
   ]);
-  if (!ct) notFound();
+  if (!ctData) notFound();
+  const { ct, logSources } = await anonymizeForDisplay({
+    ct: ctData,
+    logSources: logSourcesData,
+  });
 
   const initial = {
     name: ct.name,
@@ -71,6 +78,10 @@ export default async function ContainerDetailPage({
     osName: ct.osName ?? "",
     description: ct.description ?? "",
   };
+
+  if (await isMobileView()) {
+    return <MobileContainerDetail ct={ct} logSources={logSources} initial={initial} />;
+  }
 
   return (
     <div>

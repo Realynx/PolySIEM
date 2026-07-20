@@ -2,10 +2,13 @@ import Link from "next/link";
 import { Network } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { prisma } from "@/lib/db";
+import { isMobileView } from "@/lib/device";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { InventoryMap, type MapHost, type MapUplink } from "@/components/topology/inventory-map";
+import { MobileLabMap } from "@/components/mobile/pages/maps/mobile-lab-map";
 import { computeMetricKey } from "@/lib/compute/metrics";
 
 export const dynamic = "force-dynamic";
@@ -86,13 +89,13 @@ export default async function LabMapPage() {
     labels.push(label);
     uplinkLabels.set(pairKey, labels);
   }
-  const uplinks: MapUplink[] = [...uplinkLabels.entries()].map(([pairKey, labels]) => {
+  const uplinksData: MapUplink[] = [...uplinkLabels.entries()].map(([pairKey, labels]) => {
     const [sourceId, targetId] = pairKey.split("->");
     return { id: `uplink:${pairKey}`, sourceId, targetId, label: labels.join(", ") };
   });
 
   // Serialize to plain JSON props (BigInt memoryBytes -> number).
-  const hosts: MapHost[] = devices.map((device) => ({
+  const hostsData: MapHost[] = devices.map((device) => ({
     id: device.id,
     name: device.name,
     kind: device.kind,
@@ -133,6 +136,15 @@ export default async function LabMapPage() {
       })),
     ],
   }));
+
+  const { hosts, uplinks } = await anonymizeForDisplay({
+    hosts: hostsData,
+    uplinks: uplinksData,
+  });
+
+  if (await isMobileView()) {
+    return <MobileLabMap hosts={hosts} uplinks={uplinks} isAdmin={user.role === "ADMIN"} />;
+  }
 
   return (
     <div>

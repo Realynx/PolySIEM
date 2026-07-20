@@ -1,6 +1,7 @@
 import "server-only";
 import { spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parsePublicKey } from "@/lib/ssh/keys";
@@ -9,6 +10,20 @@ import { edgeNatSettingsSchema, storedEdgeNatCredentialsSchema } from "@/lib/val
 
 export interface CommandResult { stdout: string; stderr: string; code: number }
 export type CommandRunner = (command: string, args: string[], input?: string, timeoutMs?: number) => Promise<CommandResult>;
+
+export type EdgeHostKeyScanErrorCode =
+  | "ssh_keyscan_unavailable"
+  | "ssh_keyscan_timeout"
+  | "ssh_host_unreachable"
+  | "ssh_host_key_unavailable";
+
+/** A scanner failure whose message is safe and useful to return to an administrator. */
+export class EdgeHostKeyScanError extends Error {
+  constructor(public code: EdgeHostKeyScanErrorCode, message: string) {
+    super(message);
+    this.name = "EdgeHostKeyScanError";
+  }
+}
 
 export const runCommand: CommandRunner = (command, args, input, timeoutMs = 15_000) =>
   new Promise((resolve, reject) => {
@@ -49,7 +64,13 @@ export function parseEdgeSshUrl(baseUrl: string): { host: string; port: number }
   if (url.protocol !== "ssh:" || !url.hostname || !Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("Invalid Edge NAT SSH URL");
   }
-  return { host: url.hostname, port };
+  // WHATWG URL.hostname retains brackets around IPv6 literals. OpenSSH tools
+  // accept the address itself and otherwise try to resolve the brackets as part
+  // of a DNS name.
+  const host = url.hostname.startsWith("[") && url.hostname.endsWith("]")
+    ? url.hostname.slice(1, -1)
+    : url.hostname;
+  return { host, port };
 }
 
 export interface ObservedHostKey {
@@ -58,15 +79,69 @@ export interface ObservedHostKey {
   knownHostsLine: string;
 }
 
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+function scanFailure(host: string, port: number, result: CommandResult): EdgeHostKeyScanError {
+  const diagnostic = result.stderr.toLowerCase();
+  if (result.code === 127 || diagnostic.includes("not found") || diagnostic.includes("not recognized")) {
+    return new EdgeHostKeyScanError(
+      "ssh_keyscan_unavailable",
+      "SSH host-key scanning is unavailable on the PolySIEM server. Install the OpenSSH client package, then try again.",
+    );
+  }
+  if (diagnostic.includes("name or service not known") || diagnostic.includes("temporary failure in name resolution") || diagnostic.includes("nodename nor servname") || diagnostic.includes("getaddrinfo")) {
+    return new EdgeHostKeyScanError(
+      "ssh_host_unreachable",
+      `PolySIEM could not resolve the SSH host ${host}. Check the server address and DNS from the PolySIEM server.`,
+    );
+  }
+  if (diagnostic.includes("connection refused")) {
+    return new EdgeHostKeyScanError(
+      "ssh_host_unreachable",
+      `The SSH service at ${host}:${port} refused the connection. Check the SSH port and that sshd is running.`,
+    );
+  }
+  if (diagnostic.includes("no route to host") || diagnostic.includes("network is unreachable")) {
+    return new EdgeHostKeyScanError(
+      "ssh_host_unreachable",
+      `PolySIEM cannot reach ${host}:${port}. Check routing and firewall access from the PolySIEM server.`,
+    );
+  }
+  return new EdgeHostKeyScanError(
+    "ssh_host_key_unavailable",
+    `No supported SSH host key was returned by ${host}:${port}. Check the address, SSH port, firewall, and sshd configuration.`,
+  );
+}
+
 export async function scanEdgeHostKeys(baseUrl: string, runner: CommandRunner = runCommand): Promise<ObservedHostKey[]> {
   const { host, port } = parseEdgeSshUrl(baseUrl);
   let result: CommandResult;
   try {
-    result = await runner("ssh-keyscan", ["-T", "5", "-p", String(port), host], undefined, 10_000);
+    const familyArgs = isIP(host) === 6 ? ["-6"] : [];
+    result = await runner("ssh-keyscan", [...familyArgs, "-T", "5", "-p", String(port), host], undefined, 10_000);
   } catch (error) {
-    throw new Error(`Could not run ssh-keyscan: ${error instanceof Error ? error.message : String(error)}`);
+    if (errorCode(error) === "ENOENT") {
+      throw new EdgeHostKeyScanError(
+        "ssh_keyscan_unavailable",
+        "SSH host-key scanning is unavailable on the PolySIEM server. Install the OpenSSH client package, then try again.",
+      );
+    }
+    if (error instanceof Error && error.message.toLowerCase().includes("timed out")) {
+      throw new EdgeHostKeyScanError(
+        "ssh_keyscan_timeout",
+        `The SSH host-key scan for ${host}:${port} timed out. Check the address, SSH port, firewall, and that sshd is running.`,
+      );
+    }
+    throw new EdgeHostKeyScanError(
+      "ssh_host_key_unavailable",
+      `PolySIEM could not start the SSH host-key scan for ${host}:${port}. Check the server logs and OpenSSH client installation.`,
+    );
   }
   const keys: ObservedHostKey[] = [];
+  const fingerprints = new Set<string>();
   for (const raw of result.stdout.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
@@ -74,12 +149,13 @@ export async function scanEdgeHostKeys(baseUrl: string, runner: CommandRunner = 
     if (fields.length < 3) continue;
     try {
       const parsed = parsePublicKey(fields.slice(1).join(" "));
+      if (fingerprints.has(parsed.fingerprint)) continue;
+      fingerprints.add(parsed.fingerprint);
       keys.push({ algorithm: parsed.keyType, fingerprint: parsed.fingerprint, knownHostsLine: line });
     } catch { /* Ignore banner/noise and unsupported host-key algorithms. */ }
   }
   if (keys.length === 0) {
-    const reason = result.stderr.trim().slice(0, 500);
-    throw new Error(`No supported SSH host key was returned${reason ? `: ${reason}` : ""}`);
+    throw scanFailure(host, port, result);
   }
   return keys;
 }

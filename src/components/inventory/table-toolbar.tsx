@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import type { ReactNode } from "react";
 import { Search, X } from "lucide-react";
+import { useDebouncedSearchParam, useUrlFilters } from "@/components/shared/use-url-filters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -28,31 +28,9 @@ export function TableToolbar({
   showSource?: boolean;
   children?: ReactNode;
 }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const { searchParams, apply } = useUrlFilters();
   const urlQ = searchParams.get("q") ?? "";
-  const [q, setQ] = useState(urlQ);
-  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Keep local state in sync when the URL changes externally (back button).
-  useEffect(() => setQ(urlQ), [urlQ]);
-
-  const apply = (updates: Record<string, string | null>) => {
-    const params = new URLSearchParams(searchParams.toString());
-    for (const [key, value] of Object.entries(updates)) {
-      if (value === null || value === "") params.delete(key);
-      else params.set(key, value);
-    }
-    params.delete("page"); // filters reset pagination
-    router.replace(params.size > 0 ? `${pathname}?${params}` : pathname, { scroll: false });
-  };
-
-  const onSearch = (value: string) => {
-    setQ(value);
-    if (debounce.current) clearTimeout(debounce.current);
-    debounce.current = setTimeout(() => apply({ q: value }), 300);
-  };
+  const [q, onSearch] = useDebouncedSearchParam(apply, urlQ);
 
   const source = searchParams.get("source") ?? ALL;
   const hasFilters = urlQ !== "" || source !== ALL;

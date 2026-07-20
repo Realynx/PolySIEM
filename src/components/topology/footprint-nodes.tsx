@@ -591,6 +591,8 @@ export const LaneNode = memo(function LaneNode({
     <div
       className={cn(
         "relative h-full w-full overflow-hidden rounded-2xl border border-border/80 bg-card/65 shadow-[0_10px_30px_-22px_color-mix(in_oklab,var(--color-foreground)_42%,transparent)] backdrop-blur-[1px]",
+        // Per-node effects multiply across the canvas and repaint on every pan.
+        "no-gpu:bg-card no-gpu:shadow-sm",
         expandable && "cursor-pointer",
       )}
       style={{

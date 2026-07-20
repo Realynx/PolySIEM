@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Plus, Server } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listDevices } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
 import { formatBytes } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -24,13 +26,15 @@ import { PaginationNav } from "@/components/inventory/pagination-nav";
 import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { TagList } from "@/components/inventory/tag-badge";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
+import { MobileHostsPage } from "@/components/mobile/pages/inventory/mobile-hosts-page";
 
 export const metadata = { title: "Hosts" };
 
 export default async function HostsPage({ searchParams }: { searchParams: Promise<PageSearchParams> }) {
   await requirePageUser();
   const query = parseListParams(await searchParams);
-  const { items, total } = await listDevices(query);
+  const { items, total } = await anonymizeForDisplay(await listDevices(query));
+  if (await isMobileView()) return <MobileHostsPage items={items} total={total} query={query} />;
   const filtered = Boolean(query.q || query.source);
 
   const addButton = (

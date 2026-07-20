@@ -2,6 +2,9 @@ import Link from "next/link";
 import { ChevronRight, FileText, Plus } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listDocs } from "@/lib/services/docs";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
+import { isMobileView } from "@/lib/device";
+import { MobileDocsPage } from "@/components/mobile/pages/docs/mobile-docs-page";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -68,7 +71,10 @@ function DocTree({
 
 export default async function DocsPage() {
   await requirePageUser();
-  const docs = await listDocs();
+  const docs = await anonymizeForDisplay(await listDocs());
+
+  if (await isMobileView()) return <MobileDocsPage docs={docs} />;
+
   const tree = buildTree(docs);
   const titlesById = new Map(docs.map((doc) => [doc.id, doc.title]));
   const recent = [...docs]

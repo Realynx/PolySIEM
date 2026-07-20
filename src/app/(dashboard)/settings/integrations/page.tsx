@@ -1,10 +1,12 @@
 import { requirePageAdmin } from "@/lib/auth/guards";
 import { prisma } from "@/lib/db";
 import { getDeveloperModeConfig } from "@/lib/settings";
+import { isMobileView } from "@/lib/device";
 import {
   IntegrationsManager,
   type IntegrationView,
 } from "@/components/settings/integrations-manager";
+import { MobileIntegrationsSettingsPage } from "@/components/mobile/pages/settings/mobile-integrations";
 import type { IntegrationTypeValue } from "@/lib/types";
 
 export const metadata = { title: "Integrations" };
@@ -58,6 +60,17 @@ export default async function IntegrationsSettingsPage({
     lastSyncError: r.lastSyncError,
     hasCredentials: Boolean(r.encryptedCredentials),
   }));
+
+  if (await isMobileView()) {
+    return (
+      <MobileIntegrationsSettingsPage
+        integrations={integrations}
+        mockIntegrationsEnabled={developerMode.enabled && developerMode.features.mockIntegrations}
+        initialAddType={initialAddType}
+        initialEditId={query.edit ?? null}
+      />
+    );
+  }
 
   return (
     <IntegrationsManager

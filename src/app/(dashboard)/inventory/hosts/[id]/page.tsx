@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { Pencil } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { getDevice } from "@/lib/services/inventory";
+import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatBytes, formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { SourceBadge, StatusBadge } from "@/components/shared/badges";
@@ -31,6 +32,8 @@ import { DescriptionEditor } from "@/components/docs/description-editor";
 import { FocusedFootprint } from "@/components/topology/focused-footprint";
 import { AssociatedLogsPanel } from "@/components/inventory/associated-logs-panel";
 import { listLogSources } from "@/lib/services/logs";
+import { isMobileView } from "@/lib/device";
+import { MobileHostDetail } from "@/components/mobile/pages/inventory-detail/mobile-host-detail";
 
 export async function generateMetadata({
   params,
@@ -39,7 +42,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   const host = await getDevice(id).catch(() => null);
-  return { title: host?.name ?? "Host" };
+  return { title: host ? await anonymizeForDisplay(host.name) : "Host" };
 }
 
 export default async function HostDetailPage({
@@ -49,11 +52,15 @@ export default async function HostDetailPage({
 }) {
   await requirePageUser();
   const { id } = await params;
-  const [host, logSources] = await Promise.all([
+  const [hostData, logSourcesData] = await Promise.all([
     getDevice(id).catch(() => null),
     listLogSources(),
   ]);
-  if (!host) notFound();
+  if (!hostData) notFound();
+  const { host, logSources } = await anonymizeForDisplay({
+    host: hostData,
+    logSources: logSourcesData,
+  });
 
   const initial = {
     name: host.name,
@@ -68,6 +75,10 @@ export default async function HostDetailPage({
     osVersion: host.osVersion ?? "",
     description: host.description ?? "",
   };
+
+  if (await isMobileView()) {
+    return <MobileHostDetail host={host} logSources={logSources} initial={initial} />;
+  }
 
   return (
     <div>

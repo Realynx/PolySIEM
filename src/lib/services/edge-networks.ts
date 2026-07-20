@@ -6,7 +6,8 @@ import { audit, type AuditActor } from "@/lib/audit";
 import { toDriverConfig } from "@/lib/integrations/config";
 import { parseEdgeApplyResponse, testEdgeNatConnection } from "@/lib/integrations/edge-nat/client";
 import { buildApplyProtocol, desiredEdgeRulesetHash, type EdgeApplyRule } from "@/lib/integrations/edge-nat/agent";
-import { parseEdgeSshUrl, runVerifiedSsh, scanEdgeHostKeys } from "@/lib/integrations/edge-nat/ssh";
+import { EdgeHostKeyScanError, parseEdgeSshUrl, runVerifiedSsh, scanEdgeHostKeys } from "@/lib/integrations/edge-nat/ssh";
+import { runEdgeNatProvisioning } from "@/lib/integrations/edge-nat/provision";
 import { cloudflareSettingsSchema, edgeNatSettingsSchema, elasticsearchSettingsSchema, tailscaleSettingsSchema } from "@/lib/validators/integrations";
 import { edgeNatRulesConflict, edgeNatRuleUsesManagementPort, type EdgeNatRuleInput } from "@/lib/validators/edge-nat";
 import { deriveEdgeLifecycle, matchesExpectedEdgeApply, nextEdgeApplyRevision } from "./edge-network-state";
@@ -305,7 +306,7 @@ export async function inspectEdgeHostKeys(integrationId: string) {
   };
 }
 
-export async function enrollEdgeHostKey(actor: AuditActor, integrationId: string, fingerprint: string) {
+async function pinEdgeHostKey(actor: AuditActor, integrationId: string, fingerprint: string) {
   const integration = await edgeIntegration(integrationId);
   const observed = await scanEdgeHostKeys(integration.baseUrl);
   if (!observed.some((key) => key.fingerprint === fingerprint)) {
@@ -316,6 +317,11 @@ export async function enrollEdgeHostKey(actor: AuditActor, integrationId: string
     where: { id: integrationId }, data: { settings: settings as unknown as Prisma.InputJsonValue },
   });
   await audit(actor, "edge_nat.host_key.enroll", { type: "integration", id: integrationId }, { fingerprint });
+  return updated;
+}
+
+export async function enrollEdgeHostKey(actor: AuditActor, integrationId: string, fingerprint: string) {
+  const updated = await pinEdgeHostKey(actor, integrationId, fingerprint);
   const test = await testEdgeNatConnection(toDriverConfig(updated));
   if (test.ok) {
     await prisma.integrationConfig.update({
@@ -324,6 +330,42 @@ export async function enrollEdgeHostKey(actor: AuditActor, integrationId: string
     });
   }
   return { enrolled: true, test };
+}
+
+export async function provisionEdgeNatService(
+  actor: AuditActor,
+  integrationId: string,
+  adminUsername: string,
+  fingerprint: string,
+) {
+  const integration = await pinEdgeHostKey(actor, integrationId, fingerprint);
+  const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
+  if (!settings.hostKeyFingerprint) throw new ApiError(409, "host_key_required", "Confirm the server's SSH host-key fingerprint before installing the helper");
+  try {
+    const installed = await runEdgeNatProvisioning(toDriverConfig(integration), adminUsername);
+    const test = await testEdgeNatConnection(toDriverConfig(integration));
+    if (!test.ok) {
+      throw new Error(`The installer finished, but the restricted service did not answer: ${test.detail}`);
+    }
+    await prisma.integrationConfig.update({
+      where: { id: integrationId },
+      data: { lastSyncAt: new Date(), lastSyncStatus: "SUCCESS", lastSyncError: null },
+    });
+    await audit(actor, "edge_nat.service.provision", { type: "integration", id: integrationId }, {
+      temporaryAuthorizationRemoved: true,
+    });
+    return { installed: true, detail: test.detail, installerOutput: installed.stdout };
+  } catch (error) {
+    if (error instanceof EdgeHostKeyScanError) {
+      throw new ApiError(502, error.code, error.message);
+    }
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+    await prisma.integrationConfig.update({
+      where: { id: integrationId },
+      data: { lastSyncAt: new Date(), lastSyncStatus: "FAILED", lastSyncError: message },
+    });
+    throw new ApiError(502, "edge_provision_failed", message);
+  }
 }
 
 export async function getEdgeNetworksOverview() {
