@@ -13,17 +13,66 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-<p align="center">
-  Proxmox · OPNsense · UniFi · Cloudflare · Elasticsearch · OTX · Ollama · MCP
-</p>
+## About PolySIEM
 
-## Quick start
+PolySIEM turns scattered homelab state into a living source of truth. It documents hosts, VMs, containers, services, networks, firewall policy, storage, and runbooks while preserving where each fact came from.
+
+- Connect Proxmox, OPNsense, UniFi, Cloudflare, Tailscale, Elasticsearch, OTX, Censys, and SecurityTrails.
+- Search and annotate inventory with audit history and cross-integration network context.
+- Explore logs, investigate threats, build workflows, and expose scoped documentation through MCP.
+- Run on your own infrastructure with encrypted credentials, roles, and no default accounts.
+
+## Security, AI, and Suricata
+
+- **Security advisor:** scores network exposure, firewall hygiene, access and identity, host hardening, and documentation coverage, then provides prioritized remediation guidance.
+- **AI assistant:** supports local Ollama or hosted OpenAI, DeepSeek, Anthropic, and Azure OpenAI. Use it for chat, documentation interviews, workflows, and security investigations; provider credentials are encrypted at rest.
+- **Threat watch:** uses the selected AI provider to review Elasticsearch log digests—including Suricata alerts, Cloudflared activity, and error spikes—and opens evidence-backed security tickets.
+- **OTX and Suricata:** pulls AlienVault OTX community threat intelligence, checks its IP indicators against your logs, and serves a generated IP/DNS ruleset that OPNsense Suricata can subscribe to.
+
+See [Security and threat intelligence](docs/SECURITY.md) for setup, privacy boundaries, and the Suricata workflow.
+
+## Install
+
+All installers generate secrets, start PostgreSQL and PolySIEM, and wait for the health check. When setup finishes, open `http://<your-server>:3000` and create the first administrator account.
+
+### Linux — Docker (recommended)
+
+For Debian, Ubuntu, Fedora, and RHEL-family hosts:
 
 ```bash
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install.sh | bash
 ```
 
-Open `http://<your-server>:3000` and create the first administrator. For Windows, Compose, native VM, upgrade, and recovery options, see [Installation](docs/INSTALL.md).
+### Windows — Docker Desktop
+
+Install and start Docker Desktop using Linux containers, then run in PowerShell:
+
+```powershell
+irm https://github.com/Realynx/PolySIEM/releases/latest/download/install.ps1 | iex
+```
+
+The installation is stored under `%LOCALAPPDATA%\PolySIEM`.
+
+### Linux VM or LXC — Native
+
+For a Debian or Ubuntu VM/LXC without Docker:
+
+```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash
+```
+
+This installs Node.js, PostgreSQL, and a hardened `polysiem.service` systemd unit.
+
+### Manual Docker Compose or source build
+
+```bash
+mkdir -p /opt/polysiem && cd /opt/polysiem
+curl -fL -o docker-compose.yml https://github.com/Realynx/PolySIEM/releases/latest/download/docker-compose.yml
+# Create .env with DB_PASSWORD, DATABASE_URL, APP_SECRET, and APP_URL
+docker compose up -d
+```
+
+Use the [installation guide](docs/INSTALL.md) for the complete `.env` example, source builds, upgrades, backups, migration, and troubleshooting.
 
 ## Documentation
 
@@ -32,6 +81,7 @@ Open `http://<your-server>:3000` and create the first administrator. For Windows
   <a href="docs/INSTALL.md">Installation</a> ·
   <a href="docs/CONFIGURATION.md">Configuration</a> ·
   <a href="docs/integration-setup.md">Integrations</a> ·
+  <a href="docs/SECURITY.md">Security</a> ·
   <a href="docs/MCP.md">MCP</a> ·
   <a href="docs/DEVELOPMENT.md">Development</a>
 </p>

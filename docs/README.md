@@ -6,7 +6,8 @@ Welcome to the PolySIEM documentation. Choose a guide based on what you want to 
 
 - [Installation, upgrades, backup, and troubleshooting](INSTALL.md) — every supported deployment path and the full recovery workflow.
 - [Configuration](CONFIGURATION.md) — environment variables, secrets, URLs, and deployment settings.
-- [Integration setup](integration-setup.md) — least-privilege credentials for Proxmox, OPNsense, Elasticsearch, UniFi, Cloudflare, and Ollama, plus demo integrations.
+- [Integration setup](integration-setup.md) — least-privilege credentials for infrastructure, security, and AI providers, plus demo integrations.
+- [Security and threat intelligence](SECURITY.md) — security scoring, AI providers, Threat watch, AlienVault OTX, and the Suricata rules export.
 - [Proxmox logs with Filebeat](filebeat-proxmox.md) — send Proxmox host logs to Elasticsearch for the log explorer.
 - [MCP server](MCP.md) — create scoped API tokens and connect Claude or another Streamable HTTP MCP client.
 

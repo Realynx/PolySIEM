@@ -9,9 +9,10 @@ Every integration in PolySIEM is read-only by design — syncs only *pull* state
 - [Proxmox VE](#proxmox-ve)
 - [OPNsense](#opnsense)
 - [Elasticsearch](#elasticsearch)
+- [AlienVault OTX](#alienvault-otx)
 - [UniFi](#unifi)
 - [Cloudflare](#cloudflare)
-- [Ollama](#ollama)
+- [AI providers](#ai-providers)
 - [Demo mode](#demo-mode)
 
 ## Proxmox VE
@@ -87,6 +88,14 @@ POST /_security/api_key
 
 Username/password auth is also supported if you prefer a dedicated user with an equivalent read-only role, but an API key is easier to scope, rotate and revoke.
 
+## AlienVault OTX
+
+AlienVault OTX is a free community threat-intelligence feed. Create an account at [otx.alienvault.com](https://otx.alienvault.com), then open [your OTX API page](https://otx.alienvault.com/api) and copy the **OTX Key**.
+
+Admins can add a shared instance integration using `https://otx.alienvault.com` as the base URL. Individual users can save their own key under **Settings → Profile → Threat intelligence** instead. Subscribe to additional pulses or authors in OTX to expand the feed PolySIEM receives.
+
+PolySIEM caches pulses incrementally, cross-checks their public IP indicators against Elasticsearch logs, and can turn a shared instance feed into an authenticated Suricata ruleset. See [Security and threat intelligence](SECURITY.md#alienvault-otx).
+
 ## UniFi
 
 The preferred integration uses UniFi's local Network API. The same API is exposed by self-hosted UniFi OS Server and UniFi console/gateway hardware, so no deployment-specific driver is required. A UniFi gateway is **not** required: an AP-only self-hosted site is valid and PolySIEM discovers its adopted APs, WLANs, clients, and controller-defined networks. If the newer site catalog is empty, PolySIEM probes the configured local site (normally `default`) with the same API key instead of treating the missing gateway as an error.
@@ -114,9 +123,15 @@ Add one PolySIEM integration per Cloudflare account. This keeps tunnels, DNS, pr
 
 **Test connection** probes the selected account's zone and tunnel resources—the same permissions used by sync. It does not use Cloudflare's token-verification endpoint because Cloudflare exposes separate verification routes for user-owned and account-owned tokens, which can produce a misleading 401 when the ownership route does not match the otherwise valid token.
 
-## Ollama
+## AI providers
 
-No credentials involved: point PolySIEM at your Ollama endpoint (e.g. `http://ollama.lan:11434`) under **Admin → Settings** and pick a model in the AI panel. Keep the Ollama port LAN-only — PolySIEM makes no cloud calls, and neither should anything else.
+Configure AI under **Settings → AI assistant**. PolySIEM supports local **Ollama** and hosted **OpenAI**, **DeepSeek**, **Anthropic**, and **Azure OpenAI** providers.
+
+For Ollama, enter the endpoint (for example `http://ollama.lan:11434`) and select a model. No API credential is required; keep the Ollama port LAN-only.
+
+For a hosted provider, enter its API key and model or Azure deployment. Keys are encrypted with `APP_SECRET` before storage and are never returned to the browser. Hosted providers receive the prompt and relevant PolySIEM context for requested AI actions; choose Ollama when that data must remain inside your network.
+
+See [Security and threat intelligence](SECURITY.md#ai-providers) for the features enabled by the selected provider.
 
 ## Demo mode
 

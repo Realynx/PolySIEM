@@ -32,13 +32,18 @@ RETENTION_DAYS="${RETENTION_DAYS:-90}"
 ROLLOVER_AGE="${ROLLOVER_AGE:-30d}"
 ROLLOVER_SIZE="${ROLLOVER_SIZE:-50gb}"
 
+CURL_TLS_ARGS=()
+if [[ -n "${CURL_TLS}" ]]; then
+  CURL_TLS_ARGS+=("${CURL_TLS}")
+fi
+
 if [[ -z "${FB_PROXMOX_PASS:-}" ]]; then
   FB_PROXMOX_PASS="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-28)"
   echo ">> generated filebeat_proxmox password: ${FB_PROXMOX_PASS}"
   echo ">> (store it in a password manager; the hosts keep it in the filebeat keystore)"
 fi
 
-es() { curl -sS ${CURL_TLS} -u "${ES_SUPERUSER}:${ES_SUPERPASS}" -H 'Content-Type: application/json' "$@"; }
+es() { curl -sS "${CURL_TLS_ARGS[@]}" -u "${ES_SUPERUSER}:${ES_SUPERPASS}" -H 'Content-Type: application/json' "$@"; }
 
 echo "== 1/4 ILM policy proxmox-logs-${RETENTION_DAYS}d =="
 es -X PUT "${ES_URL}/_ilm/policy/proxmox-logs-90d" -d "{
