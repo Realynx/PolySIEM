@@ -30,6 +30,9 @@
 # production
 /build
 
+# local runtime data (generated web certificates, etc.)
+/data/
+
 # misc
 .DS_Store
 *.pem

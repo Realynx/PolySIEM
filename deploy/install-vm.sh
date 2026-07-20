@@ -235,7 +235,7 @@ setup_database() {
 # if you lose it, you must re-enter them.
 DATABASE_URL=postgresql://polysiem:${DB_PASSWORD}@localhost:5432/polysiem
 APP_SECRET=${APP_SECRET}
-APP_URL=http://${HOST_IP}:3000
+APP_URL=https://${HOST_IP}:3000
 POLYSIEM_GITHUB_REPOSITORY=${REPO_SLUG}
 POLYSIEM_INSTALL_TYPE=native
 EOF
@@ -333,7 +333,8 @@ current_release_is_healthy() {
         [ -x "${BASE_DIR}/native-auto-update.sh" ] || return 1
         systemctl is-enabled --quiet polysiem-native-auto-update.timer || return 1
     fi
-    curl -fsS http://localhost:3000/api/health >/dev/null 2>&1
+    # -kL: follow the HTTP->HTTPS redirect and accept the self-signed cert.
+    curl -fsSkL http://localhost:3000/api/health >/dev/null 2>&1
 }
 
 fetch_source() {
@@ -368,6 +369,7 @@ prepare_source_runtime() {
     cp -a "${APP_DIR}/.next/static" "${STAGED_RUNTIME}/.next/static"
     cp -a "${APP_DIR}/public" "${STAGED_RUNTIME}/public"
     cp -a "${APP_DIR}/prisma" "${STAGED_RUNTIME}/prisma"
+    cp "${APP_DIR}/server/tls-server.js" "${APP_DIR}/server/cert-utils.js" "$STAGED_RUNTIME/"
     cp "${APP_DIR}/deploy/polysiem.service" "${STAGED_RUNTIME}/polysiem.service"
 }
 
@@ -436,7 +438,7 @@ wait_for_health() {
     log "Waiting for PolySIEM to become healthy (up to 90s)..."
     i=0
     while [ "$i" -lt 45 ]; do
-        if curl -fsS http://localhost:3000/api/health >/dev/null 2>&1; then
+        if curl -fsSkL http://localhost:3000/api/health >/dev/null 2>&1; then
             return 0
         fi
         i=$((i + 1))
@@ -571,6 +573,11 @@ activate_runtime() {
     # allow the unprivileged service account to traverse and read it.
     chown root:root "$BASE_DIR" "$RUN_DIR"
     chmod 0755 "$BASE_DIR" "$RUN_DIR"
+    # Web certificates live outside the runtime dir so they survive updates
+    # (the service points POLYSIEM_CERT_DIR here).
+    mkdir -p "${BASE_DIR}/data/certs"
+    chown -R polysiem:polysiem "${BASE_DIR}/data"
+    chmod 700 "${BASE_DIR}/data/certs"
 }
 
 install_service() {
@@ -610,7 +617,9 @@ success_box() {
  ==============================================================
   PolySIEM is up and running (native install)!
 
-  Open:        http://${HOST_IP}:3000
+  Open:        https://${HOST_IP}:3000
+               (self-signed certificate — your browser warns once;
+               replace it under Settings -> Web certificate)
   ${next_step}
 
   Data:

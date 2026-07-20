@@ -147,7 +147,7 @@ write_env() {
 # if you lose it, you must re-enter them.
 DATABASE_URL=postgresql://polysiem:${db_password}@db:5432/polysiem
 APP_SECRET=${app_secret}
-APP_URL=http://${host_ip}:3000
+APP_URL=https://${host_ip}:3000
 DB_PASSWORD=${db_password}
 POLYSIEM_IMAGE=${RELEASE_IMAGE}
 POLYSIEM_GITHUB_REPOSITORY=${REPO_SLUG}
@@ -263,7 +263,8 @@ wait_for_health() {
     log "Waiting for PolySIEM to become healthy (up to 90s)..."
     i=0
     while [ "$i" -lt 45 ]; do
-        if curl -fsS http://localhost:3000/api/health >/dev/null 2>&1; then
+        # -kL: follow the HTTP->HTTPS redirect and accept the self-signed cert.
+        if curl -fsSkL http://localhost:3000/api/health >/dev/null 2>&1; then
             return 0
         fi
         i=$((i + 1))
@@ -284,7 +285,9 @@ success_box() {
  ==============================================================
   PolySIEM is up and running!
 
-  Open:        http://${host_ip}:3000
+  Open:        https://${host_ip}:3000
+               (self-signed certificate — your browser warns once;
+               replace it under Settings -> Web certificate)
   Next step:   the setup wizard in your browser creates the
                first admin account — no CLI steps needed.
 

@@ -20,6 +20,7 @@ export const SETTING_KEYS = {
   backupHistory: "backup_history",
   publicDemo: "public_demo",
   autoUpdate: "auto_update",
+  webCertificate: "web_certificate",
 } as const;
 
 export type SetupStage = "welcome" | "ai" | "integrations" | "tutorial" | "complete";

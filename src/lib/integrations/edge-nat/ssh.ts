@@ -1,6 +1,6 @@
 import "server-only";
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ export type CommandRunner = (command: string, args: string[], input?: string, ti
 export type EdgeHostKeyScanErrorCode =
   | "ssh_keyscan_unavailable"
   | "ssh_keyscan_timeout"
+  | "ssh_runtime_network_denied"
   | "ssh_host_unreachable"
   | "ssh_host_key_unavailable";
 
@@ -110,10 +111,73 @@ function scanFailure(host: string, port: number, result: CommandResult): EdgeHos
       `PolySIEM cannot reach ${host}:${port}. Check routing and firewall access from the PolySIEM server.`,
     );
   }
+  if (diagnostic.includes("permission denied") || diagnostic.includes("operation not permitted")) {
+    return new EdgeHostKeyScanError(
+      "ssh_runtime_network_denied",
+      `PolySIEM's runtime was denied permission to open an SSH connection to ${host}:${port}. SSH from the host OS does not verify access from the PolySIEM container or service account; check its outbound firewall, container network, SELinux, or AppArmor policy.`,
+    );
+  }
   return new EdgeHostKeyScanError(
     "ssh_host_key_unavailable",
     `No supported SSH host key was returned by ${host}:${port}. Check the address, SSH port, firewall, and sshd configuration.`,
   );
+}
+
+function parseObservedHostKeys(output: string): ObservedHostKey[] {
+  const keys: ObservedHostKey[] = [];
+  const fingerprints = new Set<string>();
+  for (const raw of output.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const fields = line.split(/\s+/);
+    if (fields.length < 3) continue;
+    try {
+      const parsed = parsePublicKey(fields.slice(1).join(" "));
+      if (fingerprints.has(parsed.fingerprint)) continue;
+      fingerprints.add(parsed.fingerprint);
+      keys.push({ algorithm: parsed.keyType, fingerprint: parsed.fingerprint, knownHostsLine: line });
+    } catch { /* Ignore banner/noise and unsupported host-key algorithms. */ }
+  }
+  return keys;
+}
+
+/**
+ * Some SSH daemons or local policies reject ssh-keyscan's parallel probes even
+ * though a normal SSH handshake is allowed. Observe one key through a
+ * credential-free handshake in an isolated known_hosts file. This does not
+ * trust the key; the administrator still confirms its fingerprint afterward.
+ */
+async function scanWithSshHandshake(
+  host: string,
+  port: number,
+  runner: CommandRunner,
+): Promise<ObservedHostKey[]> {
+  const dir = await mkdtemp(join(tmpdir(), "polysiem-edge-host-key-"));
+  const knownHostsPath = join(dir, "known_hosts");
+  try {
+    await writeFile(knownHostsPath, "", { encoding: "utf8", mode: 0o600 });
+    const familyArgs = isIP(host) === 6 ? ["-6"] : [];
+    try {
+      await runner("ssh", [
+        "-F", "none", "-T", ...familyArgs, "-p", String(port),
+        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+        "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
+        "-o", "PubkeyAuthentication=no", "-o", "GSSAPIAuthentication=no",
+        "-o", "HostbasedAuthentication=no", "-o", "NumberOfPasswordPrompts=0",
+        "-o", "StrictHostKeyChecking=accept-new", "-o", "HashKnownHosts=no",
+        "-o", "CheckHostIP=no", "-o", `UserKnownHostsFile=${knownHostsPath}`,
+        "-o", "GlobalKnownHostsFile=none", "-o", "ConnectTimeout=7",
+        `polysiem-host-key-scan@${host}`, "exit",
+      ], undefined, 12_000);
+    } catch {
+      // Authentication and connection failure are expected here; the
+      // handshake may still have written the observed host key first.
+    }
+    const knownHosts = await readFile(knownHostsPath, "utf8").catch(() => "");
+    return parseObservedHostKeys(knownHosts);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 export async function scanEdgeHostKeys(baseUrl: string, runner: CommandRunner = runCommand): Promise<ObservedHostKey[]> {
@@ -140,21 +204,10 @@ export async function scanEdgeHostKeys(baseUrl: string, runner: CommandRunner = 
       `PolySIEM could not start the SSH host-key scan for ${host}:${port}. Check the server logs and OpenSSH client installation.`,
     );
   }
-  const keys: ObservedHostKey[] = [];
-  const fingerprints = new Set<string>();
-  for (const raw of result.stdout.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const fields = line.split(/\s+/);
-    if (fields.length < 3) continue;
-    try {
-      const parsed = parsePublicKey(fields.slice(1).join(" "));
-      if (fingerprints.has(parsed.fingerprint)) continue;
-      fingerprints.add(parsed.fingerprint);
-      keys.push({ algorithm: parsed.keyType, fingerprint: parsed.fingerprint, knownHostsLine: line });
-    } catch { /* Ignore banner/noise and unsupported host-key algorithms. */ }
-  }
+  const keys = parseObservedHostKeys(result.stdout);
   if (keys.length === 0) {
+    const handshakeKeys = await scanWithSshHandshake(host, port, runner);
+    if (handshakeKeys.length > 0) return handshakeKeys;
     throw scanFailure(host, port, result);
   }
   return keys;

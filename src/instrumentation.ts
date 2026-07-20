@@ -20,6 +20,12 @@ export async function register(): Promise<void> {
       return;
     }
 
+    // Sync the stored web certificate with the files the TLS entrypoint
+    // serves (restores it after container/bundle replacement, or imports the
+    // first-boot self-signed one). Best-effort; HTTPS serves regardless.
+    const { reconcileWebCertificate } = await import("@/lib/tls/store");
+    void reconcileWebCertificate();
+
     const { startSyncScheduler } = await import("@/lib/integrations/scheduler");
     startSyncScheduler();
     const { startAiScanScheduler } = await import("@/lib/ai/scan/scheduler");
@@ -89,10 +95,19 @@ const WARMUP_ROUTES = [
  */
 async function warmupDevRoutes(): Promise<void> {
   try {
-    const base = `http://localhost:${process.env.PORT ?? "3000"}`;
+    // `npm run dev:https` serves TLS with a self-signed cert; Next marks that
+    // mode with __NEXT_EXPERIMENTAL_HTTPS. Match the protocol and skip cert
+    // verification for these loopback-only requests via an undici dispatcher.
+    const https = process.env.__NEXT_EXPERIMENTAL_HTTPS === "1";
+    const base = `${https ? "https" : "http"}://localhost:${process.env.PORT ?? "3000"}`;
+    const extra: RequestInit = https
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ({ dispatcher: new (await import("undici")).Agent({ connect: { rejectUnauthorized: false } }) } as any)
+      : {};
     const started = Date.now();
 
     const loginRes = await fetch(`${base}/api/auth/login`, {
+      ...extra,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "admin", password: "admin" }),
@@ -113,6 +128,7 @@ async function warmupDevRoutes(): Promise<void> {
     for (const route of WARMUP_ROUTES) {
       try {
         await fetch(`${base}${route}`, {
+          ...extra,
           headers: { cookie },
           redirect: "manual",
         });

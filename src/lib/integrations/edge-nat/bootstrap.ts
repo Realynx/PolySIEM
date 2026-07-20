@@ -30,5 +30,5 @@ function singleQuote(value: string): string {
 export function buildEdgeBootstrapCommand(publicKey: string): string {
   const line = edgeBootstrapAuthorizedKey(publicKey);
   const quoted = singleQuote(line);
-  return `umask 077; mkdir -p "$HOME/.ssh" && touch "$HOME/.ssh/authorized_keys" && { grep -qxF -- ${quoted} "$HOME/.ssh/authorized_keys" || printf '%s\\n' ${quoted} >> "$HOME/.ssh/authorized_keys"; } && chmod 700 "$HOME/.ssh" && chmod 600 "$HOME/.ssh/authorized_keys"`;
+  return `umask 077;d=$HOME/.ssh;mkdir -p "$d";chmod 700 "$d";printf '%s\\n' ${quoted} >>"$d/authorized_keys";chmod 600 "$d/authorized_keys"`;
 }

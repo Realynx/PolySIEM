@@ -37,7 +37,9 @@ main() {
         return 1
     fi
 
-    response="$(curl -fsS --max-time 30 \
+    # -kL: follow the HTTP->HTTPS redirect (same host, so the Authorization
+    # header is preserved) and accept the self-signed certificate.
+    response="$(curl -fsSkL --max-time 30 \
         -H "Authorization: Bearer ${token}" \
         "$UPDATE_ENDPOINT")" || {
         warn "could not query PolySIEM update status"

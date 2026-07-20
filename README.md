@@ -10,6 +10,8 @@
   <a href="https://github.com/Realynx/PolySIEM/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Realynx/PolySIEM/ci.yml?branch=master&amp;label=CI" alt="CI status"></a>
   <a href="https://github.com/Realynx/PolySIEM/actions/workflows/release.yml"><img src="https://github.com/Realynx/PolySIEM/actions/workflows/release.yml/badge.svg" alt="Release status"></a>
   <a href="https://github.com/Realynx/PolySIEM/releases"><img src="https://img.shields.io/github/v/release/Realynx/PolySIEM" alt="Latest release"></a>
+  <a href="https://github.com/Realynx/PolySIEM/releases"><img src="https://img.shields.io/github/downloads/Realynx/PolySIEM/total?label=downloads" alt="Total downloads"></a>
+  <a href="https://www.codefactor.io/repository/github/realynx/polysiem"><img src="https://www.codefactor.io/repository/github/realynx/polysiem/badge" alt="CodeFactor grade"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
@@ -24,7 +26,7 @@ If your homelab is anything like ours, the truth about it lives in a dozen place
 It connects to Proxmox, OPNsense, UniFi, Cloudflare, Tailscale, Elasticsearch, OTX, Censys, and SecurityTrails. Once things are wired up you can search and annotate the inventory (with audit history and network context stitched across integrations), dig through logs, investigate threats, build workflows, and expose scoped documentation through MCP. It runs entirely on your own infrastructure, with encrypted credentials, roles, and no default accounts.
 
 <p align="center">
-  <img src="docs/images/about-page.png" width="460" alt="PolySIEM about page: a neofetch-style terminal reporting cluster, CPU, memory, storage, container, and VM totals">
+  <img src="docs/images/about-page.png" width="700" alt="PolySIEM about page: a neofetch-style terminal reporting cluster, CPU, memory, storage, container, and VM totals">
 </p>
 
 <p align="center">
@@ -43,7 +45,9 @@ See [Security and threat intelligence](docs/SECURITY.md) for setup, privacy boun
 
 ## Install
 
-Every installer does the same basic job: generate secrets, start PostgreSQL and PolySIEM, and wait for the health check. When setup finishes, open `http://<your-server>:3000` and create the first administrator account.
+Every installer does the same basic job: generate secrets, start PostgreSQL and PolySIEM, and wait for the health check. When setup finishes, open `https://<your-server>:3000` and create the first administrator account.
+
+PolySIEM serves HTTPS out of the box with a self-signed certificate generated on first boot — your browser warns once until you trust or replace it. Admins can generate a new self-signed certificate (with your own hostnames) or upload one from an internal CA under **Settings → Web certificate**; changes apply live, no restart. Plain `http://` requests on the same port are redirected. Running behind your own TLS-terminating reverse proxy? Set `POLYSIEM_TLS=off` to serve plain HTTP instead.
 
 ### Linux — Docker (recommended)
 

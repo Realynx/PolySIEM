@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { generateEd25519Keypair } from "@/lib/ssh/keys";
 import type { DriverConfig } from "../types";
@@ -55,6 +56,37 @@ describe("Edge NAT SSH transport", () => {
     }))).rejects.toMatchObject({
       code: "ssh_host_unreachable",
       message: "The SSH service at edge.example.test:2222 refused the connection. Check the SSH port and that sshd is running.",
+    });
+  });
+
+  it("falls back to a credential-free SSH handshake when ssh-keyscan returns no key", async () => {
+    const commands: string[] = [];
+    const keys = await scanEdgeHostKeys(cfg().baseUrl, async (command, args) => {
+      commands.push(command);
+      if (command === "ssh-keyscan") {
+        return { stdout: "", stderr: "scanner probe rejected", code: 1 };
+      }
+      const knownHostsOption = args.find((arg) => arg.startsWith("UserKnownHostsFile="));
+      expect(knownHostsOption).toBeDefined();
+      expect(args).toContain("StrictHostKeyChecking=accept-new");
+      expect(args).toContain("PubkeyAuthentication=no");
+      expect(args).not.toContain("-i");
+      await writeFile(knownHostsOption!.slice("UserKnownHostsFile=".length), `${hostLine}\n`, "utf8");
+      return { stdout: "", stderr: "Permission denied (publickey).", code: 255 };
+    });
+
+    expect(commands).toEqual(["ssh-keyscan", "ssh"]);
+    expect(keys).toMatchObject([{ algorithm: "ssh-ed25519", fingerprint: hostPair.fingerprint }]);
+  });
+
+  it("distinguishes runtime network policy denial from SSH authentication", async () => {
+    await expect(scanEdgeHostKeys(cfg().baseUrl, async () => ({
+      stdout: "",
+      stderr: "connect (`edge.example.test'): Permission denied",
+      code: 1,
+    }))).rejects.toMatchObject({
+      code: "ssh_runtime_network_denied",
+      message: expect.stringContaining("container or service account"),
     });
   });
 

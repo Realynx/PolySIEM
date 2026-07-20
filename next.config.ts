@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // Keep node-forge a real package in the standalone node_modules: the TLS
+  // entrypoint (server/tls-server.js) requires it outside the compiled bundle.
+  serverExternalPackages: ["node-forge"],
   experimental: {
     // Parallel workers can race while merging the app-path manifest on Windows,
     // leaving valid routes out of standalone release builds.

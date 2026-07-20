@@ -14,8 +14,10 @@ describe("Edge NAT bootstrap authorization", () => {
     expect(line).toContain('restrict,command="');
     expect(line).toContain("sudo -n sh -s");
     expect(line).toContain(publicKey);
-    expect(buildEdgeBootstrapCommand(publicKey)).toContain("grep -qxF");
-    expect(buildEdgeBootstrapCommand(publicKey).length).toBeLessThan(1_000);
+    const command = buildEdgeBootstrapCommand(publicKey);
+    expect(command).toContain("authorized_keys");
+    expect(command.split(line)).toHaveLength(2);
+    expect(command.length).toBeLessThan(500);
   });
 
   it("accepts normal admin names but rejects the service account and shell syntax", () => {

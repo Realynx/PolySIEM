@@ -72,6 +72,13 @@ COPY --from=builder --chown=polysiem:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=polysiem:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=polysiem:nodejs /app/public ./public
 
+# HTTPS entrypoint: terminates TLS with a self-signed (or admin-uploaded)
+# certificate and redirects plain-HTTP requests. Certificates live under
+# /app/data (persist it with a volume; the DB copy restores them regardless).
+COPY --from=builder --chown=polysiem:nodejs /app/server/tls-server.js /app/server/cert-utils.js ./
+RUN mkdir -p /app/data/certs && chown -R polysiem:nodejs /app/data
+ENV POLYSIEM_CERT_DIR=/app/data/certs
+
 # Prisma schema + migrations, applied by the entrypoint at container start
 COPY --from=builder --chown=polysiem:nodejs /app/prisma ./prisma
 
@@ -104,6 +111,8 @@ RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
 USER polysiem
 EXPOSE 3000
 
+# /api/health always answers over plain HTTP (tls-server.js passes it through
+# to the app instead of redirecting), so one probe covers TLS on and off.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD wget -qO- http://127.0.0.1:3000/api/health || exit 1
 

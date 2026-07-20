@@ -12,6 +12,14 @@ const compat = new FlatCompat({
 const eslintConfig = [
   ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
+    // Plain-CommonJS runtime files that ship inside the standalone bundle and
+    // run under bare `node` (no bundler), so require() is the module system.
+    files: ["server/**/*.js"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
+  {
     ignores: [
       "node_modules/**",
       ".next*/**",

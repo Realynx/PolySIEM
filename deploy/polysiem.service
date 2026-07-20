@@ -13,7 +13,9 @@ EnvironmentFile=/opt/polysiem/.env
 Environment=NODE_ENV=production
 Environment=PORT=3000
 Environment=HOSTNAME=0.0.0.0
-ExecStart=/usr/bin/node server.js
+# Generated/uploaded web certificates survive release-bundle swaps here.
+Environment=POLYSIEM_CERT_DIR=/opt/polysiem/data/certs
+ExecStart=/usr/bin/node tls-server.js
 Restart=always
 RestartSec=5
 

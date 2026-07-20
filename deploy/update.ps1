@@ -58,12 +58,28 @@ function Set-EnvSetting([string]$Name, [string]$Value) {
     Set-Content -LiteralPath $EnvFile -Encoding Ascii -Value $lines
 }
 
+function Test-PolySIEMHealthOnce {
+    # The app serves HTTPS with a self-signed certificate by default (and
+    # redirects plain HTTP), so certificate validation must be skipped.
+    try {
+        if ($PSVersionTable.PSEdition -eq "Core") {
+            $response = Invoke-WebRequest -UseBasicParsing -SkipCertificateCheck -Uri $HealthUrl -TimeoutSec 5
+        } else {
+            $previous = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+            try {
+                $response = Invoke-WebRequest -UseBasicParsing -Uri $HealthUrl -TimeoutSec 5
+            } finally {
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previous
+            }
+        }
+        return ($response.StatusCode -eq 200)
+    } catch { return $false }
+}
+
 function Wait-PolySIEMHealth([int]$Attempts = 45) {
     for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
-        try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $HealthUrl -TimeoutSec 5
-            if ($response.StatusCode -eq 200) { return $true }
-        } catch { }
+        if (Test-PolySIEMHealthOnce) { return $true }
         Start-Sleep -Seconds 2
     }
     return $false

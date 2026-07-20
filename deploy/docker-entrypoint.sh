@@ -28,4 +28,9 @@ while :; do
 done
 
 echo "[polysiem] starting server on port ${PORT:-3000}"
+# tls-server.js serves HTTPS (self-signed by default, POLYSIEM_TLS=off opts
+# out); fall back to the plain server for images that predate it.
+if [ -f tls-server.js ]; then
+    exec node tls-server.js
+fi
 exec node server.js

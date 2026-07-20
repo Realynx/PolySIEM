@@ -3,9 +3,13 @@
 # Expects a .env file next to this compose file containing at least:
 #   DATABASE_URL=postgresql://polysiem:${DB_PASSWORD}@db:5432/polysiem
 #   APP_SECRET=<openssl rand -hex 32>
-#   APP_URL=http://<host-ip>:3000
+#   APP_URL=https://<host-ip>:3000
 #   DB_PASSWORD=<openssl rand -hex 24>
 # The install.sh one-liner generates this for you.
+#
+# The app serves HTTPS itself (self-signed by default; replace the certificate
+# under Settings -> Web certificate). Terminating TLS in your own reverse
+# proxy instead? Set POLYSIEM_TLS=off in the .env file.
 
 services:
   polysiem:
@@ -16,6 +20,8 @@ services:
     env_file: ${POLYSIEM_ENV_FILE:-.env}
     environment:
       POLYSIEM_GITHUB_REPOSITORY: ${POLYSIEM_GITHUB_REPOSITORY:-Realynx/PolySIEM}
+    volumes:
+      - polysiem-data:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -37,3 +43,4 @@ services:
 
 volumes:
   polysiem-pgdata:
+  polysiem-data:

@@ -78,7 +78,7 @@ Create `.env` next to it:
 ```dotenv
 DB_PASSWORD=<openssl rand -hex 24>
 APP_SECRET=<openssl rand -hex 32>
-APP_URL=http://<your-server-ip>:3000
+APP_URL=https://<your-server-ip>:3000
 DATABASE_URL=postgresql://polysiem:<same DB_PASSWORD>@db:5432/polysiem
 ```
 
@@ -140,7 +140,7 @@ systemctl restart polysiem
 
 ## First run
 
-Open `http://<your-server>:3000`. PolySIEM launches the first-run installer — there are no default credentials to hunt for. Pick the administrator username and password, optionally connect integrations, then view or skip the isolated mock dashboard tutorial. You can always add integrations later under **Admin → Integrations**; see [integration-setup.md](integration-setup.md) for least-privilege credentials or generated mock scenarios.
+Open `https://<your-server>:3000` (the first-boot self-signed certificate triggers a one-time browser warning; replace it later under **Settings → Web certificate**). PolySIEM launches the first-run installer — there are no default credentials to hunt for. Pick the administrator username and password, optionally connect integrations, then view or skip the isolated mock dashboard tutorial. You can always add integrations later under **Admin → Integrations**; see [integration-setup.md](integration-setup.md) for least-privilege credentials or generated mock scenarios.
 
 ## Upgrading
 
@@ -260,7 +260,8 @@ Homelab Proxmox/OPNsense boxes usually run self-signed certificates. Each integr
 `GET /api/health` returns `{"status":"ok","database":"up"}` (200) when the app can reach PostgreSQL, and 503 otherwise. The Docker healthcheck and the installers poll this endpoint.
 
 ```bash
-curl -s http://localhost:3000/api/health
+# -kL follows the HTTP→HTTPS redirect and accepts the self-signed certificate
+curl -skL http://localhost:3000/api/health
 ```
 
 ### Container keeps restarting / "database is still unreachable"

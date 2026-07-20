@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { copyText } from "@/components/shared/clipboard";
 import { cn } from "@/lib/utils";
 
 /** Small ghost icon button that copies `value` and flashes a check mark. */
@@ -20,7 +21,7 @@ export function CopyButton({
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyText(value);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {

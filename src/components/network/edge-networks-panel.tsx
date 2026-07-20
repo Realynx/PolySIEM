@@ -30,8 +30,10 @@ import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/format";
 import { buildEdgeBootstrapCommand } from "@/lib/integrations/edge-nat/bootstrap";
 import { apiFetch } from "@/components/shared/api-client";
+import { copyText } from "@/components/shared/clipboard";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { CopyButton } from "@/components/ssh/copy-button";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -453,7 +455,7 @@ const CLOUDFLARE_ROUTE_PERMISSION_TEXT = [
 function CloudflareTokenUpgradeDialog({ integration, open, onOpenChange }: { integration: OtherEdgeNetwork; open: boolean; onOpenChange: (open: boolean) => void }) {
   const copyPermissions = async () => {
     try {
-      await navigator.clipboard.writeText(CLOUDFLARE_ROUTE_PERMISSION_TEXT);
+      await copyText(CLOUDFLARE_ROUTE_PERMISSION_TEXT);
       toast.success("Permission checklist copied");
     } catch {
       toast.error("Could not copy the permission checklist");
@@ -792,11 +794,6 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
     },
     onError: (error: Error) => toast.error(`Could not install the Edge service: ${error.message}`),
   });
-  const copy = async (value: string, label: string) => {
-    try { await navigator.clipboard.writeText(value); toast.success(`${label} copied`); }
-    catch { toast.error(`Could not copy ${label.toLowerCase()}`); }
-  };
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-2xl">
@@ -820,10 +817,10 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
             </div>
             <p className="text-sm text-muted-foreground">Sign in to that account and run this short command. It adds a forced, temporary installer key—not a general shell key.</p>
             {bootstrapCommand ? (
-              <CopyBlock value={bootstrapCommand} label="Setup command" onCopy={copy} />
+              <CopyBlock value={bootstrapCommand} label="Setup command" />
             ) : publicKey ? (
               <>
-                <CopyBlock value={publicKey} label="Public key" onCopy={copy} />
+                <CopyBlock value={publicKey} label="Public key" />
                 <p className="text-xs text-warning">The setup command could not be generated. Recreate this integration before continuing.</p>
               </>
             ) : (
@@ -885,8 +882,8 @@ function EnrollmentStep({ number, title, children }: { number: string; title: st
   return <section className="grid gap-3 sm:grid-cols-[2rem_1fr]"><div className="flex size-7 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground">{number}</div><div className="min-w-0 space-y-3"><h3 className="font-medium">{title}</h3>{children}</div></section>;
 }
 
-function CopyBlock({ value, label, onCopy }: { value: string; label: string; onCopy: (value: string, label: string) => Promise<void> }) {
-  return <div className="relative rounded-lg bg-muted p-3 pr-12"><pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all text-xs"><code>{value}</code></pre><Button type="button" variant="ghost" size="icon-sm" className="absolute right-2 top-2" aria-label={`Copy ${label}`} onClick={() => void onCopy(value, label)}><Copy /></Button></div>;
+function CopyBlock({ value, label }: { value: string; label: string }) {
+  return <div className="relative rounded-lg bg-muted p-3 pr-12"><pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all text-xs"><code>{value}</code></pre><CopyButton value={value} label={`Copy ${label}`} className="absolute right-2 top-2" /></div>;
 }
 
 function ReconciliationStatus({ server }: { server: EdgeNatServer }) {

@@ -36,7 +36,8 @@ wait_for_health() {
     attempts="${1:-45}"
     i=0
     while [ "$i" -lt "$attempts" ]; do
-        if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
+        # -kL: follow the HTTP->HTTPS redirect and accept the self-signed cert.
+        if curl -fsSkL "$HEALTH_URL" >/dev/null 2>&1; then
             return 0
         fi
         i=$((i + 1))

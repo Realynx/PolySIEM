@@ -18,6 +18,8 @@ services:
     ports:
       - "3000:3000"
     env_file: ../.env
+    volumes:
+      - polysiem-data:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -39,3 +41,4 @@ services:
 
 volumes:
   polysiem-pgdata:
+  polysiem-data:

@@ -21,10 +21,17 @@ your homelab inventory and write PolySIEM-owned documentation.
 
 ## 2. Connect a client
 
+PolySIEM serves HTTPS by default with a self-signed certificate, which most MCP
+clients (Node-based) refuse to trust. Pick one: upload a certificate your
+machines already trust under **Settings → Web certificate**, set
+`NODE_TLS_REJECT_UNAUTHORIZED=0` in the client's environment (acceptable on a
+trusted LAN — it disables all TLS verification for that process), or run
+PolySIEM with `POLYSIEM_TLS=off` behind your own reverse proxy.
+
 ### Claude Code
 
 ```bash
-claude mcp add --transport http polysiem http://HOST:3000/api/mcp \
+claude mcp add --transport http polysiem https://HOST:3000/api/mcp \
   --header "Authorization: Bearer ps_YOUR_TOKEN"
 ```
 
@@ -40,7 +47,7 @@ as `mcp-remote`. Add this to `claude_desktop_config.json`:
       "command": "npx",
       "args": [
         "mcp-remote",
-        "http://HOST:3000/api/mcp",
+        "https://HOST:3000/api/mcp",
         "--header",
         "Authorization: Bearer ps_YOUR_TOKEN"
       ]
@@ -52,7 +59,7 @@ as `mcp-remote`. Add this to `claude_desktop_config.json`:
 ### MCP Inspector
 
 ```bash
-npx @modelcontextprotocol/inspector --cli http://HOST:3000/api/mcp \
+npx @modelcontextprotocol/inspector --cli https://HOST:3000/api/mcp \
   --transport http \
   --header "Authorization: Bearer ps_YOUR_TOKEN" \
   --method tools/list

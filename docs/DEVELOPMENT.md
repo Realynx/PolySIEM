@@ -21,7 +21,7 @@ npm run db:seed
 npm run dev
 ```
 
-Then open `http://localhost:3000` and walk through the first-run installer to create an administrator. Note that the development seed creates no users or default credentials, and it refuses to run in production unless you set `ALLOW_SEED=true`.
+Then open `http://localhost:3000` and walk through the first-run installer to create an administrator. The dev server speaks plain HTTP by default; to mirror production's HTTPS (same self-signed certificate files under `data/certs`), use `npm run dev:https` instead — note there is no HTTP→HTTPS redirect in dev, so use `https://` URLs explicitly. Note that the development seed creates no users or default credentials, and it refuses to run in production unless you set `ALLOW_SEED=true`.
 
 ## Common commands
 
@@ -53,7 +53,7 @@ There's also an isolated, read-only public demo stack:
 npm run demo
 ```
 
-Open `http://localhost:3000` and select **Sign in**; the form comes pre-filled with `demo` / `polysiem-demo`. This stack runs on its own PostgreSQL volume with coordinated mock integrations, so it won't touch your normal dev database.
+Open `https://localhost:3000` (the container serves HTTPS with a self-signed certificate; plain `http://` redirects there) and select **Sign in**; the form comes pre-filled with `demo` / `polysiem-demo`. This stack runs on its own PostgreSQL volume with coordinated mock integrations, so it won't touch your normal dev database.
 
 ```bash
 npm run demo:logs

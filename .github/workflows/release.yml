@@ -59,6 +59,8 @@ jobs:
           test -f deploy/native-auto-update.sh
           test -f deploy/standalone-entrypoint.sh
           test -f deploy/standalone-entrypoint.ps1
+          test -f server/tls-server.js
+          test -f server/cert-utils.js
 
       - name: Install dependencies
         run: npm ci
@@ -163,6 +165,7 @@ jobs:
           test -f "${STAGE}/node_modules/.prisma/client/libquery_engine-debian-openssl-1.1.x.so.node"
           test -f "${STAGE}/node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node"
           cp -a public prisma "${STAGE}/"
+          cp server/tls-server.js server/cert-utils.js "${STAGE}/"
           cp deploy/standalone-entrypoint.sh "${STAGE}/start.sh"
           cp deploy/polysiem.service "${STAGE}/polysiem.service"
           cp .env.example README.md LICENSE "${STAGE}/"
@@ -216,6 +219,7 @@ jobs:
           Copy-Item -Recurse -Force ".next\standalone\*" $stage
           Copy-Item -Recurse -Force ".next\static" "$stage\.next\static"
           Copy-Item -Recurse -Force "public", "prisma" $stage
+          Copy-Item "server\tls-server.js", "server\cert-utils.js" $stage
           Copy-Item "deploy\standalone-entrypoint.ps1" "$stage\start.ps1"
           Copy-Item ".env.example", "README.md", "LICENSE" $stage
           $prismaVersion = node -p "require('./package.json').devDependencies.prisma.replace(/^[^0-9]*/, '')"
