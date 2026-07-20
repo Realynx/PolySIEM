@@ -23,6 +23,14 @@ If your homelab is anything like ours, the truth about it lives in a dozen place
 
 It connects to Proxmox, OPNsense, UniFi, Cloudflare, Tailscale, Elasticsearch, OTX, Censys, and SecurityTrails. Once things are wired up you can search and annotate the inventory (with audit history and network context stitched across integrations), dig through logs, investigate threats, build workflows, and expose scoped documentation through MCP. It runs entirely on your own infrastructure, with encrypted credentials, roles, and no default accounts.
 
+<p align="center">
+  <img src="docs/images/about-page.png" width="460" alt="PolySIEM about page: a neofetch-style terminal reporting cluster, CPU, memory, storage, container, and VM totals">
+</p>
+
+<p align="center">
+  <sub>The in-app about page — a live <code>neofetch</code> for your lab.</sub>
+</p>
+
 ## Security, AI, and Suricata
 
 The security advisor scores your network exposure, firewall hygiene, access and identity, host hardening, and documentation coverage, then tells you what to fix first.
