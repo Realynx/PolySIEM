@@ -1,59 +1,61 @@
 # PolySIEM maintainability guide
 
-This guide describes the boundaries current code follows. Prefer these seams when adding features or refactoring existing ones.
+This guide describes the boundaries the current code already follows. When you add a feature or refactor an existing one, work with these seams rather than around them.
 
 ## Dependency direction
+
+The layers, from the outside in:
 
 1. API routes authenticate, parse transport input, and delegate.
 2. Services enforce application policy, coordinate persistence, audit mutations, and translate domain failures into `ApiError`.
 3. Integration drivers adapt approved provider-neutral requests to external APIs.
 4. Pure contracts, validators, and helpers must not depend on React, Next responses, Prisma clients, or provider SDKs unless that dependency is their explicit responsibility.
 
-Avoid calling integration clients directly from routes, components, or workflow actions. Reuse the guarded service operation so UI, workflows, and future tools receive the same validation and audit behavior.
+Don't call integration clients directly from routes, components, or workflow actions. Go through the guarded service operation instead, so the UI, workflows, and whatever tools come later all get the same validation and audit behavior.
 
 ## Integration extensions
 
-`IntegrationDriver` is capability-driven. Add `inventorySynchronizer`, `containerProvisioner`, or a future explicit capability to the provider driver. Do not add provider-type switches to the scheduler or orchestration services.
+`IntegrationDriver` is capability-driven. When a provider gains a new ability, add `inventorySynchronizer`, `containerProvisioner`, or a new explicit capability to that provider's driver. What you should not do is add provider-type switches to the scheduler or orchestration services.
 
-Mutation capabilities use narrow allowlist contracts such as `ContainerCreateRequest`. Do not expose arbitrary provider URLs, paths, methods, or request bodies through workflows or UI features. Provider-specific error interpretation belongs to the provider adapter through a framework-neutral descriptor.
+Mutation capabilities use narrow allowlist contracts such as `ContainerCreateRequest`. Never expose arbitrary provider URLs, paths, methods, or request bodies through workflows or UI features. If a provider returns errors that need interpretation, that logic belongs in the provider adapter, surfaced through a framework-neutral descriptor.
 
-See [ADR 0001](adr/0001-capability-driven-integration-drivers.md).
+The reasoning is written up in [ADR 0001](adr/0001-capability-driven-integration-drivers.md).
 
 ## Service organization
 
-Keep entity operations explicit when auditing, ownership policy, or Prisma result shapes differ. The inventory facade at `src/lib/services/inventory.ts` preserves the public API while cohesive modules under `src/lib/services/inventory/` own each entity family.
+Keep entity operations explicit whenever auditing, ownership policy, or Prisma result shapes differ between entities. The inventory facade at `src/lib/services/inventory.ts` keeps the public API stable while cohesive modules under `src/lib/services/inventory/` each own an entity family.
 
-Share policies and query helpers only when their semantics are genuinely identical. Do not introduce a generic repository that hides audit actions, integration-owned-field rules, or relation projections.
+Only share policies and query helpers when their semantics are genuinely identical, not merely similar. And resist the urge to introduce a generic repository. It would hide audit actions, integration-owned-field rules, and relation projections, which is exactly what we don't want hidden.
 
-Focused boundary policies belong in focused modules. For example, Elasticsearch upstream-error normalization lives in `src/lib/services/elasticsearch-upstream.ts`, not in one of its callers.
+Focused boundary policies belong in focused modules. Elasticsearch upstream-error normalization, for example, lives in `src/lib/services/elasticsearch-upstream.ts` rather than inside one of its callers.
 
 ## Workflow extensions
 
-Node metadata and client-safe workflow contracts live in `src/lib/workflows/types.ts`. The engine and builder consume the same trigger-kind and trigger-parameter rules. Add catalog fields additively and preserve legacy re-exports when external consumers may import them.
+Node metadata and client-safe workflow contracts live in `src/lib/workflows/types.ts`, and the engine and builder consume the same trigger-kind and trigger-parameter rules. Add catalog fields additively, and preserve legacy re-exports when external consumers may still import them.
 
-Workflow actions should be small adapters around an existing service operation. Shared action execution belongs in a narrowly named helper when behavior is identical; caller-specific error wording remains caller-owned.
+A workflow action should be a small adapter around an existing service operation. If two actions genuinely share execution behavior, put it in a narrowly named helper, but keep caller-specific error wording with the caller.
 
 Never add an arbitrary infrastructure API action. Add a reviewed action with a strict schema and explicit outputs.
 
 ## Frontend organization
 
-Use `src/components/shared/api-envelope.ts` for PolySIEM API envelopes and `useDebounced` for delayed inputs. Feature wrappers may retain their request construction and user-facing fallback copy.
+Use `src/components/shared/api-envelope.ts` for PolySIEM API envelopes and `useDebounced` for delayed inputs. Feature wrappers can keep their own request construction and user-facing fallback copy.
 
-For stateful panels, separate transport/state transitions from presentation once the controller becomes independently understandable. `useDocInterview` is the model: the hook owns SSE and phase transitions; the panel owns rendering and review UI.
+For stateful panels, split transport and state transitions from presentation once the controller becomes independently understandable. `useDocInterview` is the pattern to copy: the hook owns SSE and phase transitions, the panel owns rendering and the review UI.
 
-Avoid extracting tiny one-use visual fragments solely to reduce line count. Extract cohesive behavior, reusable policy, or independently testable transformations.
+Don't extract tiny one-use visual fragments just to shrink a file. Extract when you have cohesive behavior, reusable policy, or a transformation worth testing on its own.
 
 ## Verification expectations
 
-- Preserve public barrels and contracts with explicit export tests when moving modules.
+- When moving modules, preserve public barrels and contracts, with explicit export tests to prove it.
 - Add pure tests for selection, validation, translation, redaction, and initialization helpers.
 - Add orchestration tests when a service coordinates provider mutation, synchronization, reconciliation, and auditing.
 - Run targeted tests and lint while iterating, then `npm run typecheck`, `npm run lint`, and `npm test` before handoff.
-- Treat the existing Vite warning for the variable MCP integration import separately; it is not caused by these boundaries.
+- The existing Vite warning for the variable MCP integration import is a separate issue; these boundaries don't cause it.
 
 ## Remaining hotspots
 
-These are candidates for later bounded refactors, not invitations to rewrite them wholesale:
+These are candidates for later bounded refactors. They are not invitations to rewrite anything wholesale.
 
 1. `components/topology/footprint-map.tsx` and `network-access-map.tsx`: separate graph construction/routing from interaction and rendering, backed by graph regression tests.
 2. `components/settings/backup-manager.tsx`: separate destination CRUD, scheduling, history, and restore flows.

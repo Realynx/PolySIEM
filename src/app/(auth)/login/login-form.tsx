@@ -50,7 +50,7 @@ export function LoginForm({
   }
 
   return (
-    <Card>
+    <Card className="border-primary/10 bg-card/80 shadow-xl shadow-primary/5 backdrop-blur-md">
       <CardContent className="pt-6">
         <form onSubmit={onSubmit} className="space-y-4">
           {demoCredentials && (

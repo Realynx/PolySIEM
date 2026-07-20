@@ -56,6 +56,7 @@ jobs:
           test -f README.md
           test -f LICENSE
           test -f deploy/auto-update.sh
+          test -f deploy/native-auto-update.sh
           test -f deploy/standalone-entrypoint.sh
           test -f deploy/standalone-entrypoint.ps1
 
@@ -154,6 +155,13 @@ jobs:
           mkdir -p "${STAGE}/.next"
           cp -a .next/standalone/. "${STAGE}/"
           cp -a .next/static "${STAGE}/.next/static"
+          # Next's file tracing can omit non-native Prisma engines. Copy the
+          # complete generated client so the native bundle works across the
+          # supported Debian/Ubuntu OpenSSL generations.
+          mkdir -p "${STAGE}/node_modules"
+          cp -a node_modules/.prisma "${STAGE}/node_modules/.prisma"
+          test -f "${STAGE}/node_modules/.prisma/client/libquery_engine-debian-openssl-1.1.x.so.node"
+          test -f "${STAGE}/node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node"
           cp -a public prisma "${STAGE}/"
           cp deploy/standalone-entrypoint.sh "${STAGE}/start.sh"
           cp deploy/polysiem.service "${STAGE}/polysiem.service"
@@ -235,14 +243,14 @@ jobs:
         run: |
           mkdir release
           cp deploy/install.sh deploy/install.ps1 deploy/install-vm.sh release/
-          cp deploy/update.sh deploy/update.ps1 deploy/auto-update.sh deploy/docker-compose.yml deploy/docker-compose.demo.yml release/
+          cp deploy/update.sh deploy/update.ps1 deploy/auto-update.sh deploy/native-auto-update.sh deploy/docker-compose.yml deploy/docker-compose.demo.yml release/
           IMAGE_REPOSITORY="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           jq -n \
             --arg version "${{ needs.validate.outputs.version }}" \
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg image "ghcr.io/${IMAGE_REPOSITORY}:${{ needs.validate.outputs.version }}" \
             --arg nativeLinuxX64Bundle "polysiem-${{ needs.validate.outputs.version }}-standalone-linux-x64.tar.gz" \
-            '{schemaVersion: 1, version: $version, repository: $repository, image: $image, platforms: {docker: ["linux/amd64", "linux/arm64"], installers: ["linux", "windows"]}, assets: {compose: "docker-compose.yml", demoCompose: "docker-compose.demo.yml", linuxInstaller: "install.sh", windowsInstaller: "install.ps1", linuxUpdater: "update.sh", linuxAutoUpdater: "auto-update.sh", windowsUpdater: "update.ps1", nativeLinuxInstaller: "install-vm.sh", nativeLinuxX64Bundle: $nativeLinuxX64Bundle}}' \
+            '{schemaVersion: 1, version: $version, repository: $repository, image: $image, platforms: {docker: ["linux/amd64", "linux/arm64"], installers: ["linux", "windows"]}, assets: {compose: "docker-compose.yml", demoCompose: "docker-compose.demo.yml", linuxInstaller: "install.sh", windowsInstaller: "install.ps1", linuxUpdater: "update.sh", linuxAutoUpdater: "auto-update.sh", nativeLinuxAutoUpdater: "native-auto-update.sh", windowsUpdater: "update.ps1", nativeLinuxInstaller: "install-vm.sh", nativeLinuxX64Bundle: $nativeLinuxX64Bundle}}' \
             > release/release-manifest.json
 
       - name: Upload deployment assets

@@ -7,9 +7,11 @@
 #
 # Usage:
 #   curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash
+#   curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --demo
 #   curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --source
 #
 # Options:
+#   --demo    provision a locked, read-only demo with login demo / demo
 #   --source  build the selected release from source instead of using a bundle
 #   --force   reinstall even when the selected release is already healthy
 #   --uninstall
@@ -49,6 +51,9 @@ BUNDLE_ASSET=""
 SOURCE_MODE=0
 FORCE_INSTALL=0
 UNINSTALL_MODE=0
+DEMO_REQUESTED=0
+DEMO_MODE=0
+DEMO_CONFIG_CHANGED=0
 ROLLBACK_ARMED=0
 ROLLING_BACK=0
 SERVICE_STOPPED_FOR_UPDATE=0
@@ -60,6 +65,7 @@ die()  { printf '\033[1;31m[polysiem] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
+            --demo) DEMO_REQUESTED=1; DEMO_MODE=1 ;;
             --source) SOURCE_MODE=1 ;;
             --force) FORCE_INSTALL=1 ;;
             --uninstall) UNINSTALL_MODE=1 ;;
@@ -67,18 +73,35 @@ parse_args() {
                 sed -n '2,/^set -/s/^# \{0,1\}//p' "$0" 2>/dev/null || true
                 exit 0
                 ;;
-            *) die "unknown option: $1 (supported: --source, --force, --uninstall)" ;;
+            *) die "unknown option: $1 (supported: --demo, --source, --force, --uninstall)" ;;
         esac
         shift
     done
     if [ "$UNINSTALL_MODE" -eq 1 ]; then
-        if [ "$SOURCE_MODE" -eq 1 ] || [ "$FORCE_INSTALL" -eq 1 ]; then
-            die "--uninstall cannot be combined with --source or --force"
+        if [ "$DEMO_REQUESTED" -eq 1 ] || [ "$SOURCE_MODE" -eq 1 ] || [ "$FORCE_INSTALL" -eq 1 ]; then
+            die "--uninstall cannot be combined with --demo, --source, or --force"
         fi
         return 0
     fi
     if [ -n "$CUSTOM_REF" ]; then
         SOURCE_MODE=1
+    fi
+}
+
+detect_existing_install_mode() {
+    [ -f "$ENV_FILE" ] || return 0
+
+    if grep -qx 'POLYSIEM_DEMO_MODE=true' "$ENV_FILE" \
+        && grep -qx 'POLYSIEM_DEMO_LOCKED=true' "$ENV_FILE"; then
+        DEMO_MODE=1
+        if [ "$DEMO_REQUESTED" -eq 0 ]; then
+            log "Existing locked demo configuration found — preserving demo mode"
+        fi
+        return 0
+    fi
+
+    if [ "$DEMO_REQUESTED" -eq 1 ]; then
+        die "--demo requires a fresh dedicated instance. This is an existing normal install; run --uninstall first if its data can be deleted."
     fi
 }
 
@@ -220,6 +243,75 @@ EOF
     chown polysiem:polysiem "$ENV_FILE"
 }
 
+set_env_value() {
+    key="$1"
+    value="$2"
+    if grep -qx "${key}=${value}" "$ENV_FILE"; then
+        return 0
+    fi
+    if grep -q "^${key}=" "$ENV_FILE"; then
+        sed -i "s/^${key}=.*/${key}=${value}/" "$ENV_FILE"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    fi
+    DEMO_CONFIG_CHANGED=1
+}
+
+configure_demo_mode() {
+    [ "$DEMO_MODE" -eq 1 ] || return 0
+
+    log "Configuring immutable public demo (login: demo / demo)..."
+    set_env_value POLYSIEM_DEMO_MODE true
+    set_env_value POLYSIEM_DEMO_LOCKED true
+    set_env_value POLYSIEM_DEMO_AUTO_SETUP true
+    set_env_value POLYSIEM_DEMO_USERNAME demo
+    set_env_value POLYSIEM_DEMO_PASSWORD demo
+    set_env_value POLYSIEM_DEMO_PROFILE security-incident
+    set_env_value POLYSIEM_DEMO_SEED native-public-demo
+    set_env_value POLYSIEM_DEMO_SIZE 3
+    set_env_value MOCK_AI true
+    set_env_value POLYSIEM_AUTO_UPDATE_CAPABLE true
+    chmod 600 "$ENV_FILE"
+    chown polysiem:polysiem "$ENV_FILE"
+}
+
+install_demo_auto_update_timer() {
+    [ "$DEMO_MODE" -eq 1 ] || return 0
+
+    log "Installing enforced automatic updates for the locked demo..."
+    curl -fsSL "${RELEASE_BASE}/native-auto-update.sh" -o "${BASE_DIR}/native-auto-update.sh" \
+        || die "could not download native-auto-update.sh"
+    chown root:root "${BASE_DIR}/native-auto-update.sh"
+    chmod 700 "${BASE_DIR}/native-auto-update.sh"
+
+    cat > /etc/systemd/system/polysiem-native-auto-update.service <<EOF
+[Unit]
+Description=PolySIEM native locked-demo automatic update
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=POLYSIEM_REPO=${POLYSIEM_REPO}
+ExecStart=${BASE_DIR}/native-auto-update.sh
+EOF
+    cat > /etc/systemd/system/polysiem-native-auto-update.timer <<'EOF'
+[Unit]
+Description=Check for verified PolySIEM native demo releases
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now polysiem-native-auto-update.timer >/dev/null
+}
+
 ensure_release_metadata() {
     if ! grep -q '^POLYSIEM_GITHUB_REPOSITORY=' "$ENV_FILE"; then
         printf '\nPOLYSIEM_GITHUB_REPOSITORY=%s\n' "$REPO_SLUG" >> "$ENV_FILE"
@@ -232,10 +324,15 @@ ensure_release_metadata() {
 current_release_is_healthy() {
     [ "$SOURCE_MODE" -eq 0 ] || return 1
     [ "$FORCE_INSTALL" -eq 0 ] || return 1
+    [ "$DEMO_CONFIG_CHANGED" -eq 0 ] || return 1
     [ -f "$VERSION_FILE" ] || return 1
     [ "$(tr -d '\r\n' < "$VERSION_FILE")" = "$RELEASE_VERSION" ] || return 1
     [ -f "${RUN_DIR}/server.js" ] || return 1
     systemctl is-active --quiet polysiem || return 1
+    if [ "$DEMO_MODE" -eq 1 ]; then
+        [ -x "${BASE_DIR}/native-auto-update.sh" ] || return 1
+        systemctl is-enabled --quiet polysiem-native-auto-update.timer || return 1
+    fi
     curl -fsS http://localhost:3000/api/health >/dev/null 2>&1
 }
 
@@ -297,12 +394,16 @@ prepare_bundle_runtime() {
 
     mkdir -p "$BASE_DIR"
     STAGED_RUNTIME="$(mktemp -d "${BASE_DIR}/.run-next.XXXXXX")"
-    tar -xzf "$bundle_path" -C "$STAGED_RUNTIME" --strip-components=1
+    tar -xzf "$bundle_path" -C "$STAGED_RUNTIME" --strip-components=1 --no-same-owner
     [ -f "${STAGED_RUNTIME}/server.js" ] || die "release bundle is missing server.js"
     [ -x "${STAGED_RUNTIME}/prisma-cli/node_modules/.bin/prisma" ] \
         || die "release bundle is missing the Prisma CLI"
     [ -f "${STAGED_RUNTIME}/prisma/schema.prisma" ] \
         || die "release bundle is missing the Prisma schema"
+    [ -f "${STAGED_RUNTIME}/node_modules/.prisma/client/libquery_engine-debian-openssl-1.1.x.so.node" ] \
+        || die "release bundle is missing the Prisma OpenSSL 1.1 query engine"
+    [ -f "${STAGED_RUNTIME}/node_modules/.prisma/client/libquery_engine-debian-openssl-3.0.x.so.node" ] \
+        || die "release bundle is missing the Prisma OpenSSL 3 query engine"
     [ -f "${STAGED_RUNTIME}/polysiem.service" ] \
         || die "release bundle is missing the systemd service"
 }
@@ -376,6 +477,7 @@ restore_native_install() {
 
 uninstall_native() {
     warn "Uninstalling PolySIEM permanently (database, config, runtime, and backups)..."
+    systemctl disable --now polysiem-native-auto-update.timer >/dev/null 2>&1 || true
     systemctl disable --now polysiem >/dev/null 2>&1 || true
 
     if command -v psql >/dev/null 2>&1 && id postgres >/dev/null 2>&1; then
@@ -407,6 +509,8 @@ uninstall_native() {
     fi
 
     rm -f /etc/systemd/system/polysiem.service
+    rm -f /etc/systemd/system/polysiem-native-auto-update.service
+    rm -f /etc/systemd/system/polysiem-native-auto-update.timer
     systemctl daemon-reload
     systemctl reset-failed polysiem >/dev/null 2>&1 || true
 
@@ -463,6 +567,10 @@ activate_runtime() {
     rm -rf "$RUN_DIR"
     mv "$STAGED_RUNTIME" "$RUN_DIR"
     STAGED_RUNTIME=""
+    # mktemp creates the staging root as 0700. Keep the runtime root-owned, but
+    # allow the unprivileged service account to traverse and read it.
+    chown root:root "$BASE_DIR" "$RUN_DIR"
+    chmod 0755 "$BASE_DIR" "$RUN_DIR"
 }
 
 install_service() {
@@ -490,14 +598,20 @@ success_box() {
     else
         update_description="verified bundle, backup, migrate, health check, rollback"
     fi
+    if [ "$DEMO_MODE" -eq 1 ]; then
+        next_step="Login:       demo / demo (locked read-only demo)
+  Updates:     automatic, every 15 minutes"
+    else
+        next_step="Next step:   the setup wizard in your browser creates the
+               first admin account — no CLI steps needed."
+    fi
     cat <<EOF
 
  ==============================================================
   PolySIEM is up and running (native install)!
 
   Open:        http://${HOST_IP}:3000
-  Next step:   the setup wizard in your browser creates the
-               first admin account — no CLI steps needed.
+  ${next_step}
 
   Data:
     Config     ${ENV_FILE}  (back this up! APP_SECRET encrypts
@@ -522,19 +636,21 @@ main() {
         exit 0
     fi
     check_apt
+    detect_existing_install_mode
     select_install_mode
     install_packages
     load_release_ref
+
+    create_user
+    setup_database
+    configure_demo_mode
+    ensure_release_metadata
 
     if current_release_is_healthy; then
         log "PolySIEM ${RELEASE_VERSION} is already installed and healthy; nothing to do."
         success_box
         exit 0
     fi
-
-    create_user
-    setup_database
-    ensure_release_metadata
 
     if [ "$SOURCE_MODE" -eq 1 ]; then
         prepare_source_runtime
@@ -547,6 +663,7 @@ main() {
     activate_runtime
     install_service
     if wait_for_health; then
+        install_demo_auto_update_timer
         record_installed_version
         ROLLBACK_ARMED=0
         success_box

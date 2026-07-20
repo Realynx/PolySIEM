@@ -1,6 +1,6 @@
 # PolySIEM — Installation, upgrade & troubleshooting
 
-This is the long-form companion to the [README quick start](../README.md#quick-start). See the [documentation hub](README.md) for the rest of the guides.
+This is the long-form companion to the [README install section](../README.md#install). If you're after the other guides, they're all listed in the [documentation hub](README.md).
 
 ## Contents
 
@@ -18,8 +18,9 @@ This is the long-form companion to the [README quick start](../README.md#quick-s
 
 ## Requirements
 
-- A Linux host, VM/LXC, or Windows 10/11 host. PolySIEM is a homelab tool and runs PostgreSQL beside the application.
-- Linux Docker path: Debian/Ubuntu or Fedora/RHEL family. Other Linux distributions can use the manual Compose path.
+You'll need a Linux host, a VM/LXC, or a Windows 10/11 machine. PolySIEM is a homelab tool and runs PostgreSQL right beside the application, so plan for both.
+
+- Linux Docker path: Debian/Ubuntu or Fedora/RHEL family. Any other distro can use the manual Compose path instead.
 - Windows path: Docker Desktop configured for Linux containers.
 - Native, non-Docker path: Debian/Ubuntu only.
 - ~1 GB RAM free, a couple of GB of disk.
@@ -31,7 +32,7 @@ This is the long-form companion to the [README quick start](../README.md#quick-s
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install.sh | bash
 ```
 
-What it does:
+Here's what the script actually does:
 
 1. Re-executes itself with `sudo` if needed.
 2. Installs Docker (get.docker.com) and the compose plugin if missing.
@@ -40,7 +41,7 @@ What it does:
 5. Downloads `docker-compose.yml` and the updater from the same GitHub Release, pulls `ghcr.io/realynx/polysiem:latest`, and starts PolySIEM + PostgreSQL 17.
 6. Waits for `GET /api/health` to go green and prints the URL.
 
-Re-running the installer is safe: your `.env` is kept, a newer image is pulled, containers are restarted.
+Running it again is safe. Your `.env` is kept, a newer image is pulled, and the containers are restarted.
 
 Environment overrides: `INSTALL_DIR`, `POLYSIEM_REPO` (repo URL), `POLYSIEM_BRANCH` (source mode only).
 
@@ -52,9 +53,9 @@ Install and start [Docker Desktop](https://www.docker.com/products/docker-deskto
 irm https://github.com/Realynx/PolySIEM/releases/latest/download/install.ps1 | iex
 ```
 
-The script validates Docker, creates `%LOCALAPPDATA%\PolySIEM`, generates `.env` with cryptographically random database/encryption secrets, downloads the matching release Compose file and updater, starts the stack, and waits for health. Override the directory with `POLYSIEM_INSTALL_DIR` or the repository with `POLYSIEM_GITHUB_REPOSITORY`.
+The script validates Docker, creates `%LOCALAPPDATA%\PolySIEM`, generates `.env` with cryptographically random database/encryption secrets, downloads the matching release Compose file and updater, starts the stack, and waits for health. If you want it somewhere else, set `POLYSIEM_INSTALL_DIR`; to point at a fork, set `POLYSIEM_GITHUB_REPOSITORY`.
 
-Service management from PowerShell:
+Day-to-day service management from PowerShell:
 
 ```powershell
 cd "$env:LOCALAPPDATA\PolySIEM"
@@ -64,6 +65,8 @@ docker compose restart polysiem
 ```
 
 ## Option 3: Manual Docker Compose
+
+Prefer to see exactly what runs on your box? Grab the Compose file yourself:
 
 ```bash
 mkdir -p /opt/polysiem && cd /opt/polysiem
@@ -85,7 +88,7 @@ Then:
 docker compose up -d
 ```
 
-Database migrations run automatically every time the `polysiem` container starts (the entrypoint retries until PostgreSQL is up, then runs `prisma migrate deploy`).
+You don't need to run migrations by hand. They run automatically every time the `polysiem` container starts — the entrypoint retries until PostgreSQL is up, then runs `prisma migrate deploy`.
 
 ## Option 4: Build from source (Docker)
 
@@ -112,17 +115,20 @@ For a Debian/Ubuntu VM or LXC (e.g. on Proxmox), no Docker involved:
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash
 ```
 
-What it does: installs Node 22 (NodeSource) + distro PostgreSQL, creates a `polysiem` system user and database, downloads the exact x86-64 standalone bundle named by the latest release manifest, verifies it against the release's `SHA256SUMS`, writes `/opt/polysiem/.env`, applies migrations, switches the runtime in `/opt/polysiem/run`, and installs a hardened systemd unit (`polysiem.service`: `NoNewPrivileges`, `ProtectSystem=full`, `PrivateTmp`). Re-running an unchanged healthy release exits without reinstalling it.
+This one does a fair bit: it installs Node 22 (NodeSource) + distro PostgreSQL, creates a `polysiem` system user and database, downloads the exact x86-64 standalone bundle named by the latest release manifest, verifies it against the release's `SHA256SUMS`, writes `/opt/polysiem/.env`, applies migrations, switches the runtime in `/opt/polysiem/run`, and installs a hardened systemd unit (`polysiem.service`: `NoNewPrivileges`, `ProtectSystem=full`, `PrivateTmp`). If you re-run it against an unchanged healthy release, it notices and exits without reinstalling anything.
 
-On architectures without a published native bundle, the installer falls back to building the selected release from source. Use `--source` to request that path explicitly, `--force` to repair/reinstall the current bundle, or `--uninstall` to permanently remove PolySIEM:
+On architectures without a published native bundle, the installer falls back to building the selected release from source. There are a few flags worth knowing: `--demo` on a fresh dedicated instance provisions an immutable sample environment with the `demo` / `demo` login, `--source` requests a source build explicitly, `--force` repairs or reinstalls the current bundle, and `--uninstall` permanently removes PolySIEM:
 
 ```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --demo
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --source
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --force
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --uninstall
 ```
 
-`--uninstall` deletes the PolySIEM PostgreSQL database and role, `/opt/polysiem` (including `.env` and every installer backup), the systemd unit, and the `polysiem` system user. It leaves the shared Node.js and PostgreSQL OS packages installed.
+`--demo` enables the locked public-demo boundary, auto-creates the demo account and coordinated mock integrations, and skips the setup wizard. A root-owned systemd timer checks every 15 minutes for a verified release, then uses the same native backup, migration, health-check, and rollback path. A failed version is not retried automatically. Demo mode refuses to convert an existing normal installation; use `--uninstall` first, and only when that instance's data can be deleted.
+
+`--uninstall` deletes the PolySIEM PostgreSQL database and role, `/opt/polysiem` (including `.env` and every installer backup), the systemd unit, and the `polysiem` system user. The shared Node.js and PostgreSQL OS packages are left installed.
 
 Service management:
 
@@ -134,7 +140,7 @@ systemctl restart polysiem
 
 ## First run
 
-Open `http://<your-server>:3000`. PolySIEM launches the first-run installer; there are no default credentials. Choose the administrator username and password, optionally connect integrations, then view or skip the isolated mock dashboard tutorial. Integrations can always be added later under **Admin → Integrations** — see [integration-setup.md](integration-setup.md) for least-privilege credentials or generated mock scenarios.
+Open `http://<your-server>:3000`. PolySIEM launches the first-run installer — there are no default credentials to hunt for. Pick the administrator username and password, optionally connect integrations, then view or skip the isolated mock dashboard tutorial. You can always add integrations later under **Admin → Integrations**; see [integration-setup.md](integration-setup.md) for least-privilege credentials or generated mock scenarios.
 
 ## Upgrading
 
@@ -146,11 +152,11 @@ Open `http://<your-server>:3000`. PolySIEM launches the first-run installer; the
 | Docker (source) | `git -C /opt/polysiem/src pull && docker compose --env-file /opt/polysiem/.env -f /opt/polysiem/src/deploy/docker-compose.source.yml up -d --build` |
 | Native VM/LXC | Re-run `install-vm.sh` (verified bundle → backup → migrate → restart) |
 
-Admins can use **Settings → About → Check for updates** to compare the running build with GitHub's latest stable release. The check is read-only and runs server-side so browser clients never call GitHub directly. It does not give the application access to Docker or the host.
+Not sure whether you're behind? Admins can use **Settings → About → Check for updates** to compare the running build with GitHub's latest stable release. The check is read-only and runs server-side, so browser clients never call GitHub directly, and it does not give the application access to Docker or the host.
 
 Managed Linux Docker installs also expose an **Automatic updates** toggle under **Settings → System**. It is off by default. When enabled, a root-owned systemd timer checks every 15 minutes and invokes the same transactional updater described below. A failed release is rolled back and is not retried automatically; inspect the preserved backup and run the updater manually after correcting the problem. PolySIEM itself never receives Docker access or root privileges.
 
-Linux Docker installations created before this feature should rerun the latest `install.sh` once. The installer preserves `.env` and data, adds the local update-agent token, and installs the timer; the toggle remains off until an administrator enables it.
+If your Linux Docker install predates this feature, rerun the latest `install.sh` once. The installer preserves `.env` and data, adds the local update-agent token, and installs the timer; the toggle remains off until an administrator enables it.
 
 The Linux and Windows Docker updaters perform this sequence:
 
@@ -159,27 +165,27 @@ The Linux and Windows Docker updaters perform this sequence:
 3. Downloads and validates `docker-compose.yml` from the latest GitHub Release, pulls the release image, and starts it. The container applies committed Prisma migrations with `prisma migrate deploy` before the server starts.
 4. Waits for the database-backed health endpoint. On failure it stops the new app, restores the database and Compose file, and starts the tagged previous image.
 
-The updater deliberately keeps both the backup and the rollback image after success. Linux stores backups under `/opt/polysiem/backups`; Windows stores them under `%LOCALAPPDATA%\PolySIEM\backups`. Remove old copies only after you have verified the release; no automatic retention policy guesses how much recovery history your homelab can afford.
+The updater deliberately keeps both the backup and the rollback image after success. Linux stores backups under `/opt/polysiem/backups`; Windows stores them under `%LOCALAPPDATA%\PolySIEM\backups`. Remove old copies only after you have verified the release — no automatic retention policy guesses how much recovery history your homelab can afford.
 
 ### Release artifacts
 
 Every tagged release is published only after all of these are ready:
 
 - A GHCR image manifest supporting `linux/amd64` and `linux/arm64`. Docker Desktop uses these Linux-container images on Windows.
-- `install.sh`, `update.sh`, `auto-update.sh`, and `install-vm.sh` for Linux.
+- `install.sh`, `update.sh`, `auto-update.sh`, `install-vm.sh`, and `native-auto-update.sh` for Linux.
 - `install.ps1` and `update.ps1` for Windows.
 - `docker-compose.yml`, `release-manifest.json`, and `SHA256SUMS`.
 - Versioned platform-specific native bundles: `polysiem-<version>-standalone-linux-x64.tar.gz` and `polysiem-<version>-standalone-windows-x64.zip`. Each contains a matching Prisma CLI and a `start.sh` or `start.ps1` entrypoint that applies migrations before starting Node. The Linux bundle also contains the native systemd unit.
 
 Installers and updaters consume the stable `releases/latest/download/...` assets, not mutable deployment files from `master`. `SHA256SUMS` covers every published artifact.
 
-The native installer follows the same principle: it downloads, checksum-verifies, and stages the new runtime first, stops the service, backs up PostgreSQL, `.env`, and `/opt/polysiem/run`, then migrates and switches the runtime. A source build is used only when explicitly requested or when no bundle exists for the host architecture. A failed migration or health check restores the saved database and runtime.
+The native installer follows the same principle: it downloads, checksum-verifies, and stages the new runtime first, stops the service, backs up PostgreSQL, `.env`, and `/opt/polysiem/run`, then migrates and switches the runtime. A source build is used only when explicitly requested or when no bundle exists for the host architecture. If a migration or health check fails, the saved database and runtime are restored.
 
-Source-mode Docker installs are developer-oriented and are not switched by the release-image updater. Take the database and `.env` backup below, build the new image, and keep the prior local image tag until the new build is healthy.
+Source-mode Docker installs are developer-oriented and are not switched by the release-image updater. Take the database and `.env` backup below, build the new image, and keep the prior local image tag around until the new build is healthy.
 
 ### Migration policy
 
-Prisma migrations are forward-only, but release migrations must remain operationally reversible through backup restore:
+Prisma migrations are forward-only, but release migrations must remain operationally reversible through backup restore. In practice that means:
 
 - Commit every production schema change under `prisma/migrations`; never use `prisma db push` during an update.
 - Prefer expand/backfill/contract changes. Add nullable columns or new tables first, deploy code that understands both shapes, backfill separately, and only remove old fields in a later release.
@@ -189,7 +195,7 @@ Prisma migrations are forward-only, but release migrations must remain operation
 
 ## Backup & restore
 
-Back up **two** things — the database and `.env`:
+There are **two** things to back up — the database and `.env`:
 
 ```bash
 # Docker
@@ -223,16 +229,16 @@ docker compose exec -T db pg_restore --exit-on-error --no-owner --no-privileges 
 docker compose up -d polysiem
 ```
 
-> **`APP_SECRET` matters:** integration credentials (Proxmox/OPNsense/Elasticsearch) are encrypted with it. Restoring the database with a *different* `APP_SECRET` means every integration credential must be re-entered. Restore the original `.env` alongside the dump.
+> **`APP_SECRET` matters:** integration credentials (Proxmox/OPNsense/Elasticsearch) are encrypted with it. Restore the database with a *different* `APP_SECRET` and every integration credential will need to be re-entered. Restore the original `.env` alongside the dump.
 
 ## Moving data to another machine
 
 1. On the old box: take a `pg_dump` and copy `.env` (see above).
-2. On the new box: run the installer, **stop before opening the wizard**: `cd /opt/polysiem && docker compose stop polysiem`.
+2. On the new box: run the installer, then **stop before opening the wizard**: `cd /opt/polysiem && docker compose stop polysiem`.
 3. Replace the generated `/opt/polysiem/.env` with your old one (keep the new file's `APP_URL` if the IP changed).
 4. Restore the dump into the new `db` container, then `docker compose up -d`.
 
-The named volume `polysiem-pgdata` holds the database files; alternatively you can move the raw volume with `docker run --rm -v polysiem-pgdata:/data -v $PWD:/backup alpine tar czf /backup/pgdata.tar.gz -C /data .` — but a `pg_dump` across Postgres versions is safer.
+The named volume `polysiem-pgdata` holds the database files. You could move the raw volume with `docker run --rm -v polysiem-pgdata:/data -v $PWD:/backup alpine tar czf /backup/pgdata.tar.gz -C /data .`, but a `pg_dump` across Postgres versions is safer.
 
 ## Troubleshooting
 
@@ -247,7 +253,7 @@ PostgreSQL is **not** published to the host in the compose setup — only the `p
 
 ### Self-signed TLS on integrations
 
-Homelab Proxmox/OPNsense boxes usually run self-signed certificates. Each integration in **Admin → Integrations** has a *"allow self-signed / skip TLS verification"* toggle — enabling it means PolySIEM will not verify that endpoint's certificate chain (fine on a trusted LAN, but it removes man-in-the-middle protection for that connection). Prefer installing a proper internal CA cert where you can.
+Homelab Proxmox/OPNsense boxes usually run self-signed certificates. Each integration in **Admin → Integrations** has a *"allow self-signed / skip TLS verification"* toggle. Enabling it means PolySIEM will not verify that endpoint's certificate chain — fine on a trusted LAN, but it removes man-in-the-middle protection for that connection. Prefer installing a proper internal CA cert where you can.
 
 ### Health check
 

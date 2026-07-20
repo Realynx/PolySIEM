@@ -1,6 +1,6 @@
 # Configuration
 
-PolySIEM reads its server configuration from environment variables. Installers generate a `.env` file automatically; source and manual Compose installations can start from [`.env.example`](../.env.example).
+PolySIEM reads its server configuration from environment variables. If you used one of the installers, a `.env` file was generated for you. For source builds and hand-rolled Compose setups, copy [`.env.example`](../.env.example) and fill it in.
 
 ## Required settings
 
@@ -10,7 +10,7 @@ PolySIEM reads its server configuration from environment variables. Installers g
 | `APP_SECRET` | Secret used to encrypt integration credentials at rest. Generate one with `openssl rand -hex 32`. |
 | `APP_URL` | Public base URL of the instance, such as `http://10.0.0.5:3000`. PolySIEM uses it for canonical and social-card links and in generated MCP configuration. |
 
-Keep `APP_SECRET` with every database backup. If it is lost or changed, the encrypted credentials in that database cannot be recovered and must be entered again.
+One thing worth repeating: keep `APP_SECRET` with every database backup. It encrypts your integration credentials, so if it's lost or changed, those credentials cannot be recovered and you'll be typing them all in again.
 
 ## Deployment settings
 
@@ -24,7 +24,7 @@ Keep `APP_SECRET` with every database backup. If it is lost or changed, the encr
 | `POLYSIEM_AUTO_UPDATE_CAPABLE` | Installer-managed | Enables the automatic-update toggle when the root-owned Linux update timer is installed. |
 | `POLYSIEM_UPDATE_AGENT_TOKEN` | Installer-managed | Random bearer token used only between the local update timer and PolySIEM. Treat it as a secret. |
 
-Changing the externally visible port also requires updating the Compose port mapping or native service configuration and `APP_URL`. See [installation troubleshooting](INSTALL.md#ports).
+If you change the externally visible port, remember that the Compose port mapping (or native service configuration) and `APP_URL` need to change with it. See [installation troubleshooting](INSTALL.md#ports).
 
 ## Development and demo settings
 
@@ -35,9 +35,9 @@ Changing the externally visible port also requires updating the Compose port map
 | `POLYSIEM_DEMO_LOCKED` | Locks persistent mutations in the dedicated public demo. |
 | `POLYSIEM_DEMO_AUTO_SETUP` | Bootstraps the dedicated public demo database. |
 
-Use the locked and auto-setup flags only through `deploy/docker-compose.demo.yml`. Never point that stack at a real PolySIEM database. See [demo mode](integration-setup.md#demo-mode) for the supported workflows.
+The locked and auto-setup flags are only meant to be set through `deploy/docker-compose.demo.yml` or the native installer's `--demo` flag. Both expect a dedicated demo database of their own; never point them at a real PolySIEM database. The supported workflows are described under [demo mode](integration-setup.md#demo-mode).
 
-The public demo stack automatically follows the verified `latest` release image. Ordinary installations default automatic updates to **off**. Managed Linux Docker installs can opt in under **Settings → System**; updates still use the backup, health-check, and rollback workflow described in the installation guide.
+The public demo stack follows the verified `latest` release image automatically. Ordinary installations ship with automatic updates **off**. Managed Linux Docker installs can opt in under **Settings → System**, and updates still go through the backup, health-check, and rollback workflow described in the installation guide.
 
 ## Example
 
@@ -47,6 +47,6 @@ APP_SECRET="replace-with-output-from-openssl-rand-hex-32"
 APP_URL="http://localhost:3000"
 ```
 
-Do not commit a populated `.env` file. For backup and restore instructions, see the [installation guide](INSTALL.md#backup--restore).
+Don't commit a populated `.env` file. Backup and restore is covered in the [installation guide](INSTALL.md#backup--restore).
 
 Return to the [documentation hub](README.md).

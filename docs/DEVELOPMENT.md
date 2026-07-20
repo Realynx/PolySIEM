@@ -1,14 +1,16 @@
 # Development
 
-This guide covers a local source checkout. For production deployments, use the [installation guide](INSTALL.md).
+This is the guide for working from a local source checkout. If you just want to run PolySIEM somewhere, the [installation guide](INSTALL.md) is what you want instead.
 
 ## Prerequisites
+
+You'll need three things on your machine:
 
 - Node.js 22
 - npm
 - PostgreSQL
 
-Copy [`.env.example`](../.env.example) to `.env`, set `DATABASE_URL`, generate a unique `APP_SECRET`, and keep the file out of version control. See [configuration](CONFIGURATION.md) for every setting.
+Copy [`.env.example`](../.env.example) to `.env`, point `DATABASE_URL` at your database, and generate a unique `APP_SECRET`. Keep the file out of version control. The [configuration reference](CONFIGURATION.md) documents every setting if you need more than the defaults.
 
 ## Run locally
 
@@ -19,7 +21,7 @@ npm run db:seed
 npm run dev
 ```
 
-Open `http://localhost:3000` and use the first-run installer to create an administrator. The development seed creates no users or default credentials and refuses to run in production unless `ALLOW_SEED=true`.
+Then open `http://localhost:3000` and walk through the first-run installer to create an administrator. Note that the development seed creates no users or default credentials, and it refuses to run in production unless you set `ALLOW_SEED=true`.
 
 ## Common commands
 
@@ -37,36 +39,36 @@ Open `http://localhost:3000` and use the first-run installer to create an admini
 
 ## Architecture
 
-PolySIEM is a Next.js 15 App Router application using React 19, Prisma 6, and PostgreSQL. Route handlers serve the UI and API, while integration synchronization is scheduled in-process through `instrumentation.ts`. There is no separate queue, worker, or sidecar.
+PolySIEM is a Next.js 15 App Router application on React 19, Prisma 6, and PostgreSQL. Route handlers serve both the UI and the API, and integration syncs are scheduled in-process via `instrumentation.ts`. That's the whole system: no separate queue, no worker, no sidecar.
 
-Before extending application boundaries, read the [API contracts](API.md), [maintainability guide](MAINTAINABILITY.md), and [domain context](../CONTEXT.md). Architecture decisions are recorded under [`docs/adr`](adr/).
+Before you extend any application boundary, read the [API contracts](API.md), the [maintainability guide](MAINTAINABILITY.md), and the [domain context](../CONTEXT.md). Architecture decisions live under [`docs/adr`](adr/).
 
 ## Demo environments
 
-For a mutable local environment, enable Developer mode and Mock integrations in **Settings → Integrations**. The [integration guide](integration-setup.md#demo-mode) explains scenarios and stable seeds.
+If you want a mutable local playground, enable Developer mode and Mock integrations in **Settings → Integrations**. The [integration guide](integration-setup.md#demo-mode) covers the available scenarios and stable seeds.
 
-To launch the isolated, read-only public demo stack:
+There's also an isolated, read-only public demo stack:
 
 ```bash
 npm run demo
 ```
 
-Open `http://localhost:3000` and select **Sign in**. The form is pre-filled with `demo` / `polysiem-demo`. The stack uses a separate PostgreSQL volume and coordinated mock integrations.
+Open `http://localhost:3000` and select **Sign in**; the form comes pre-filled with `demo` / `polysiem-demo`. This stack runs on its own PostgreSQL volume with coordinated mock integrations, so it won't touch your normal dev database.
 
 ```bash
 npm run demo:logs
 npm run demo:down
 ```
 
-The startup guard refuses to convert an existing PolySIEM database into a public demo.
+A startup guard refuses to convert an existing PolySIEM database into a public demo, so you can't do this by accident.
 
 ## Verification
 
-Run focused tests while developing, then use the complete check before opening a change for review:
+Run whatever focused tests are relevant while you iterate. Before opening a change for review, run the full check and a build:
 
 ```bash
 npm run check
 npm run build
 ```
 
-Return to the [documentation hub](README.md).
+Back to the [documentation hub](README.md).

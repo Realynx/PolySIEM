@@ -1,12 +1,10 @@
 # PolySIEM API & internal contracts
 
-All route handlers return `{ data: ... }` on success or `{ error: { code, message, details? } }` on failure.
-Wrap every handler body in `handleApi()` from `src/lib/api.ts`; throw `ApiError(status, code, message)` for failures.
-Validate all bodies/queries with the zod schemas in `src/lib/validators/`.
-Auth guards: `requireUser()` / `requireAdmin()` from `src/lib/auth/guards.ts` (throw 401/403 ApiError);
-pages use `requirePageUser()` / `requirePageAdmin()` (redirect).
-All mutations go through `src/lib/services/*` functions, which write `AuditLog` rows. Never call Prisma
-mutations for inventory/docs/users directly from a route handler.
+Every route handler returns `{ data: ... }` on success or `{ error: { code, message, details? } }` on failure. Wrap the handler body in `handleApi()` from `src/lib/api.ts` and throw `ApiError(status, code, message)` when something goes wrong. Validate bodies and query strings with the zod schemas in `src/lib/validators/`.
+
+For auth, API routes use `requireUser()` / `requireAdmin()` from `src/lib/auth/guards.ts`, which throw a 401/403 `ApiError`. Pages use `requirePageUser()` / `requirePageAdmin()` instead, which redirect.
+
+One rule worth repeating: all mutations go through the `src/lib/services/*` functions, because that is where `AuditLog` rows get written. Never call Prisma mutations for inventory, docs, or users directly from a route handler.
 
 ## Route table
 
@@ -62,6 +60,8 @@ mutations for inventory/docs/users directly from a route handler.
 
 ## Key shared modules (frozen contracts)
 
+Treat everything below as a frozen contract. Plenty of code depends on these exports, so change them deliberately, not in passing.
+
 - `src/lib/db.ts` — Prisma singleton (`prisma`)
 - `src/lib/api.ts` — `ApiError`, `jsonOk`, `jsonError`, `handleApi`
 - `src/lib/crypto.ts` — `encryptSecret`, `decryptSecret`, `sha256Hex`, `randomToken`
@@ -100,9 +100,9 @@ mutations for inventory/docs/users directly from a route handler.
 
 ## Conventions
 
-- Server Components by default; client components only for interactivity.
-- Every list page: `loading.tsx` skeleton, `EmptyState` with a CTA, filter/search where useful.
-- Mutations from the client: `fetch` + TanStack Query `useMutation`, toast via `sonner` on success/error.
-- BigInt fields (memoryBytes etc.): serialize to string in JSON responses (`JSON.parse(JSON.stringify(x, (k,v)=>typeof v==="bigint"?v.toString():v))` or map explicitly).
-- Synced entities (source ≠ MANUAL): only `description`, `location`, `purpose`, `annotation` are editable.
-- Theme: `data-theme` attr on `<html>` + `next-themes` class dark mode. Never hardcode colors; use tokens.
+- Server Components by default. Reach for a client component only when you actually need interactivity.
+- Every list page gets a `loading.tsx` skeleton, an `EmptyState` with a CTA, and filter/search where it earns its keep.
+- Client-side mutations go through `fetch` + TanStack Query `useMutation`, with a `sonner` toast on success or error.
+- BigInt fields (memoryBytes etc.) don't survive JSON serialization, so map them to strings in responses (`JSON.parse(JSON.stringify(x, (k,v)=>typeof v==="bigint"?v.toString():v))` or map explicitly).
+- On synced entities (source ≠ MANUAL), only `description`, `location`, `purpose`, and `annotation` are editable. Everything else belongs to the integration.
+- Theme is a `data-theme` attr on `<html>` plus `next-themes` class dark mode. Never hardcode colors; use tokens.

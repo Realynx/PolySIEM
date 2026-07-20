@@ -14,30 +14,28 @@
 </p>
 
 <p align="center">
-  <a href="https://demo.polysiem.f0x.app/"><strong>Explore the live demo</strong></a>
+  <a href="https://demo-polysiem.f0x.app/"><strong>Explore the live demo</strong></a>
 </p>
 
 ## About PolySIEM
 
-PolySIEM turns scattered homelab state into a living source of truth. It documents hosts, VMs, containers, services, networks, firewall policy, storage, and runbooks while preserving where each fact came from.
+If your homelab is anything like ours, the truth about it lives in a dozen places: the Proxmox UI, the firewall, a wiki that's six months stale, and your head. PolySIEM pulls that state into one place. It documents hosts, VMs, containers, services, networks, firewall policy, storage, and runbooks, and it remembers where each fact came from.
 
-- Connect Proxmox, OPNsense, UniFi, Cloudflare, Tailscale, Elasticsearch, OTX, Censys, and SecurityTrails.
-- Search and annotate inventory with audit history and cross-integration network context.
-- Explore logs, investigate threats, build workflows, and expose scoped documentation through MCP.
-- Run on your own infrastructure with encrypted credentials, roles, and no default accounts.
+It connects to Proxmox, OPNsense, UniFi, Cloudflare, Tailscale, Elasticsearch, OTX, Censys, and SecurityTrails. Once things are wired up you can search and annotate the inventory (with audit history and network context stitched across integrations), dig through logs, investigate threats, build workflows, and expose scoped documentation through MCP. It runs entirely on your own infrastructure, with encrypted credentials, roles, and no default accounts.
 
 ## Security, AI, and Suricata
 
-- **Security advisor:** scores network exposure, firewall hygiene, access and identity, host hardening, and documentation coverage, then provides prioritized remediation guidance.
-- **AI assistant:** supports local Ollama or hosted OpenAI, DeepSeek, Anthropic, and Azure OpenAI. Use it for chat, documentation interviews, workflows, and security investigations; provider credentials are encrypted at rest.
-- **Threat watch:** uses the selected AI provider to review Elasticsearch log digests—including Suricata alerts, Cloudflared activity, and error spikes—and opens evidence-backed security tickets.
-- **OTX and Suricata:** pulls AlienVault OTX community threat intelligence, checks its IP indicators against your logs, and serves a generated IP/DNS ruleset that OPNsense Suricata can subscribe to.
+The security advisor scores your network exposure, firewall hygiene, access and identity, host hardening, and documentation coverage, then tells you what to fix first.
+
+For AI, you can point PolySIEM at local Ollama or hosted OpenAI, DeepSeek, Anthropic, or Azure OpenAI. The assistant handles chat, documentation interviews, workflows, and security investigations, and provider credentials are encrypted at rest. Threat watch uses whichever provider you picked to review Elasticsearch log digests (Suricata alerts, Cloudflared activity, error spikes) and opens security tickets backed by the actual evidence.
+
+On the intel side, PolySIEM pulls AlienVault OTX community threat intelligence, checks its IP indicators against your logs, and serves a generated IP/DNS ruleset that OPNsense Suricata can subscribe to.
 
 See [Security and threat intelligence](docs/SECURITY.md) for setup, privacy boundaries, and the Suricata workflow.
 
 ## Install
 
-All installers generate secrets, start PostgreSQL and PolySIEM, and wait for the health check. When setup finishes, open `http://<your-server>:3000` and create the first administrator account.
+Every installer does the same basic job: generate secrets, start PostgreSQL and PolySIEM, and wait for the health check. When setup finishes, open `http://<your-server>:3000` and create the first administrator account.
 
 ### Linux — Docker (recommended)
 
@@ -59,7 +57,7 @@ The installation is stored under `%LOCALAPPDATA%\PolySIEM`.
 
 ### Linux VM or LXC — Native
 
-For a Debian or Ubuntu VM/LXC without Docker:
+For a Debian or Ubuntu VM/LXC where you'd rather skip Docker:
 
 ```bash
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash
@@ -67,19 +65,32 @@ curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-
 
 This installs Node.js, PostgreSQL, and a checksum-verified prebuilt runtime with a hardened `polysiem.service` systemd unit. On architectures without a native bundle, it falls back to a source build.
 
-Build from source instead of using the release bundle:
+If you want a dedicated immutable demo instance instead:
+
+```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --demo
+```
+
+Demo login credentials:
+
+- **Username:** `demo`
+- **Password:** `demo`
+
+The demo flag auto-provisions the security-incident sample environment, locks persistent changes through the UI and API, and checks every 15 minutes for verified releases. Updates go through the native installer's database backup, health check, and automatic rollback. One caveat: demo mode only works on a fresh installation, so uninstall an existing normal instance first if you're sure its data can go.
+
+To build from source instead of using the release bundle:
 
 ```bash
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --source
 ```
 
-Force a repair/reinstall of the current release:
+To force a repair/reinstall of the current release:
 
 ```bash
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --force
 ```
 
-Uninstall PolySIEM, including its database, configuration, runtime, and backups:
+To uninstall PolySIEM, including its database, configuration, runtime, and backups:
 
 ```bash
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash -s -- --uninstall
@@ -96,7 +107,7 @@ curl -fL -o docker-compose.yml https://github.com/Realynx/PolySIEM/releases/late
 docker compose up -d
 ```
 
-Use the [installation guide](docs/INSTALL.md) for the complete `.env` example, source builds, upgrades, backups, migration, and troubleshooting.
+The [installation guide](docs/INSTALL.md) has the complete `.env` example, plus source builds, upgrades, backups, migration, and troubleshooting.
 
 ## Documentation
 

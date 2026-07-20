@@ -35,6 +35,33 @@ describe("public demo mode", () => {
     ).toBe(true);
   });
 
+  it("allows demo / demo only for the locked auto-setup deployment", () => {
+    expect(
+      getPublicDemoConfig({
+        POLYSIEM_DEMO_MODE: "true",
+        POLYSIEM_DEMO_LOCKED: "true",
+        POLYSIEM_DEMO_AUTO_SETUP: "true",
+        POLYSIEM_DEMO_USERNAME: "demo",
+        POLYSIEM_DEMO_PASSWORD: "demo",
+      }),
+    ).toMatchObject({ username: "demo", password: "demo" });
+
+    expect(() =>
+      getPublicDemoConfig({
+        POLYSIEM_DEMO_MODE: "true",
+        POLYSIEM_DEMO_PASSWORD: "demo",
+      }),
+    ).toThrow(/PASSWORD/);
+    expect(() =>
+      getPublicDemoConfig({
+        POLYSIEM_DEMO_MODE: "true",
+        POLYSIEM_DEMO_LOCKED: "true",
+        POLYSIEM_DEMO_AUTO_SETUP: "true",
+        POLYSIEM_DEMO_PASSWORD: "short",
+      }),
+    ).toThrow(/PASSWORD/);
+  });
+
   it("allows reads and mock interactions but blocks persistent mutations", () => {
     expect(isPublicDemoRequestAllowed("/api/inventory/hosts", "GET")).toBe(true);
     expect(isPublicDemoRequestAllowed("/api/auth/login", "POST")).toBe(true);

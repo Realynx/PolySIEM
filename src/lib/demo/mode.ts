@@ -30,6 +30,9 @@ function enabled(value: string | undefined): boolean {
 export function getPublicDemoConfig(
   env: DemoEnvironment = process.env,
 ): PublicDemoConfig {
+  const demoEnabled = enabled(env.POLYSIEM_DEMO_MODE);
+  const demoLocked = enabled(env.POLYSIEM_DEMO_LOCKED);
+  const demoAutoSetup = enabled(env.POLYSIEM_DEMO_AUTO_SETUP);
   const username = (env.POLYSIEM_DEMO_USERNAME ?? "demo").trim();
   const password = env.POLYSIEM_DEMO_PASSWORD ?? "polysiem-demo";
   const profileInput = (env.POLYSIEM_DEMO_PROFILE ?? "security-incident").trim();
@@ -41,8 +44,12 @@ export function getPublicDemoConfig(
       "POLYSIEM_DEMO_USERNAME must be 3-32 letters, numbers, dots, dashes, or underscores",
     );
   }
-  if (password.length < 8 || password.length > 128) {
-    throw new Error("POLYSIEM_DEMO_PASSWORD must be 8-128 characters");
+  const isInstallerDemoCredential =
+    password === "demo" && demoEnabled && demoLocked && demoAutoSetup;
+  if ((!isInstallerDemoCredential && password.length < 8) || password.length > 128) {
+    throw new Error(
+      "POLYSIEM_DEMO_PASSWORD must be 8-128 characters (except the built-in locked demo credential)",
+    );
   }
   if (!isScenarioProfile(profileInput)) {
     throw new Error(`Unknown POLYSIEM_DEMO_PROFILE: ${profileInput}`);
@@ -57,9 +64,9 @@ export function getPublicDemoConfig(
   }
 
   return {
-    enabled: enabled(env.POLYSIEM_DEMO_MODE),
-    locked: enabled(env.POLYSIEM_DEMO_LOCKED),
-    autoSetup: enabled(env.POLYSIEM_DEMO_AUTO_SETUP),
+    enabled: demoEnabled,
+    locked: demoLocked,
+    autoSetup: demoAutoSetup,
     username,
     password,
     profile: profileInput,

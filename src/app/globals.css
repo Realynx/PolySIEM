@@ -289,6 +289,92 @@
   --color-scrollbar-thumb-hover: var(--scrollbar-thumb-hover);
 }
 
+/* ------------------------------------------------------------------ */
+/* Login page: aurora background + entrance animations                 */
+/* Colors derive from --primary and the chart ramp so the effect       */
+/* follows the active accent theme in both light and dark mode.        */
+/* ------------------------------------------------------------------ */
+
+@keyframes login-drift-1 {
+  0%, 100% { transform: translate(-12%, -8%) scale(1); }
+  33%      { transform: translate(10%, 6%) scale(1.15); }
+  66%      { transform: translate(-4%, 12%) scale(0.95); }
+}
+@keyframes login-drift-2 {
+  0%, 100% { transform: translate(10%, 8%) scale(1.05); }
+  50%      { transform: translate(-10%, -10%) scale(0.9); }
+}
+@keyframes login-drift-3 {
+  0%, 100% { transform: translate(0%, 10%) scale(0.95); }
+  50%      { transform: translate(6%, -8%) scale(1.1); }
+}
+@keyframes login-logo-glow {
+  0%, 100% { box-shadow: 0 0 24px 2px color-mix(in oklch, var(--primary) 35%, transparent); }
+  50%      { box-shadow: 0 0 44px 10px color-mix(in oklch, var(--primary) 55%, transparent); }
+}
+@keyframes login-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.login-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(80px);
+  opacity: 0.35;
+  will-change: transform;
+}
+.dark .login-blob {
+  opacity: 0.25;
+}
+.login-blob-1 {
+  width: 34rem;
+  height: 34rem;
+  top: -8rem;
+  left: -6rem;
+  background: var(--primary);
+  animation: login-drift-1 18s ease-in-out infinite;
+}
+.login-blob-2 {
+  width: 28rem;
+  height: 28rem;
+  bottom: -6rem;
+  right: -4rem;
+  background: var(--chart-3);
+  animation: login-drift-2 22s ease-in-out infinite;
+}
+.login-blob-3 {
+  width: 22rem;
+  height: 22rem;
+  bottom: 20%;
+  left: 30%;
+  background: var(--chart-2);
+  animation: login-drift-3 26s ease-in-out infinite;
+}
+
+.login-logo-badge {
+  animation: login-logo-glow 4s ease-in-out infinite;
+}
+
+.login-rise {
+  animation: login-rise 0.6s ease-out both;
+}
+.login-rise-1 { animation-delay: 0.05s; }
+.login-rise-2 { animation-delay: 0.15s; }
+.login-rise-3 { animation-delay: 0.25s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .login-blob,
+  .login-logo-badge,
+  .login-rise {
+    animation: none;
+  }
+  .login-rise {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

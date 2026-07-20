@@ -1,5 +1,8 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Native bundles support older Debian/Ubuntu OpenSSL 1.1 hosts and current
+  // OpenSSL 3 hosts regardless of which runner builds the release artifact.
+  binaryTargets = ["native", "debian-openssl-1.1.x", "debian-openssl-3.0.x"]
 }
 
 datasource db {

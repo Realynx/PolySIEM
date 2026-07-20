@@ -1,15 +1,15 @@
 # PolySIEM MCP server
 
-PolySIEM exposes a [Model Context Protocol](https://modelcontextprotocol.io) server at
-`/api/mcp` (Streamable HTTP transport, stateless JSON-RPC over POST). It lets MCP clients
-such as Claude Code, Claude Desktop, or the MCP Inspector read your homelab inventory and
-write PolySIEM-owned documentation.
+PolySIEM ships a [Model Context Protocol](https://modelcontextprotocol.io) server at
+`/api/mcp` (Streamable HTTP transport, stateless JSON-RPC over POST). Point an MCP client
+at it, whether that's Claude Code, Claude Desktop, or the MCP Inspector, and it can read
+your homelab inventory and write PolySIEM-owned documentation.
 
 ## 1. Create an API token
 
 1. Sign in to PolySIEM as an admin.
 2. Go to **Settings → API tokens** and create a token.
-3. Pick scopes (see the table below). The raw token (`ps_...`) is shown exactly once — copy it.
+3. Pick scopes (see the table below). The raw token (`ps_...`) is shown exactly once, so copy it now.
 
 ### Scopes
 
@@ -30,8 +30,8 @@ claude mcp add --transport http polysiem http://HOST:3000/api/mcp \
 
 ### Claude Desktop
 
-Add to `claude_desktop_config.json` (via a Streamable-HTTP-capable bridge such as
-`mcp-remote`, since Claude Desktop launches stdio servers):
+Claude Desktop launches stdio servers, so it needs a Streamable-HTTP-capable bridge such
+as `mcp-remote`. Add this to `claude_desktop_config.json`:
 
 ```json
 {
@@ -108,22 +108,25 @@ npx @modelcontextprotocol/inspector --cli http://HOST:3000/api/mcp \
 
 ## 4. Behavior notes
 
-- **Auth**: every request needs `Authorization: Bearer ps_...`. Missing/invalid tokens get
-  HTTP 401 with a JSON-RPC error body; per-tool scope violations return a structured tool
-  error (`{"error":{"code":"forbidden",...}}`, `isError: true`).
+- **Auth**: every request needs `Authorization: Bearer ps_...`. A missing or invalid token
+  gets HTTP 401 with a JSON-RPC error body. Per-tool scope violations return a structured
+  tool error (`{"error":{"code":"forbidden",...}}`, `isError: true`).
 - **Pagination**: list tools return `{ items, total }`, 50 items per page, `page` starts at 1.
 - **Errors**: tools return structured JSON errors with `code`, `status`, and `message`
   (e.g. `not_found`, `validation_error`, `integration_owned`, `engine_unavailable`).
-- **Audit**: all writes are audit-logged with actor `api_token` and the token/user ids.
+- **Audit**: every write is audit-logged with actor `api_token` and the token/user ids.
 
 ## 5. Security model
 
-- The MCP server is **read-plus-PolySIEM-writes only**. Writes are limited to PolySIEM's own
-  database: documentation pages, MANUAL inventory entities, description/location/purpose
-  fields, firewall rule annotations, and tags.
-- It **cannot control Proxmox, OPNsense, or Elasticsearch**. There is no code path from any
-  MCP tool to an integration write; the only integration touchpoint is `trigger_sync`,
-  which starts the sync engine's read-only pull of remote state.
-- Synced entities are protected: fields owned by an integration sync are rejected on edit
-  and integration credentials are never exposed by any tool.
-- Tokens can be scoped, expired, and revoked at any time in **Settings → API tokens**.
+The MCP server is **read-plus-PolySIEM-writes only**. Writes are limited to PolySIEM's own
+database: documentation pages, MANUAL inventory entities, description/location/purpose
+fields, firewall rule annotations, and tags.
+
+It **cannot control Proxmox, OPNsense, or Elasticsearch**. There is no code path from any
+MCP tool to an integration write; the only integration touchpoint is `trigger_sync`, which
+starts the sync engine's read-only pull of remote state.
+
+Synced entities are protected too: fields owned by an integration sync are rejected on
+edit, and integration credentials are never exposed by any tool. If a token outlives its
+usefulness, tokens can be scoped, expired, and revoked at any time in
+**Settings → API tokens**.
