@@ -5,7 +5,7 @@ export default defineConfig({
   oxc: {
     // Next keeps JSX for its own compiler; Vitest must lower TSX before Vite's
     // import-analysis pass when a .ts test imports a client component.
-    jsx: "react-jsx",
+    jsx: { runtime: "automatic" },
   },
   test: {
     environment: "node",
