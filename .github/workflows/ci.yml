@@ -8,6 +8,7 @@ on:
 
 env:
   NEXT_TELEMETRY_DISABLED: "1"
+  ONNXRUNTIME_NODE_INSTALL: skip
 
 jobs:
   build:

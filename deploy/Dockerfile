@@ -22,7 +22,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# The app uses the CPU execution provider. onnxruntime-node otherwise downloads
+# the large CUDA 12 provider bundle on linux/x64 during its postinstall step.
+RUN ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund
 
 # ---------------------------------------------------------------------------
 # builder: generate prisma client and build the Next.js standalone bundle

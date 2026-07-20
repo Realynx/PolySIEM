@@ -1,15 +1,9 @@
 <p align="center">
-  <img src="public/brand/polysiem-mark.svg" width="96" height="96" alt="PolySIEM logo">
-</p>
-
-<h1 align="center">PolySIEM</h1>
-
-<p align="center">
-  <strong>Your self-hosted homelab documentation and security dashboard.</strong>
+  <img src="public/brand/polysiem-readme.svg" width="760" alt="PolySIEM — Homelab intelligence, documented">
 </p>
 
 <p align="center">
-  Keep inventory, network context, firewall documentation, logs, and runbooks together—and in sync with the tools you already run.
+  Self-hosted inventory, network context, security visibility, and runbooks—kept in sync with your homelab.
 </p>
 
 <p align="center">
@@ -19,38 +13,27 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-## What it does
-
-- Documents hosts, VMs, containers, services, networks, IPs, storage, and runbooks.
-- Syncs inventory and security context from Proxmox, OPNsense, UniFi, Cloudflare, Elasticsearch, and OTX.
-- Adds local AI assistance through Ollama and exposes documentation to MCP clients.
-- Keeps credentials encrypted, changes audited, and access protected by roles.
-- Runs on your own infrastructure with Docker or a native Linux installation.
+<p align="center">
+  Proxmox · OPNsense · UniFi · Cloudflare · Elasticsearch · OTX · Ollama · MCP
+</p>
 
 ## Quick start
-
-On a fresh Debian, Ubuntu, Fedora, or RHEL-family system:
 
 ```bash
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install.sh | bash
 ```
 
-Then open `http://<your-server>:3000` and create the first administrator account.
-
-Windows Docker Desktop, manual Compose, source builds, native VM installs, upgrades, backups, and troubleshooting are covered in the [installation guide](docs/INSTALL.md).
+Open `http://<your-server>:3000` and create the first administrator. For Windows, Compose, native VM, upgrade, and recovery options, see [Installation](docs/INSTALL.md).
 
 ## Documentation
 
-| Topic | Guide |
-|---|---|
-| Start here | [Documentation hub](docs/README.md) |
-| Install, upgrade, back up, or troubleshoot | [Installation guide](docs/INSTALL.md) |
-| Configure environment variables | [Configuration](docs/CONFIGURATION.md) |
-| Connect infrastructure and services | [Integration setup](docs/integration-setup.md) |
-| Connect Claude or another MCP client | [MCP server](docs/MCP.md) |
-| Develop and test PolySIEM | [Development](docs/DEVELOPMENT.md) |
-| Use or extend the API | [API and internal contracts](docs/API.md) |
+<p align="center">
+  <a href="docs/README.md"><strong>Docs hub</strong></a> ·
+  <a href="docs/INSTALL.md">Installation</a> ·
+  <a href="docs/CONFIGURATION.md">Configuration</a> ·
+  <a href="docs/integration-setup.md">Integrations</a> ·
+  <a href="docs/MCP.md">MCP</a> ·
+  <a href="docs/DEVELOPMENT.md">Development</a>
+</p>
 
-## License
-
-[MIT](LICENSE) © PolySIEM contributors.
+<p align="center"><sub>Released under the <a href="LICENSE">MIT License</a>.</sub></p>
