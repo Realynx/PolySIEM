@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://demo-polysiem.f0x.app/"><strong>Explore the live demo</strong></a>
+  <a href="https://demo-polysiem.f0x.app/"><strong>Explore the live demo</strong></a> · Login: <code>demo</code> / <code>demo</code>
 </p>
 
 ## About PolySIEM
