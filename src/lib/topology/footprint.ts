@@ -247,7 +247,8 @@ export interface FootprintTunnel {
  * node between the Internet and the machine that actually serves it.
  */
 export interface FootprintRoute {
-  id: string; // "route:<hostname>"
+  /** Tunnel-scoped node id; the same hostname may be published by two tunnels. */
+  id: string;
   hostname: string;
   tunnelId: string;
   tunnelName: string;
@@ -257,6 +258,13 @@ export interface FootprintRoute {
   serviceTarget: string | null;
   /** Machine serving the route: service-target match, else the tunnel origin. */
   targetId: string;
+}
+
+export function footprintRouteNodeId(
+  tunnelId: string,
+  hostname: string,
+): string {
+  return `route:${encodeURIComponent(tunnelId)}:${encodeURIComponent(hostname.trim().toLowerCase())}`;
 }
 
 /** NAT target / tunnel origin that matched no documented machine. */
@@ -530,7 +538,7 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
           ? machineForServiceHost(serviceHost)
           : undefined;
       routes.push({
-        id: `route:${h.hostname}`,
+        id: footprintRouteNodeId(tunnel.id, h.hostname),
         hostname: h.hostname,
         tunnelId: tunnel.id,
         tunnelName: tunnel.name,

@@ -151,8 +151,8 @@ export function FootprintMap({
   // and the deliberate lane-expand toggle (which changes lane heights → layout)
   // — never on hover/selection, which stay in the cheap applyFocus pass.
   const built = useMemo(
-    () => buildFlow(graph, traffic, expandedLanes),
-    [graph, traffic, expandedLanes],
+    () => buildFlow(graph, traffic, expandedLanes, positions),
+    [graph, traffic, expandedLanes, positions],
   );
   // Cheap pass — hover/selection only restyles edges over the cached layout.
   const edges = useMemo(

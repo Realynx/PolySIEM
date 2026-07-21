@@ -23,6 +23,12 @@ function policyHub(edge: FootprintFocusEdge): string | null {
   return null;
 }
 
+function traceKey(edge: FootprintFocusEdge): string | null {
+  if (!edge.data || typeof edge.data !== "object") return null;
+  const value = (edge.data as { traceKey?: unknown }).traceKey;
+  return typeof value === "string" ? value : null;
+}
+
 /**
  * Resolve the local, explicit paths represented by one Footprint node or edge.
  *
@@ -56,12 +62,26 @@ export function deriveFootprintFocusCircuit(
       if (policyHub(edge) === hubId) addEdge(edge);
     }
   };
+  const addCompletePublishedTraces = () => {
+    const keys = new Set(
+      edges
+        .filter((edge) => edgeIds.has(edge.id))
+        .map(traceKey)
+        .filter((key): key is string => key !== null),
+    );
+    if (keys.size === 0) return;
+    for (const edge of edges) {
+      const key = traceKey(edge);
+      if (key && keys.has(key)) addEdge(edge);
+    }
+  };
 
   const focusedEdge = edgeById.get(focusedId);
   if (focusedEdge) {
     addEdge(focusedEdge);
     const hub = policyHub(focusedEdge);
     if (hub) addPolicyGroup(hub);
+    addCompletePublishedTraces();
     return { edgeIds, nodeIds };
   }
 
@@ -75,6 +95,11 @@ export function deriveFootprintFocusCircuit(
     const hub = policyHub(edge);
     if (hub) addPolicyGroup(hub);
   }
+  // A published application is rendered as WAN/gateway -> tunnel -> hostname
+  // -> origin. Focusing either the hostname or origin should illuminate that
+  // complete evidence-backed trace, while its trace key keeps sibling routes
+  // on the same tunnel dimmed.
+  addCompletePublishedTraces();
 
   return { edgeIds, nodeIds };
 }

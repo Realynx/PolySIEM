@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { INTERNET_NODE_ID } from "./access";
-import { UNASSIGNED_LANE_ID, deriveFootprint, serviceTargetHost, serviceTargetIp, type FootprintInput, type FpMachine } from "./footprint";
+import { UNASSIGNED_LANE_ID, deriveFootprint, footprintRouteNodeId, serviceTargetHost, serviceTargetIp, type FootprintInput, type FpMachine } from "./footprint";
 import { input, machine, machines } from "./footprint.test-fixtures";
 
 // ---------- lanes ----------
@@ -224,7 +224,9 @@ describe("inbound vectors", () => {
 
   it("emits one route node per ingress hostname, targeting the tunnel origin by default", () => {
     expect(graph.routes).toHaveLength(21);
-    const first = graph.routes.find((r) => r.id === "route:site0.example.com")!;
+    const first = graph.routes.find(
+      (r) => r.id === footprintRouteNodeId("t1", "site0.example.com"),
+    )!;
     expect(first).toMatchObject({
       hostname: "site0.example.com",
       tunnelId: "t1",
@@ -429,8 +431,40 @@ describe("degenerate inputs", () => {
     );
     expect(graph.tunnels.find((t) => t.id === "t9")!.targetId).toBe("fw");
     expect(
-      graph.routes.find((r) => r.id === "route:a.example.com")!.targetId,
+      graph.routes.find(
+        (r) => r.id === footprintRouteNodeId("t9", "a.example.com"),
+      )!.targetId,
     ).toBe("fw");
+  });
+
+  it("keeps the same published DNS name distinct across tunnels", () => {
+    const duplicateHostname = "shared.example.com";
+    const graph = deriveFootprint(
+      input({
+        tunnels: [
+          {
+            id: "tunnel-a",
+            name: "Cloudflare A",
+            provider: "cloudflare",
+            originIp: "10.0.3.59",
+            ingressHostnames: [duplicateHostname],
+          },
+          {
+            id: "tunnel-b",
+            name: "Cloudflare B",
+            provider: "cloudflare",
+            originIp: "10.0.3.41",
+            ingressHostnames: [duplicateHostname],
+          },
+        ],
+      }),
+    );
+
+    expect(graph.routes.map((route) => route.id)).toEqual([
+      footprintRouteNodeId("tunnel-a", duplicateHostname),
+      footprintRouteNodeId("tunnel-b", duplicateHostname),
+    ]);
+    expect(new Set(graph.routes.map((route) => route.id)).size).toBe(2);
   });
 });
 

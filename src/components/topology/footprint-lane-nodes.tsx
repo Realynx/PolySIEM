@@ -266,6 +266,7 @@ export const GatewayNode = memo(function GatewayNode({
       className="flex h-full w-full cursor-pointer items-center gap-2 overflow-hidden rounded-full border border-info/40 bg-card px-3 shadow-sm transition-colors hover:border-info/75"
       style={{ width: GATEWAY_WIDTH, height: GATEWAY_HEIGHT }}
     >
+      <Handle type="target" position={Position.Top} className={hiddenHandle} />
       <Handle
         type="source"
         position={Position.Bottom}

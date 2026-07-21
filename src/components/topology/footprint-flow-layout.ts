@@ -512,6 +512,41 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
   );
   for (const route of graph.routes)
     routesByTunnel.get(route.tunnelId)?.push(route);
+
+  // Keep hostname cards in the same order as their destination shelves. A
+  // tunnel commonly publishes several services from one VLAN; interleaving
+  // those cards with routes to other shelves forces otherwise related service
+  // traces to cross before they can form a PCB ribbon. The router still owns
+  // the actual path choice—this only gives it contiguous, monotonic endpoints.
+  const layoutNodeById = new Map(nodes.map((node) => [node.id, node]));
+  const routeDestinationOrder = (route: (typeof graph.routes)[number]) => {
+    const laneId = laneOfMachine.get(route.targetId);
+    const laneNode = laneId ? topLevelById.get(laneId) : undefined;
+    const targetNode = layoutNodeById.get(route.targetId);
+    const laneX = laneNode?.position.x ?? targetNode?.position.x ?? 0;
+    const laneY = laneNode?.position.y ?? targetNode?.position.y ?? 0;
+    const targetX = laneNode
+      ? laneX + (targetNode?.position.x ?? 0)
+      : (targetNode?.position.x ?? 0);
+    const targetY = laneNode
+      ? laneY + (targetNode?.position.y ?? 0)
+      : (targetNode?.position.y ?? 0);
+    return { laneId: laneId ?? route.targetId, laneX, laneY, targetX, targetY };
+  };
+  for (const routes of routesByTunnel.values()) {
+    routes.sort((a, b) => {
+      const targetA = routeDestinationOrder(a);
+      const targetB = routeDestinationOrder(b);
+      return (
+        targetA.laneX - targetB.laneX ||
+        targetA.laneY - targetB.laneY ||
+        targetA.laneId.localeCompare(targetB.laneId) ||
+        targetA.targetX - targetB.targetX ||
+        targetA.targetY - targetB.targetY ||
+        a.id.localeCompare(b.id)
+      );
+    });
+  }
   const routeGroups = graph.tunnels
     .map((tunnel) => ({ tunnel, routes: routesByTunnel.get(tunnel.id) ?? [] }))
     .filter((group) => group.routes.length > 0);
@@ -542,8 +577,16 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     const groupColumns = routeGroups.map((group) =>
       Math.min(4, Math.max(1, Math.ceil(Math.sqrt(group.routes.length * 1.25)))),
     );
+    const groupBusGaps = routeGroups.map((group, index) =>
+      groupColumns[index] > 1
+        ? Math.min(120, 18 + Math.max(0, group.routes.length - 1) * 6)
+        : 0,
+    );
     const groupWidths = groupColumns.map(
-      (columns) => columns * ROUTE_WIDTH + (columns - 1) * ROUTE_GAP_X,
+      (columns, index) =>
+        columns * ROUTE_WIDTH +
+        (columns - 1) * ROUTE_GAP_X +
+        groupBusGaps[index],
     );
     const groupSides: FootprintCircuitBank[] = [];
     let leftWidth = 0;
@@ -575,9 +618,18 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       ),
     );
     const margin = 30;
-    const junctionGap = 16;
+    // The gap is a routing field, not empty decoration. Reserve one horizontal
+    // rail per hostname so tunnel branches never stack on top of one another.
+    const junctionGap = Math.max(
+      24,
+      ...routeGroups.map((group) => 24 + (group.routes.length - 1) * 6),
+    );
+    // Leave separate ingress and egress rails between card rows. At exactly
+    // 2× the obstacle clearance those rails coincide, which makes otherwise
+    // valid service-ribbon approaches collide with tunnel fan-out copper.
+    const routeRowGap = Math.max(40, ROUTE_GAP_Y);
     const routeRowsHeight =
-      maxRows * ROUTE_HEIGHT + Math.max(0, maxRows - 1) * ROUTE_GAP_Y;
+      maxRows * ROUTE_HEIGHT + Math.max(0, maxRows - 1) * routeRowGap;
     const bandHeight =
       margin + TUNNEL_HEIGHT + junctionGap + routeRowsHeight + margin;
     const shift = Math.max(0, bandBottom + bandHeight - lowerTop);
@@ -605,11 +657,19 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
         },
       });
       const columns = groupColumns[groupIndex];
+      const busGap = groupBusGaps[groupIndex];
       routes.forEach((route, index) => {
         const row = Math.floor(index / columns);
         const inThisRow = Math.min(columns, routes.length - row * columns);
+        // A single card in the final row must not be centered on the reserved
+        // bus. Give it a virtual empty partner on the other side so the ribbon
+        // remains open from the tunnel band into the destination shelves.
+        const rowSlots = inThisRow === 1 && columns > 1 ? 2 : inThisRow;
+        const leftInRow = Math.ceil(rowSlots / 2);
         const rowWidth =
-          inThisRow * ROUTE_WIDTH + Math.max(0, inThisRow - 1) * ROUTE_GAP_X;
+          rowSlots * ROUTE_WIDTH +
+          Math.max(0, rowSlots - 1) * ROUTE_GAP_X +
+          (rowSlots > 1 ? busGap : 0);
         const col = index % columns;
         nodes.push({
           id: route.id,
@@ -619,15 +679,18 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
           zIndex: 2,
           position: {
             x:
-              groupX +
-              (groupWidth - rowWidth) / 2 +
-              col * (ROUTE_WIDTH + ROUTE_GAP_X),
+              inThisRow === 1 && columns > 1
+                ? groupX
+                : groupX +
+                  (groupWidth - rowWidth) / 2 +
+                  col * (ROUTE_WIDTH + ROUTE_GAP_X) +
+                  (col >= leftInRow && rowSlots > 1 ? busGap : 0),
             y:
               bandBottom +
               margin +
               TUNNEL_HEIGHT +
               junctionGap +
-              row * (ROUTE_HEIGHT + ROUTE_GAP_Y),
+              row * (ROUTE_HEIGHT + routeRowGap),
           },
           width: ROUTE_WIDTH,
           height: ROUTE_HEIGHT,

@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
   footprintTraceCorridorWidth,
+  footprintTraceHighwayX,
   footprintTraceTrackX,
   footprintTracewayWaypoints,
   packFootprintCircuitBanks,
   packFootprintLanes,
+  routeFootprintTrace,
   type FootprintLayoutBox,
 } from "./footprint-layout";
+
+const routeLength = (points: readonly { x: number; y: number }[]) =>
+  points.slice(1).reduce(
+    (sum, point, index) =>
+      sum +
+      Math.abs(point.x - points[index].x) +
+      Math.abs(point.y - points[index].y),
+    0,
+  );
 
 const boxes: FootprintLayoutBox[] = Array.from({ length: 8 }, (_, index) => ({
   id: `lane-${index}`,
@@ -164,5 +175,77 @@ describe("footprint PCB bank packing", () => {
         );
       }
     }
+  });
+});
+
+describe("cost-based PCB routing", () => {
+  const source = { x: 100, y: 100, width: 40, height: 40 };
+  const target = { x: 180, y: 220, width: 40, height: 40 };
+
+  it("keeps a clear local connection off a distant global spine", () => {
+    const route = routeFootprintTrace(source, target, {
+      preferredTrackX: 500,
+    })!;
+
+    expect(routeLength(route)).toBe(136);
+    expect(route.some((point) => point.x === 500)).toBe(false);
+    expect(route.length).toBeLessThanOrEqual(3);
+  });
+
+  it("takes the shortest obstacle gutter while remaining orthogonal", () => {
+    const route = routeFootprintTrace(source, target, {
+      obstacles: [{ id: "card", x: 110, y: 135, width: 100, height: 30 }],
+    })!;
+
+    expect(route).toBeDefined();
+    for (let index = 1; index < route.length; index += 1) {
+      expect(
+        route[index - 1].x === route[index].x ||
+          route[index - 1].y === route[index].y,
+      ).toBe(true);
+    }
+    expect(Math.max(...route.map((point) => point.x))).toBeLessThanOrEqual(218);
+  });
+
+  it("moves to an adjacent copper lane instead of overlapping a used run", () => {
+    const occupied = [{
+      owner: "existing",
+      a: { x: 100, y: 120 },
+      b: { x: 180, y: 120 },
+    }];
+    const route = routeFootprintTrace(source, target, { occupied })!;
+
+    const overlapsUsedRun = route.slice(1).some((point, index) => {
+      const previous = route[index];
+      return previous.y === 120 && point.y === 120 && previous.x !== point.x;
+    });
+    expect(overlapsUsedRun).toBe(false);
+  });
+
+  it("lets the local majority choose a highway without following an outlier", () => {
+    const highway = footprintTraceHighwayX([
+      { id: "a", sourceX: 100, targetX: 120 },
+      { id: "b", sourceX: 104, targetX: 124 },
+      { id: "c", sourceX: 108, targetX: 128 },
+      { id: "outlier", sourceX: 900, targetX: 940 },
+    ]);
+
+    expect(highway).not.toBeNull();
+    expect(highway!).toBeGreaterThanOrEqual(100);
+    expect(highway!).toBeLessThanOrEqual(128);
+  });
+
+  it("honors component-clear highway candidates", () => {
+    const members = [
+      { id: "a", sourceX: 100, targetX: 180 },
+      { id: "b", sourceX: 104, targetX: 184 },
+    ];
+    const highway = footprintTraceHighwayX(
+      members,
+      [80, 204],
+      (x) => x <= 80 || x >= 204,
+    );
+
+    expect(highway).toBe(204);
   });
 });
