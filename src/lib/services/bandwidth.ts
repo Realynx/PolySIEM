@@ -15,6 +15,7 @@ import {
   type InterfaceBandwidth,
   type RuleBandwidth,
 } from "@/lib/bandwidth/aggregate";
+import { selectTrafficSummaryInterfaces } from "@/lib/bandwidth/summary";
 
 /**
  * Bandwidth counter polling — its own lightweight loop, deliberately separate
@@ -149,6 +150,8 @@ export interface BandwidthResponse {
   window: string;
   rules: RuleBandwidth[];
   interfaces: (InterfaceBandwidth & { name: string | null })[];
+  /** Interfaces whose receive/transmit counters mean internet inbound/outbound. */
+  summaryInterfaceKeys: string[];
   status: {
     enabled: boolean;
     lastPollAt: string | null;
@@ -175,6 +178,7 @@ export async function bandwidthReport(
     window,
     rules: [],
     interfaces: [],
+    summaryInterfaceKeys: [],
     status: { enabled: false, lastPollAt: null },
   };
   if (!integration) return empty;
@@ -199,16 +203,25 @@ export async function bandwidthReport(
 
   // Friendly interface names come from the synced Networks (externalId = key),
   // falling back to the key itself.
-  const networks = await prisma.network.findMany({
-    where: { integrationId: integration.id },
-    select: { externalId: true, name: true },
-  });
+  const [networks, gateways] = await Promise.all([
+    prisma.network.findMany({
+      where: { integrationId: integration.id },
+      select: { externalId: true, name: true },
+    }),
+    prisma.networkGateway.findMany({
+      where: { integrationId: integration.id, status: { not: "REMOVED" } },
+      select: { name: true, interfaceName: true, isDefault: true },
+    }),
+  ]);
   const nameByKey = new Map(networks.map((n) => [n.externalId, n.name]));
+  const namedInterfaces = interfaces.map((iface) => ({ ...iface, name: nameByKey.get(iface.key) ?? null }));
+  const summaryInterfaceKeys = selectTrafficSummaryInterfaces(namedInterfaces, gateways).map((iface) => iface.key);
 
   return {
     window,
     rules,
-    interfaces: interfaces.map((i) => ({ ...i, name: nameByKey.get(i.key) ?? null })),
+    interfaces: namedInterfaces,
+    summaryInterfaceKeys,
     status: {
       enabled,
       lastPollAt: status?.lastPollAt ?? null,

@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { toDriverConfig } from "@/lib/integrations/config";
 import { fetchLiveInterfaceCounters } from "@/lib/integrations/opnsense/bandwidth";
 import { opnsenseSettingsSchema } from "@/lib/validators/integrations";
+import { selectTrafficSummaryInterfaces } from "@/lib/bandwidth/summary";
 
 export const dynamic = "force-dynamic";
 
@@ -25,8 +26,13 @@ export const GET = handleApi(async (req: NextRequest) => {
 
   const sampledAt = new Date();
   const snapshot = await fetchLiveInterfaceCounters(toDriverConfig(integration), sampledAt.getTime());
-  const bytesIn = snapshot.interfaces.reduce((total, iface) => total + iface.bytesIn, BigInt(0));
-  const bytesOut = snapshot.interfaces.reduce((total, iface) => total + iface.bytesOut, BigInt(0));
+  const gateways = await prisma.networkGateway.findMany({
+    where: { integrationId, status: { not: "REMOVED" } },
+    select: { name: true, interfaceName: true, isDefault: true },
+  });
+  const summaryInterfaces = selectTrafficSummaryInterfaces(snapshot.interfaces, gateways);
+  const bytesIn = summaryInterfaces.reduce((total, iface) => total + iface.bytesIn, BigInt(0));
+  const bytesOut = summaryInterfaces.reduce((total, iface) => total + iface.bytesOut, BigInt(0));
 
   return jsonOk({
     sampledAt: sampledAt.toISOString(),

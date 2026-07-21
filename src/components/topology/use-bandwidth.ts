@@ -41,6 +41,7 @@ interface BandwidthPayload {
   window: BandwidthWindow;
   rules: RuleBw[];
   interfaces: InterfaceBw[];
+  summaryInterfaceKeys: string[];
   status: BandwidthStatus;
 }
 

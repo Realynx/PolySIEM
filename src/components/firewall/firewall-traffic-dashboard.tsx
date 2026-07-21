@@ -322,7 +322,11 @@ export function FirewallTrafficDashboard({ providers }: { providers: FirewallTra
   const liveEnabled = refreshMs < 60_000 && selected?.type === "OPNSENSE";
   const bandwidth = useBandwidth(window, Boolean(selected), liveEnabled ? 60_000 : refreshMs, selected?.id);
   const liveRate = useLiveBandwidthRate(selected?.id, liveEnabled, refreshMs);
-  const series = useMemo(() => aggregateSeries(bandwidth?.interfaces ?? []), [bandwidth]);
+  const summaryInterfaces = useMemo(() => {
+    const keys = new Set(bandwidth?.summaryInterfaceKeys ?? []);
+    return bandwidth?.interfaces.filter((iface) => keys.has(iface.key)) ?? [];
+  }, [bandwidth]);
+  const series = useMemo(() => aggregateSeries(summaryInterfaces), [summaryInterfaces]);
 
   useEffect(() => {
     if (!liveRate || !selected) return;
@@ -348,10 +352,10 @@ export function FirewallTrafficDashboard({ providers }: { providers: FirewallTra
   const averagedSeries = useMemo(() => averageSeries(liveSeries, WINDOW_MS[window]), [liveSeries, window]);
   const animatedSeries = useAnimatedSeries(averagedSeries, animationDuration(refreshMs));
   const labels = useMemo(() => new Map(selected?.rules.map((rule) => [rule.externalId, rule.label]) ?? []), [selected]);
-  const inboundRate = liveRate?.inBps ?? bandwidth?.interfaces.reduce((sum, iface) => sum + iface.inBps, 0) ?? 0;
-  const outboundRate = liveRate?.outBps ?? bandwidth?.interfaces.reduce((sum, iface) => sum + iface.outBps, 0) ?? 0;
-  const inboundBytes = bandwidth?.interfaces.reduce((sum, iface) => sum + iface.totalIn, 0) ?? 0;
-  const outboundBytes = bandwidth?.interfaces.reduce((sum, iface) => sum + iface.totalOut, 0) ?? 0;
+  const inboundRate = liveRate?.inBps ?? summaryInterfaces.reduce((sum, iface) => sum + iface.inBps, 0);
+  const outboundRate = liveRate?.outBps ?? summaryInterfaces.reduce((sum, iface) => sum + iface.outBps, 0);
+  const inboundBytes = summaryInterfaces.reduce((sum, iface) => sum + iface.totalIn, 0);
+  const outboundBytes = summaryInterfaces.reduce((sum, iface) => sum + iface.totalOut, 0);
   const topRules = (bandwidth?.rules ?? []).filter((rule) => rule.externalId !== "system").slice(0, 5);
   const maxRuleRate = Math.max(1, ...topRules.map((rule) => rule.avgBps));
 
@@ -388,11 +392,11 @@ export function FirewallTrafficDashboard({ providers }: { providers: FirewallTra
       <CardContent className="space-y-5">
         {!bandwidth ? (
           <div className="space-y-3"><Skeleton className="h-14 w-full" /><Skeleton className="h-56 w-full" /></div>
-        ) : !bandwidth.status.enabled || bandwidth.interfaces.length === 0 ? (
+        ) : !bandwidth.status.enabled || bandwidth.interfaces.length === 0 || summaryInterfaces.length === 0 ? (
           <div className="rounded-lg border border-dashed p-8 text-center">
             <Activity className="mx-auto size-7 text-muted-foreground" />
-            <p className="mt-3 font-medium">Traffic counters are not flowing yet</p>
-            <p className="mx-auto mt-1 max-w-xl text-sm text-muted-foreground">Enable bandwidth polling for {selected?.name}. The overview will begin charting provider-neutral interface and rule samples after two readings.</p>
+            <p className="mt-3 font-medium">Internet traffic counters are not flowing yet</p>
+            <p className="mx-auto mt-1 max-w-xl text-sm text-muted-foreground">Enable bandwidth polling for {selected?.name}. The overview will begin charting its internet-facing interface after two readings.</p>
           </div>
         ) : (
           <>
