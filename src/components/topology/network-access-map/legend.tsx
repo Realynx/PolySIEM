@@ -96,11 +96,11 @@ export function AccessMapLegend({
 }) {
   return (
     <MapLegend
-      className="w-52"
+      className="w-52 max-w-[calc(100%-1.5rem)] transition-[width] duration-200 data-[state=open]:w-[34rem]"
       onResetLayout={onResetLayout}
       hasSaved={hasSaved}
     >
-      <ul className="space-y-1.5 text-xs text-muted-foreground">
+      <ul className="grid gap-x-5 gap-y-1.5 text-xs text-muted-foreground sm:grid-cols-2">
         <li className="flex items-center gap-2">
           <span className="h-3 w-1 shrink-0 rounded bg-primary" /> LAN network
         </li>

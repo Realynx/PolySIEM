@@ -309,8 +309,15 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
   const centralTraceCount =
     graph.lanes.filter((lane) => lane.category !== "wan").length +
     graph.reachability.length +
-    graph.routes.length;
+    graph.routes.length +
+    graph.switchLinks.length +
+    graph.inbound.length;
   const traceCorridorWidth = footprintTraceCorridorWidth(centralTraceCount);
+  const traceCorridor = {
+    left: boardCenterX - traceCorridorWidth / 2,
+    right: boardCenterX + traceCorridorWidth / 2,
+    width: traceCorridorWidth,
+  };
 
   // NAT targets use a dedicated outer service edge. Keeping the column beyond
   // the component banks prevents it from sitting on the controller → right-bank
@@ -398,46 +405,106 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       }
     }
 
-    // Physical switches form a parallel column beside the network groups,
-    // vertically centered on the routes they carry.
-    const laneRouteY = new Map(
-      laneNodes.map(({ node }) => [node.id, node.position.y + LANE_HEADER / 2]),
+  } else if (unknownNodes.length > 0) {
+    placeUnknownTargets();
+  }
+
+  // Physical switches are network gates, so keep them in a distribution band
+  // between the firewall and the VLAN shelves. Their connected networks still
+  // determine left-to-right order, but no switch is relegated to an outer
+  // decoration column merely because it was added after the lanes were packed.
+  if (graph.switches.length > 0) {
+    const laneRouteX = new Map(
+      laneNodes.map(({ node }) => [
+        node.id,
+        node.position.x + (node.width ?? 0) / 2,
+      ]),
     );
     const desiredSwitches = graph.switches
       .map((sw) => {
         const node = topLevelById.get(sw.id);
         if (!node) return null;
-        const targets = graph.switchLinks
+        const targetIds = graph.switchLinks
           .filter((link) => link.switchId === sw.id)
           .map((link) =>
             link.kind === "carriage"
               ? laneNodeId(link.targetId)
               : laneOfMachine.get(link.targetId),
           )
-          .filter((id): id is string => id !== undefined)
-          .map((id) => laneRouteY.get(id))
-          .filter((routeY): routeY is number => routeY !== undefined);
-        const desiredY =
-          targets.length > 0
-            ? targets.reduce((sum, target) => sum + target, 0) / targets.length
-            : node.position.y + (node.height ?? 0) / 2;
-        return { node, desiredY: desiredY - (node.height ?? 0) / 2 };
+          .filter((id): id is string => id !== undefined);
+        const targets = targetIds
+          .map((id) => laneRouteX.get(id))
+          .filter((routeX): routeX is number => routeX !== undefined);
+        const desiredX = targets.length > 0
+          ? targets.reduce((sum, target) => sum + target, 0) / targets.length
+          : boardCenterX;
+        return { node, desiredX };
       })
       .filter(
-        (entry): entry is { node: FootprintFlowNode; desiredY: number } =>
+        (entry): entry is { node: FootprintFlowNode; desiredX: number } =>
           entry !== null,
       )
-      .sort((a, b) => a.desiredY - b.desiredY);
-    const gridLeft = packedLanes.left;
-    const switchX = gridLeft - SWITCH_WIDTH - 72;
-    let previousBottom = Number.NEGATIVE_INFINITY;
+      .sort((a, b) => a.desiredX - b.desiredX || a.node.id.localeCompare(b.node.id));
+    const gapX = 28;
+    const gapY = 24;
+    const controllerBottom = controllerNode
+      ? controllerNode.position.y + (controllerNode.height ?? FIREWALL_HEIGHT)
+      : Math.min(...desiredSwitches.map(({ node }) => node.position.y));
+    const switchStartY = controllerBottom + 44;
+    const switchBanks: Record<
+      FootprintCircuitBank,
+      typeof desiredSwitches
+    > = { left: [], right: [] };
     for (const entry of desiredSwitches) {
-      const y = Math.max(entry.desiredY, previousBottom + 32);
-      entry.node.position = { x: switchX, y };
-      previousBottom = y + (entry.node.height ?? SWITCH_HEIGHT);
+      const centered = Math.abs(entry.desiredX - boardCenterX) < 1;
+      const side: FootprintCircuitBank = centered
+        ? switchBanks.left.length <= switchBanks.right.length
+          ? "left"
+          : "right"
+        : entry.desiredX < boardCenterX
+          ? "left"
+          : "right";
+      switchBanks[side].push(entry);
     }
-  } else if (unknownNodes.length > 0) {
-    placeUnknownTargets();
+    const switchCorridorGap = 32;
+    for (const side of ["left", "right"] as const) {
+      const entries = switchBanks[side];
+      const columns = Math.min(2, entries.length);
+      entries.forEach((entry, index) => {
+        const row = Math.floor(index / columns);
+        const col = index % columns;
+        const inThisRow = Math.min(columns, entries.length - row * columns);
+        const rowWidth =
+          inThisRow * SWITCH_WIDTH + Math.max(0, inThisRow - 1) * gapX;
+        entry.node.position = {
+          x:
+            side === "left"
+              ? traceCorridor.left - switchCorridorGap - rowWidth +
+                col * (SWITCH_WIDTH + gapX)
+              : traceCorridor.right + switchCorridorGap +
+                col * (SWITCH_WIDTH + gapX),
+          y: switchStartY + row * (SWITCH_HEIGHT + gapY),
+        };
+      });
+    }
+
+    // Keep the first VLAN shelf clear of the distribution band. Child nodes
+    // use parent-relative coordinates, so moving the lane containers is enough.
+    if (laneNodes.length > 0) {
+      const switchBottom = Math.max(
+        ...desiredSwitches.map(
+          ({ node }) => node.position.y + (node.height ?? SWITCH_HEIGHT),
+        ),
+      );
+      const laneTop = Math.min(...laneNodes.map(({ node }) => node.position.y));
+      const minimumLaneTop = switchBottom + 64;
+      if (laneTop < minimumLaneTop) {
+        const shiftY = minimumLaneTop - laneTop;
+        for (const { node } of laneNodes) {
+          node.position = { ...node.position, y: node.position.y + shiftY };
+        }
+      }
+    }
   }
 
   const routesByTunnel = new Map(
@@ -572,5 +639,5 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       });
     });
   }
-  return { nodes, externalRootId, hasGatewayRoots, primaryFirewallId, laneOfMachine, laneBankById, topLevelById, routeGroups, traceCorridorWidth };
+  return { nodes, externalRootId, hasGatewayRoots, primaryFirewallId, laneOfMachine, laneBankById, topLevelById, routeGroups, traceCorridor, traceCorridorWidth };
 }

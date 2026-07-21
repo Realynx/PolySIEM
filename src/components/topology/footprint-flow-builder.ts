@@ -2,6 +2,12 @@ import { MarkerType, type Edge } from "@xyflow/react";
 import { formatCount } from "@/lib/format";
 import { INTERNET_NODE_ID } from "@/lib/topology/access";
 import { endpointOffsets } from "@/lib/topology/edge-routing";
+import {
+  footprintTraceTrackX,
+  footprintTracewayWaypoints,
+  type FootprintCircuitBank,
+  type FootprintTraceSide,
+} from "@/lib/topology/footprint-layout";
 import type { FootprintGraph } from "@/lib/topology/footprint";
 import type { EdgeDetail } from "@/components/topology/edge-details";
 import { FIREWALL_HEIGHT, FIREWALL_WIDTH, UNKNOWN_HEIGHT } from "@/components/topology/footprint-node-model";
@@ -9,7 +15,7 @@ import { buildFootprintLayout } from "@/components/topology/footprint-flow-layou
 import { DNS_STATUS, LABEL_DEFAULTS, laneNodeId, policyNodeId, tunnelNodeId, type TrafficState } from "@/components/topology/footprint-flow-shared";
 import type { BuiltFlow } from "@/components/topology/footprint-flow-types";
 export function buildFlow(graph: FootprintGraph, traffic: TrafficState | null, expandedLanes: Set<string>): BuiltFlow {
-  const { nodes, externalRootId, hasGatewayRoots, primaryFirewallId, laneOfMachine, laneBankById, topLevelById, routeGroups, traceCorridorWidth } = buildFootprintLayout(graph, traffic, expandedLanes);
+  const { nodes, externalRootId, hasGatewayRoots, primaryFirewallId, laneOfMachine, laneBankById, topLevelById, routeGroups, traceCorridor, traceCorridorWidth } = buildFootprintLayout(graph, traffic, expandedLanes);
   const details = new Map<string, EdgeDetail>();
   const edges: Edge[] = [];
   const machineNames = new Map<string, string>();
@@ -405,7 +411,10 @@ export function buildFlow(graph: FootprintGraph, traffic: TrafficState | null, e
           strokeWidth: exposed ? 2 : 1.5,
           strokeDasharray: "6 4",
         },
-        data: { baseOpacity: exposed ? 0.94 : 0.68 },
+        data: {
+          baseOpacity: exposed ? 0.94 : 0.68,
+          relationship: "published-service",
+        },
       });
       const count = traffic?.byHostname.get(route.hostname.toLowerCase());
       const detail: EdgeDetail = {
@@ -455,7 +464,6 @@ export function buildFlow(graph: FootprintGraph, traffic: TrafficState | null, e
       id: link.id,
       source: link.switchId,
       target,
-      sourceHandle: link.kind === "carriage" ? "side" : undefined,
       targetHandle:
         link.kind === "carriage"
           ? (corridorHandle(target, "in") ?? "group-in")
@@ -464,8 +472,7 @@ export function buildFlow(graph: FootprintGraph, traffic: TrafficState | null, e
       label: link.label,
       style: { stroke: color, strokeWidth: 1.5, strokeDasharray: "6 4" },
       // Switches and network groups are deliberately re-packed after dagre, so
-      // their live side handles use the direct orthogonal route instead of a
-      // stale layout-time corridor.
+      // use the live handles instead of a stale layout-time corridor.
       data: { baseOpacity: 0.82 },
       ...LABEL_DEFAULTS,
     });
@@ -483,6 +490,121 @@ export function buildFlow(graph: FootprintGraph, traffic: TrafficState | null, e
           secondary: link.label,
         },
       ],
+    });
+  }
+
+  // Route every circuit that enters a network bank through the reserved PCB
+  // corridor. The small route, switch, and endpoint nodes previously relied on
+  // isolated fallback elbows; assigning them stable spines makes them join the
+  // same ribbon cable as the main policy traces. The corridor stays fixed when
+  // a node is dragged, so the card gets a short new lead rather than pulling an
+  // entire traceway across other components.
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const absolutePositionById = new Map<string, { x: number; y: number }>();
+  const absolutePosition = (
+    id: string,
+    visiting = new Set<string>(),
+  ): { x: number; y: number } | null => {
+    const cached = absolutePositionById.get(id);
+    if (cached) return cached;
+    const node = nodeById.get(id);
+    if (!node || visiting.has(id)) return null;
+    visiting.add(id);
+    const parent = node.parentId
+      ? absolutePosition(node.parentId, visiting)
+      : null;
+    visiting.delete(id);
+    const position = {
+      x: node.position.x + (parent?.x ?? 0),
+      y: node.position.y + (parent?.y ?? 0),
+    };
+    absolutePositionById.set(id, position);
+    return position;
+  };
+  const nodeCenter = (id: string) => {
+    const node = nodeById.get(id);
+    const position = absolutePosition(id);
+    if (!node || !position) return null;
+    const width = node.width ?? 0;
+    const height = node.height ?? 0;
+    return {
+      x: position.x + width / 2,
+      y: position.y + height / 2,
+      width,
+      height,
+    };
+  };
+  const endpointLane = (id: string): string | undefined =>
+    laneBankById.has(id) ? id : laneOfMachine.get(id);
+  const handleSide = (
+    handle: string | null | undefined,
+    fallback: FootprintTraceSide,
+  ): FootprintTraceSide => {
+    if (!handle) return fallback;
+    if (handle.includes("left") || handle === "group-in") return "left";
+    if (
+      handle.includes("right") ||
+      handle === "side" ||
+      handle === "side-in" ||
+      handle === "nat-in" ||
+      handle === "nat-out"
+    ) {
+      return "right";
+    }
+    return fallback;
+  };
+  const circuitEdges: Record<FootprintCircuitBank, Edge[]> = {
+    left: [],
+    right: [],
+  };
+  for (const edge of edges) {
+    const relationship = (edge.data as { relationship?: string } | undefined)
+      ?.relationship;
+    if (
+      relationship === "policy-peer" ||
+      relationship === "published-service"
+    ) {
+      continue;
+    }
+    const laneId = endpointLane(edge.target) ?? endpointLane(edge.source);
+    const bank = laneId ? laneBankById.get(laneId) : undefined;
+    if (!bank || !nodeCenter(edge.source) || !nodeCenter(edge.target)) continue;
+    circuitEdges[bank].push(edge);
+  }
+  for (const bank of ["left", "right"] as const) {
+    const bankEdges = circuitEdges[bank].sort((a, b) => {
+      const aTarget = nodeCenter(a.target)!;
+      const bTarget = nodeCenter(b.target)!;
+      const aSource = nodeCenter(a.source)!;
+      const bSource = nodeCenter(b.source)!;
+      return (
+        aTarget.y - bTarget.y ||
+        aSource.y - bSource.y ||
+        a.id.localeCompare(b.id)
+      );
+    });
+    bankEdges.forEach((edge, index) => {
+      const source = nodeCenter(edge.source)!;
+      const target = nodeCenter(edge.target)!;
+      const trackX = footprintTraceTrackX(
+        traceCorridor,
+        bank,
+        index,
+        bankEdges.length,
+      );
+      const waypoints = footprintTracewayWaypoints(
+        source,
+        target,
+        trackX,
+        handleSide(edge.sourceHandle, "bottom"),
+        handleSide(edge.targetHandle, "top"),
+      );
+      if (!waypoints) return;
+      edge.data = {
+        ...edge.data,
+        waypoints,
+        traceBank: bank,
+      };
     });
   }
 

@@ -251,8 +251,12 @@ export function InventoryMap({
         <LabMapMetrics data={live} refreshMs={refreshMs} onRefreshMsChange={setRefreshMs} />
       )}
       {!chromeless && (
-      <MapLegend className="w-48" onResetLayout={clearPositions} hasSaved={hasSaved}>
-        <ul className="space-y-1.5 text-xs text-muted-foreground">
+      <MapLegend
+        className="w-48 max-w-[calc(100%-1.5rem)] transition-[width] duration-200 data-[state=open]:w-[30rem]"
+        onResetLayout={clearPositions}
+        hasSaved={hasSaved}
+      >
+        <ul className="grid gap-x-5 gap-y-1.5 text-xs text-muted-foreground sm:grid-cols-2">
           <li className="flex items-center gap-2">
             <Monitor className="size-3.5 shrink-0" /> Virtual machine
           </li>
@@ -269,7 +273,9 @@ export function InventoryMap({
             <span className="h-0 w-4 shrink-0 border-t-2 border-dashed border-info" aria-hidden /> Switch
             uplink / LAG
           </li>
-          <li className="pt-0.5 text-[11px]">Click a card header or guest chip to open it.</li>
+          <li className="pt-0.5 text-[11px] sm:col-span-2">
+            Click a card header or guest chip to open it.
+          </li>
         </ul>
       </MapLegend>
       )}

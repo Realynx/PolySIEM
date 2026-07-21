@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -17,6 +18,10 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { cn } from "@/lib/utils";
+import {
+  layerTopologyEdges,
+  layerTopologyNodes,
+} from "@/components/topology/topology-layers";
 
 /** Invisible React Flow handle — edges attach, but no dot is rendered. */
 export const hiddenHandle =
@@ -96,6 +101,9 @@ export function TopologyCanvas<NodeType extends Node>({
   heightClassName = "h-[calc(100vh-13rem)] min-h-[600px]",
   children,
 }: TopologyCanvasProps<NodeType>) {
+  const layeredNodes = useMemo(() => layerTopologyNodes(nodes), [nodes]);
+  const layeredEdges = useMemo(() => layerTopologyEdges(edges), [edges]);
+
   return (
     <div
       className={cn(
@@ -106,8 +114,8 @@ export function TopologyCanvas<NodeType extends Node>({
     >
       {children}
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={layeredNodes}
+        edges={layeredEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
@@ -128,6 +136,9 @@ export function TopologyCanvas<NodeType extends Node>({
         nodesConnectable={false}
         elementsSelectable={false}
         edgesFocusable={edgesFocusable}
+        // Exact layers prevent React Flow from automatically raising traces
+        // connected to nested nodes above unrelated draggable cards.
+        zIndexMode="manual"
         proOptions={{ hideAttribution: true }}
       >
         <Background

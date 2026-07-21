@@ -15,6 +15,12 @@ export interface FootprintPackedLayout {
 
 export type FootprintCircuitBank = "left" | "right";
 
+export interface FootprintTraceCorridor {
+  left: number;
+  right: number;
+  width: number;
+}
+
 export interface FootprintCircuitBox extends FootprintLayoutBox {
   /** Number of rendered traces incident to this group. */
   traceWeight: number;
@@ -22,12 +28,102 @@ export interface FootprintCircuitBox extends FootprintLayoutBox {
 
 export interface FootprintCircuitLayout extends FootprintPackedLayout {
   bankById: Map<string, FootprintCircuitBank>;
-  corridor: { left: number; right: number; width: number };
+  corridor: FootprintTraceCorridor;
 }
 
 /** Routing-channel width grows with rendered load, then caps for sane zoom. */
 export function footprintTraceCorridorWidth(traceCount: number): number {
-  return Math.min(260, Math.max(112, 88 + Math.max(0, traceCount) * 6));
+  return Math.min(260, Math.max(112, 88 + Math.max(0, traceCount) * 8));
+}
+
+/**
+ * Assign one PCB track inside a bank's half of the reserved corridor. Tracks
+ * grow inward from the destination bank but retain a small center gap so left
+ * and right ribbon cables remain visually distinct even at maximum density.
+ */
+export function footprintTraceTrackX(
+  corridor: FootprintTraceCorridor,
+  bank: FootprintCircuitBank,
+  index: number,
+  count: number,
+): number {
+  const edgeInset = 18;
+  const centerClearance = 8;
+  const usable = Math.max(
+    0,
+    corridor.width / 2 - edgeInset - centerClearance,
+  );
+  const gap = count <= 1 ? 0 : Math.min(6, usable / (count - 1));
+  return bank === "left"
+    ? corridor.left + edgeInset + Math.max(0, index) * gap
+    : corridor.right - edgeInset - Math.max(0, index) * gap;
+}
+
+export interface FootprintTraceEndpoint {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type FootprintTraceSide = "left" | "right" | "top" | "bottom";
+
+function traceEscapePoint(
+  endpoint: FootprintTraceEndpoint,
+  side: FootprintTraceSide,
+  lead: number,
+): { x: number; y: number } {
+  if (side === "left")
+    return { x: endpoint.x - endpoint.width / 2 - lead, y: endpoint.y };
+  if (side === "right")
+    return { x: endpoint.x + endpoint.width / 2 + lead, y: endpoint.y };
+  if (side === "top")
+    return { x: endpoint.x, y: endpoint.y - endpoint.height / 2 - lead };
+  return { x: endpoint.x, y: endpoint.y + endpoint.height / 2 + lead };
+}
+
+/**
+ * Build a monotonic lead into a vertical PCB track. Short local jumps stay on
+ * the routed-edge fallback: forcing them through a highway would make the two
+ * leads pass one another and render as a spike or 180-degree reversal.
+ */
+export function footprintTracewayWaypoints(
+  source: FootprintTraceEndpoint,
+  target: FootprintTraceEndpoint,
+  trackX: number,
+  sourceSide: FootprintTraceSide = "bottom",
+  targetSide: FootprintTraceSide = "top",
+  minimumClearance = 40,
+): { x: number; y: number }[] | null {
+  const deltaY = target.y - source.y;
+  if (deltaY === 0) return null;
+  const direction = deltaY > 0 ? 1 : -1;
+  const clearance =
+    Math.abs(deltaY) - source.height / 2 - target.height / 2;
+  if (clearance < minimumClearance) return null;
+  const lead = Math.min(16, clearance / 2);
+  const sourceEscape = traceEscapePoint(source, sourceSide, lead);
+  const targetEscape = traceEscapePoint(target, targetSide, lead);
+  const sourceFacesTrack =
+    (sourceSide !== "left" || trackX <= sourceEscape.x) &&
+    (sourceSide !== "right" || trackX >= sourceEscape.x);
+  const targetFacesTrack =
+    (targetSide !== "left" || trackX <= targetEscape.x) &&
+    (targetSide !== "right" || trackX >= targetEscape.x);
+  if (
+    !sourceFacesTrack ||
+    !targetFacesTrack ||
+    (direction > 0 && sourceEscape.y > targetEscape.y) ||
+    (direction < 0 && sourceEscape.y < targetEscape.y)
+  ) {
+    return null;
+  }
+  return [
+    sourceEscape,
+    { x: trackX, y: sourceEscape.y },
+    { x: trackX, y: targetEscape.y },
+    targetEscape,
+  ];
 }
 
 interface Candidate {

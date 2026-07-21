@@ -428,11 +428,11 @@ export function FootprintMap({
 
       {!chromeless && (
       <MapLegend
-        className="w-56"
+        className="w-56 max-w-[calc(100%-1.5rem)] transition-[width] duration-200 data-[state=open]:w-[34rem]"
         onResetLayout={clearPositions}
         hasSaved={hasSaved}
       >
-        <ul className="space-y-1.5 text-xs text-muted-foreground">
+        <ul className="grid gap-x-5 gap-y-1.5 text-xs text-muted-foreground sm:grid-cols-2">
           <li className="flex items-center gap-2">
             <Globe className="size-3.5 shrink-0 text-info" /> WAN / VPN gateway
             root

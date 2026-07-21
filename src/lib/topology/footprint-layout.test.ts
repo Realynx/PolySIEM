@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   footprintTraceCorridorWidth,
+  footprintTraceTrackX,
+  footprintTracewayWaypoints,
   packFootprintCircuitBanks,
   packFootprintLanes,
   type FootprintLayoutBox,
@@ -60,8 +62,76 @@ describe("footprint PCB bank packing", () => {
 
   it("widens the routing channel with trace density and caps its footprint", () => {
     expect(footprintTraceCorridorWidth(0)).toBe(112);
-    expect(footprintTraceCorridorWidth(10)).toBe(148);
+    expect(footprintTraceCorridorWidth(10)).toBe(168);
     expect(footprintTraceCorridorWidth(100)).toBe(260);
+  });
+
+  it("keeps left and right ribbon tracks in separate corridor halves", () => {
+    const corridor = { left: 400, right: 600, width: 200 };
+    const left = Array.from({ length: 12 }, (_, index) =>
+      footprintTraceTrackX(corridor, "left", index, 12),
+    );
+    const right = Array.from({ length: 12 }, (_, index) =>
+      footprintTraceTrackX(corridor, "right", index, 12),
+    );
+
+    expect(Math.max(...left)).toBeLessThan(500);
+    expect(Math.min(...right)).toBeGreaterThan(500);
+    expect(left[1]).toBeGreaterThan(left[0]);
+    expect(right[1]).toBeLessThan(right[0]);
+  });
+
+  it("does not force short jumps into a reversing traceway", () => {
+    expect(
+      footprintTracewayWaypoints(
+        { x: 100, y: 100, width: 80, height: 40 },
+        { x: 140, y: 170, width: 80, height: 40 },
+        120,
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps long traceway leads monotonic in either direction", () => {
+    const down = footprintTracewayWaypoints(
+      { x: 100, y: 100, width: 80, height: 40 },
+      { x: 180, y: 300, width: 80, height: 40 },
+      140,
+    )!;
+    const up = footprintTracewayWaypoints(
+      { x: 180, y: 300, width: 80, height: 40 },
+      { x: 100, y: 100, width: 80, height: 40 },
+      140,
+    )!;
+
+    expect(down[0].y).toBeLessThanOrEqual(down[3].y);
+    expect(up[0].y).toBeGreaterThanOrEqual(up[3].y);
+    expect(down[1].x).toBe(down[2].x);
+    expect(up[1].x).toBe(up[2].x);
+  });
+
+  it("escapes from side handles outward instead of crossing the node", () => {
+    const waypoints = footprintTracewayWaypoints(
+      { x: 100, y: 100, width: 80, height: 40 },
+      { x: 180, y: 300, width: 80, height: 40 },
+      180,
+      "right",
+      "top",
+    )!;
+
+    expect(waypoints[0].x).toBeGreaterThan(140);
+    expect(waypoints[3].y).toBeLessThan(280);
+  });
+
+  it("falls back when a highway sits behind a side-facing handle", () => {
+    expect(
+      footprintTracewayWaypoints(
+        { x: 100, y: 100, width: 80, height: 40 },
+        { x: 180, y: 300, width: 80, height: 40 },
+        80,
+        "right",
+        "top",
+      ),
+    ).toBeNull();
   });
 
   it("places the two highest-load groups at the top of opposing banks", () => {

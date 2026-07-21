@@ -151,14 +151,35 @@ describe("rounded polylines", () => {
     ]);
   });
 
-  it("keeps a collinear reversal because it is a real bend", () => {
+  it("removes a same-line overshoot before the route reaches its target", () => {
     expect(
       simplifyPolyline([
         { x: 0, y: 0 },
         { x: 10, y: 0 },
-        { x: 0, y: 0 },
+        { x: 4, y: 0 },
+        { x: 4, y: 20 },
       ]),
-    ).toHaveLength(3);
+    ).toEqual([
+      { x: 0, y: 0 },
+      { x: 4, y: 0 },
+      { x: 4, y: 20 },
+    ]);
+  });
+
+  it("collapses chained collinear backtracking", () => {
+    expect(
+      simplifyPolyline([
+        { x: 0, y: 0 },
+        { x: 20, y: 0 },
+        { x: 8, y: 0 },
+        { x: 14, y: 0 },
+        { x: 14, y: 12 },
+      ]),
+    ).toEqual([
+      { x: 0, y: 0 },
+      { x: 14, y: 0 },
+      { x: 14, y: 12 },
+    ]);
   });
 
   it("rounds locally with quadratics and still lands on the endpoint", () => {
@@ -171,7 +192,7 @@ describe("rounded polylines", () => {
     expect(path).not.toContain(" C ");
   });
 
-  it("renders a collinear reversal without a zero-width quadratic cusp", () => {
+  it("removes a collinear reversal instead of rendering a spike", () => {
     const path = roundedPolylinePath([
       { x: 0, y: 0 },
       { x: 12, y: 0 },
@@ -179,8 +200,8 @@ describe("rounded polylines", () => {
       { x: 4, y: 20 },
     ]);
 
-    expect(path).toBe("M 0,0 L 12,0 L 8,0 Q 4,0 4,4 L 4,20");
-    expect(path).not.toContain("Q 12,0");
+    expect(path).toBe("M 0,0 L 2,0 Q 4,0 4,2 L 4,20");
+    expect(path).not.toContain("12,0");
   });
 
   it("places a midpoint by distance rather than waypoint index", () => {

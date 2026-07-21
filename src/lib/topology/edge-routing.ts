@@ -207,25 +207,36 @@ export function alignEndpointLanes(
   return dedupePoints(waypoints);
 }
 
-/** Remove points that sit on the straight segment between their neighbours. */
+/**
+ * Remove redundant collinear points, including same-line backtracking.
+ *
+ * A route such as A -> B -> C, where B overshoots C on the same axis, draws a
+ * visible 180-degree spike even though the A -> C segment reaches the same
+ * place. Process points as a stack so nested/chained overshoots collapse too.
+ */
 export function simplifyPolyline(
   rawPoints: readonly Pt[],
   epsilon = 0.01,
 ): Pt[] {
   const points = dedupePoints(rawPoints);
   if (points.length <= 2) return points;
-  const out: Pt[] = [points[0]];
-  for (let i = 1; i < points.length - 1; i += 1) {
-    const a = out[out.length - 1];
-    const b = points[i];
-    const c = points[i + 1];
-    const ab = { x: b.x - a.x, y: b.y - a.y };
-    const bc = { x: c.x - b.x, y: c.y - b.y };
-    const cross = ab.x * bc.y - ab.y * bc.x;
-    const forward = ab.x * bc.x + ab.y * bc.y >= 0;
-    if (Math.abs(cross) > epsilon || !forward) out.push(b);
+
+  const out: Pt[] = [];
+  for (const point of points) {
+    while (out.length >= 2) {
+      const a = out[out.length - 2];
+      const b = out[out.length - 1];
+      const ab = { x: b.x - a.x, y: b.y - a.y };
+      const next = { x: point.x - b.x, y: point.y - b.y };
+      const cross = ab.x * next.y - ab.y * next.x;
+      if (Math.abs(cross) > epsilon) break;
+      out.pop();
+    }
+    const last = out[out.length - 1];
+    if (!last || last.x !== point.x || last.y !== point.y) {
+      out.push({ ...point });
+    }
   }
-  out.push(points[points.length - 1]);
   return out;
 }
 
@@ -323,10 +334,8 @@ export function roundedPolylinePath(
     };
     const turn = incoming.x * outgoing.y - incoming.y * outgoing.x;
 
-    // A collinear reversal is a real routing bend, but it is not a corner that
-    // a quadratic can round. Its entry and exit points coincide, producing a
-    // zero-width cusp that SVG renderers display as a sharp spike. Leave the
-    // reversal as line segments; the path's round stroke join renders it cleanly.
+    // Collinear interior points are normally removed by simplifyPolyline. Keep
+    // this guard for tiny floating-point residuals that are unsafe to round.
     if (Math.abs(turn) <= 0.0001) {
       d += ` L ${fmt(corner.x)},${fmt(corner.y)}`;
       continue;
