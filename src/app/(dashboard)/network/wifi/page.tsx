@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { Wifi } from "lucide-react";
+import { CircleCheck, Radio, Router, ShieldCheck, TriangleAlert, Users, Wifi } from "lucide-react";
 import { prisma } from "@/lib/db";
 import { requirePageUser } from "@/lib/auth/guards";
 import { isMobileView } from "@/lib/device";
 import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
+import { OperationsOverview } from "@/components/shared/operations-overview";
 import { Button } from "@/components/ui/button";
 import { SsidTable } from "@/components/wifi/ssid-table";
 import { ApTable } from "@/components/wifi/ap-table";
@@ -70,37 +71,68 @@ export default async function WifiPage() {
 
   if (mobile) return <MobileWifi ssids={ssids} aps={aps} />;
 
+  const enabledSsids = ssids.filter((ssid) => ssid.enabled).length;
+  const securedSsids = ssids.filter((ssid) => ssid.security && ssid.security !== "open").length;
+  const guestSsids = ssids.filter((ssid) => ssid.isGuest).length;
+  const onlineAps = aps.filter((ap) => ap.state === "online").length;
+  const offlineAps = aps.filter((ap) => ap.state === "offline").length;
+
   return (
     <>
       <PageHeader
         title="WiFi"
         description="Wireless networks and access points documented from your UniFi controller."
       />
-      <div className="space-y-8">
-        <section>
-          <h2 className="mb-3 text-sm font-medium uppercase tracking-wider text-muted-foreground">
-            Wireless networks
-          </h2>
-          {ssids.length === 0 ? (
-            <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-              No wireless networks documented yet.
-            </p>
-          ) : (
-            <SsidTable ssids={ssids} />
-          )}
-        </section>
-        <section>
-          <h2 className="mb-3 text-sm font-medium uppercase tracking-wider text-muted-foreground">
-            Access points
-          </h2>
-          {aps.length === 0 ? (
-            <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-              No access points documented yet.
-            </p>
-          ) : (
-            <ApTable aps={aps} />
-          )}
-        </section>
+      <div className="space-y-4">
+        <OperationsOverview
+          icon={<Wifi className="size-5" aria-hidden />}
+          title="Wireless estate"
+          description="Broadcast, security, and access-point health from the connected UniFi controller."
+          status={
+            offlineAps > 0 ? (
+              <>
+                <TriangleAlert className="size-3.5" aria-hidden />
+                {offlineAps} offline {offlineAps === 1 ? "AP" : "APs"}
+              </>
+            ) : (
+              <>
+                <CircleCheck className="size-3.5" aria-hidden />
+                Wireless is healthy
+              </>
+            )
+          }
+          statusTone={offlineAps > 0 ? "warning" : "success"}
+          metrics={[
+            {
+              icon: <Radio />,
+              label: "Wireless networks",
+              value: ssids.length.toLocaleString(),
+              detail: `${enabledSsids.toLocaleString()} broadcasting`,
+            },
+            {
+              icon: <Router />,
+              label: "Access points",
+              value: aps.length.toLocaleString(),
+              detail: `${onlineAps.toLocaleString()} online`,
+              tone: offlineAps > 0 ? "warning" : "success",
+            },
+            {
+              icon: <ShieldCheck />,
+              label: "Secured SSIDs",
+              value: securedSsids.toLocaleString(),
+              detail: `${(ssids.length - securedSsids).toLocaleString()} open or unknown`,
+              tone: securedSsids === ssids.length ? "success" : "warning",
+            },
+            {
+              icon: <Users />,
+              label: "Guest networks",
+              value: guestSsids.toLocaleString(),
+              detail: "Isolated visitor access",
+            },
+          ]}
+        />
+        <SsidTable ssids={ssids} />
+        <ApTable aps={aps} />
       </div>
     </>
   );

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Wifi } from "lucide-react";
+import { Activity, CircleCheck, Database, Radar, TriangleAlert, Wifi } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { listDhcpLeases, listNetworkNeighbors } from "@/lib/services/inventory";
 import { anonymizeForDisplay } from "@/lib/privacy/server";
@@ -7,6 +7,7 @@ import { isMobileView } from "@/lib/device";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
+import { OperationsOverview } from "@/components/shared/operations-overview";
 import { StatusBadge } from "@/components/shared/badges";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -102,6 +103,11 @@ export default async function NetworkClientsPage({ searchParams }: { searchParam
     : clients;
   const total = matched.length;
   const items = matched.slice((query.page - 1) * query.pageSize, query.page * query.pageSize);
+  const activeClients = clients.filter((client) => client.status === "ACTIVE").length;
+  const staleClients = clients.filter((client) => client.status === "STALE").length;
+  const staticClients = clients.filter((client) => client.kind === "static").length;
+  const dynamicClients = clients.filter((client) => client.kind === "dynamic").length;
+  const detectedClients = clients.filter((client) => client.kind === "detected").length;
 
   if (await isMobileView()) {
     return (
@@ -138,10 +144,61 @@ export default async function NetworkClientsPage({ searchParams }: { searchParam
           }
         />
       ) : (
-        <ListCard
-          toolbar={<TableToolbar searchPlaceholder="Search IP, MAC, hostname or vendor…" showSource={false} />}
-          pagination={<PaginationNav page={query.page} pageSize={query.pageSize} total={total} />}
-        >
+        <div className="space-y-4">
+          <OperationsOverview
+            icon={<Wifi className="size-5" aria-hidden />}
+            title="Known network clients"
+            description="DHCP leases enriched with devices detected in the firewall ARP table."
+            status={
+              staleClients > 0 ? (
+                <>
+                  <TriangleAlert className="size-3.5" aria-hidden />
+                  {staleClients} stale {staleClients === 1 ? "client" : "clients"}
+                </>
+              ) : (
+                <>
+                  <CircleCheck className="size-3.5" aria-hidden />
+                  Client inventory is current
+                </>
+              )
+            }
+            statusTone={staleClients > 0 ? "warning" : "success"}
+            metrics={[
+              {
+                icon: <Activity />,
+                label: "Active clients",
+                value: activeClients.toLocaleString(),
+                detail: `${clients.length.toLocaleString()} known in total`,
+                tone: "success",
+              },
+              {
+                icon: <Database />,
+                label: "Static leases",
+                value: staticClients.toLocaleString(),
+                detail: "Reserved addresses",
+              },
+              {
+                icon: <Wifi />,
+                label: "Dynamic leases",
+                value: dynamicClients.toLocaleString(),
+                detail: "DHCP-assigned addresses",
+              },
+              {
+                icon: <Radar />,
+                label: "Detected devices",
+                value: detectedClients.toLocaleString(),
+                detail: "Observed outside DHCP",
+                tone: detectedClients > 0 ? "primary" : "neutral",
+              },
+            ]}
+          />
+          <ListCard
+            title="Client inventory"
+            description="Search known devices by address, identity, or vendor."
+            resultCount={total}
+            toolbar={<TableToolbar searchPlaceholder="Search IP, MAC, hostname or vendor…" showSource={false} />}
+            pagination={<PaginationNav page={query.page} pageSize={query.pageSize} total={total} />}
+          >
           <Table>
             <TableHeader>
               <TableRow>
@@ -214,7 +271,8 @@ export default async function NetworkClientsPage({ searchParams }: { searchParam
               )}
             </TableBody>
           </Table>
-        </ListCard>
+          </ListCard>
+        </div>
       )}
     </div>
   );

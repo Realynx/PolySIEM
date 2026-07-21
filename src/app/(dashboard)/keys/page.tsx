@@ -55,7 +55,11 @@ export default async function SshKeysPage() {
           action={<div className="flex gap-2">{actions}</div>}
         />
       ) : (
-        <ListCard>
+        <ListCard
+          title="Key inventory"
+          description="Documented public keys and the machines where they are deployed."
+          resultCount={keys.length}
+        >
           <Table>
             <TableHeader>
               <TableRow>

@@ -86,7 +86,12 @@ export default async function StoragePage({
           action={addButton}
         />
       ) : (
-        <ListCard toolbar={<TableToolbar searchPlaceholder="Filter pools…" />}>
+        <ListCard
+          title="Storage pools"
+          description="Review pool capacity, utilization, ownership, and source."
+          resultCount={total}
+          toolbar={<TableToolbar searchPlaceholder="Filter pools…" />}
+        >
           {total === 0 ? (
             <div className="py-16 text-center text-sm text-muted-foreground">
               No storage pools match the current filters.

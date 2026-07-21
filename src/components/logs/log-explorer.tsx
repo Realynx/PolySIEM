@@ -1,7 +1,19 @@
 "use client";
 
-import { AlertTriangle, FilterX, RefreshCw, SearchX } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  CircleCheck,
+  Database,
+  FilterX,
+  Info,
+  RefreshCw,
+  Search,
+  SearchX,
+  ShieldAlert,
+} from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
+import { OperationsOverview } from "@/components/shared/operations-overview";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -84,8 +96,21 @@ export function LogExplorer({ sources }: { sources: LogSource[] }) {
       />
 
       <div className="space-y-4">
-        <Card>
-          <CardContent className="flex flex-wrap items-end gap-3">
+        <section className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-foreground/10 px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold">Query logs</h2>
+              <p className="text-xs text-muted-foreground">
+                Narrow the live Elasticsearch stream by time, severity, host, or message.
+              </p>
+            </div>
+            {logsQuery.data && (
+              <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium tabular-nums text-muted-foreground">
+                {logsQuery.data.total.toLocaleString()} {logsQuery.data.total === 1 ? "result" : "results"}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-end gap-3 p-4">
             <div className="space-y-1.5">
               <Label htmlFor="log-range" className="text-xs text-muted-foreground">
                 Time range
@@ -130,20 +155,23 @@ export function LogExplorer({ sources }: { sources: LogSource[] }) {
                 value={host}
                 onChange={(e) => setHost(e.target.value)}
                 placeholder="e.g. pve1"
-                className="h-7 w-36 text-[0.8rem]"
+                className="h-8 w-36 text-[0.8rem]"
               />
             </div>
-            <div className="min-w-48 flex-1 space-y-1.5">
+            <div className="min-w-52 flex-1 space-y-1.5">
               <Label htmlFor="log-search" className="text-xs text-muted-foreground">
                 Search
               </Label>
-              <Input
-                id="log-search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search messages…"
-                className="h-7 text-[0.8rem]"
-              />
+              <div className="relative">
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="log-search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search messages…"
+                  className="h-8 pl-8 text-[0.8rem]"
+                />
+              </div>
             </div>
             {hasFilters && (
               <Button variant="ghost" size="sm" onClick={clearFilters}>
@@ -151,8 +179,8 @@ export function LogExplorer({ sources }: { sources: LogSource[] }) {
                 Clear filters
               </Button>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </section>
 
         {logsQuery.isError ? (
           <ErrorCard message={logsQuery.error.message} onRetry={refresh} />
@@ -160,7 +188,12 @@ export function LogExplorer({ sources }: { sources: LogSource[] }) {
           <LogsSkeleton />
         ) : (
           <>
-            <StatsHeader stats={statsQuery.data} total={logsQuery.data.total} />
+            <StatsHeader
+              stats={statsQuery.data}
+              total={logsQuery.data.total}
+              sourceName={sourceName}
+              rangeLabel={TIME_RANGES.find((item) => item.value === range)?.label ?? range}
+            />
             {logsQuery.data.entries.length === 0 ? (
               <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-14 text-center">
                 <SearchX className="size-6 text-muted-foreground" />
@@ -205,44 +238,116 @@ function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void 
   );
 }
 
-function StatsHeader({ stats, total }: { stats: StatsResponse | undefined; total: number }) {
+function StatsHeader({
+  stats,
+  total,
+  sourceName,
+  rangeLabel,
+}: {
+  stats: StatsResponse | undefined;
+  total: number;
+  sourceName: string;
+  rangeLabel: string;
+}) {
   const maxCount = stats ? Math.max(...stats.overTime.map((b) => b.count), 1) : 1;
   const shownLevels = stats?.byLevel.filter((l) => l.count > 0) ?? [];
+  const countFor = (name: string) =>
+    stats?.byLevel
+      .filter((item) => item.level.toLowerCase() === name)
+      .reduce((sum, item) => sum + item.count, 0) ?? 0;
+  const errors = countFor("error");
+  const warnings = countFor("warn") + countFor("warning");
+  const otherEvents = Math.max(total - errors - warnings, 0);
+
   return (
-    <Card>
-      <CardContent className="space-y-3">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <p className="text-sm">
-            <span className="text-lg font-semibold tabular-nums">{total.toLocaleString()}</span>{" "}
-            <span className="text-muted-foreground">matching log {total === 1 ? "entry" : "entries"}</span>
-          </p>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {shownLevels.map((l) => (
-              <LevelBadge key={l.level} level={l.level} count={l.count} />
-            ))}
+    <div className="space-y-4">
+      <OperationsOverview
+        icon={<Activity className="size-5" aria-hidden />}
+        title="Live log stream"
+        description={`${rangeLabel} from ${sourceName}`}
+        status={
+          !stats ? (
+            "Loading level breakdown…"
+          ) : errors > 0 ? (
+            <>
+              <ShieldAlert className="size-3.5" aria-hidden />
+              {errors.toLocaleString()} {errors === 1 ? "error" : "errors"}
+            </>
+          ) : (
+            <>
+              <CircleCheck className="size-3.5" aria-hidden />
+              Stream is healthy
+            </>
+          )
+        }
+        statusTone={!stats ? "neutral" : errors > 0 ? "destructive" : warnings > 0 ? "warning" : "success"}
+        metrics={[
+          {
+            icon: <Database />,
+            label: "Matching entries",
+            value: total.toLocaleString(),
+            detail: shownLevels.length > 0 ? (
+              <span className="flex flex-wrap gap-1">
+                {shownLevels.map((item) => (
+                  <LevelBadge key={item.level} level={item.level} count={item.count} />
+                ))}
+              </span>
+            ) : (
+              "Current query"
+            ),
+          },
+          {
+            icon: <ShieldAlert />,
+            label: "Errors",
+            value: stats ? errors.toLocaleString() : "—",
+            detail: errors > 0 ? "Needs investigation" : "No errors in range",
+            tone: errors > 0 ? "destructive" : "success",
+          },
+          {
+            icon: <AlertTriangle />,
+            label: "Warnings",
+            value: stats ? warnings.toLocaleString() : "—",
+            detail: warnings > 0 ? "Potential issues" : "No warnings in range",
+            tone: warnings > 0 ? "warning" : "neutral",
+          },
+          {
+            icon: <Info />,
+            label: "Other events",
+            value: stats ? otherEvents.toLocaleString() : "—",
+            detail: "Info, debug, and unclassified",
+          },
+        ]}
+      />
+      {stats && stats.overTime.length > 0 && (
+        <section className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+          <div className="border-b border-foreground/10 px-4 py-3">
+            <h2 className="text-sm font-semibold">Event volume</h2>
+            <p className="text-xs text-muted-foreground">Distribution across the selected time range.</p>
           </div>
-        </div>
-        {stats && stats.overTime.length > 0 && (
-          <div className="flex h-20 items-end gap-px" role="img" aria-label="Log volume over time">
-            {stats.overTime.map((bucket) => (
-              <div
-                key={bucket.bucket}
-                className="flex h-full min-w-0 flex-1 items-end"
-                title={`${formatDateTime(bucket.bucket)} — ${bucket.count.toLocaleString()} ${bucket.count === 1 ? "entry" : "entries"}`}
-              >
+          <div className="p-4">
+            <div className="flex h-20 items-end gap-px" role="img" aria-label="Log volume over time">
+              {stats.overTime.map((bucket) => (
                 <div
-                  className={cn(
-                    "w-full rounded-t-xs transition-colors",
-                    bucket.count > 0 ? "bg-primary/70 hover:bg-primary" : "bg-muted",
-                  )}
-                  style={{ height: bucket.count > 0 ? `${Math.max((bucket.count / maxCount) * 100, 4)}%` : "2px" }}
-                />
-              </div>
-            ))}
+                  key={bucket.bucket}
+                  className="flex h-full min-w-0 flex-1 items-end"
+                  title={`${formatDateTime(bucket.bucket)} — ${bucket.count.toLocaleString()} ${bucket.count === 1 ? "entry" : "entries"}`}
+                >
+                  <div
+                    className={cn(
+                      "w-full rounded-t-xs transition-colors",
+                      bucket.count > 0 ? "bg-primary/70 hover:bg-primary" : "bg-muted",
+                    )}
+                    style={{
+                      height: bucket.count > 0 ? `${Math.max((bucket.count / maxCount) * 100, 4)}%` : "2px",
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
           </div>
-        )}
-      </CardContent>
-    </Card>
+        </section>
+      )}
+    </div>
   );
 }
 

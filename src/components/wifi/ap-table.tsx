@@ -59,7 +59,11 @@ function ApStateBadge({ state }: { state: string | null }) {
 /** Wireless access points documented from a UniFi controller. */
 export function ApTable({ aps }: { aps: ApRow[] }) {
   return (
-    <ListCard>
+    <ListCard
+      title="Access points"
+      description="Controller state, addressing, adoption, and linked inventory devices."
+      resultCount={aps.length}
+    >
       <Table>
         <TableHeader>
           <TableRow>
@@ -74,7 +78,13 @@ export function ApTable({ aps }: { aps: ApRow[] }) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {aps.map((ap) => (
+          {aps.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
+                No access points documented yet.
+              </TableCell>
+            </TableRow>
+          ) : aps.map((ap) => (
             <TableRow key={ap.id}>
               <TableCell>
                 <span className="flex items-center gap-2">

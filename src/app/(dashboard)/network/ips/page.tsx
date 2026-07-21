@@ -76,6 +76,9 @@ export default async function IpsPage({ searchParams }: { searchParams: Promise<
         />
       ) : (
         <ListCard
+          title="Address inventory"
+          description="Reserved, discovered, and interface-bound addresses."
+          resultCount={total}
           toolbar={<TableToolbar searchPlaceholder="Search addresses…" showSource={false} />}
           pagination={<PaginationNav page={query.page} pageSize={query.pageSize} total={total} />}
         >

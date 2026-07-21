@@ -396,14 +396,17 @@ export function buildFlow(
       };
       const sourceLaneY = sourceAnchor.y + lanes.sourceOffset;
       const targetLaneY = targetAnchor.y + lanes.targetOffset;
-      return dagreRoute([
-        sourceAnchor,
-        { x: sourceAnchor.x + 24, y: sourceLaneY },
-        { x: corridorX, y: sourceLaneY },
-        { x: corridorX, y: targetLaneY },
-        { x: targetAnchor.x + 24, y: targetLaneY },
-        targetAnchor,
-      ]);
+      return {
+        ...dagreRoute([
+          sourceAnchor,
+          { x: sourceAnchor.x + 24, y: sourceLaneY },
+          { x: corridorX, y: sourceLaneY },
+          { x: corridorX, y: targetLaneY },
+          { x: targetAnchor.x + 24, y: targetLaneY },
+          targetAnchor,
+        ]),
+        ...lanes,
+      };
     }
     if (kind === "peer") {
       return dagreRoute([
@@ -584,7 +587,7 @@ export function buildFlow(
     edge.data = {
       ...edge.data,
       ...(fixedTraceLane
-        ? { sourceOffset: 0, targetOffset: 0 }
+        ? {}
         : offsets.get(edge.id)),
     };
   }

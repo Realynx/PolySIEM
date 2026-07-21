@@ -9,6 +9,7 @@ import {
   type EdgeProps,
 } from "@xyflow/react";
 import {
+  alignEndpointLanes,
   deformWaypoints,
   orthogonalPolyline,
   pointAlongPolyline,
@@ -51,6 +52,24 @@ function escapePoint(
   if (position === Position.Top)
     return { x: point.x + lateral, y: point.y - distance };
   return { x: point.x + lateral, y: point.y + distance };
+}
+
+/** Keep a short endpoint lead from overshooting a nearby routed corridor. */
+function escapeDistanceToward(
+  point: Pt,
+  position: Position,
+  routePoint: Pt,
+  maximum: number,
+): number {
+  const available =
+    position === Position.Left
+      ? point.x - routePoint.x
+      : position === Position.Right
+        ? routePoint.x - point.x
+        : position === Position.Top
+          ? point.y - routePoint.y
+          : routePoint.y - point.y;
+  return Math.max(0, Math.min(maximum, available));
 }
 
 function fallbackPoints(
@@ -155,24 +174,50 @@ function RoutedEdgeComponent({
   const midpointOffset = data?.midpointOffset ?? 0;
 
   const [path, labelX, labelY] = useMemo<[string, number, number]>(() => {
-    const source = { x: sourceX, y: sourceY };
-    const target = { x: targetX, y: targetY };
+    const sourceHandle = { x: sourceX, y: sourceY };
+    const targetHandle = { x: targetX, y: targetY };
+    // Offset the visible endpoints themselves instead of joining every trace
+    // at the handle center and fanning out a few pixels later. React Flow still
+    // owns the semantic handle; the SVG routes now stay distinct to the card.
+    const source = escapePoint(sourceHandle, sourceSide, 0, sourceOffset);
+    const target = escapePoint(targetHandle, targetSide, 0, targetOffset);
     let full: Pt[];
     if (waypoints && waypoints.length > 0) {
       const warped = deformWaypoints(
         waypoints,
         data?.sourceAnchor,
         data?.targetAnchor,
+        sourceHandle,
+        targetHandle,
+      );
+      const aligned = alignEndpointLanes(
+        warped,
         source,
         target,
+        sourceSide === Position.Left || sourceSide === Position.Right
+          ? "horizontal"
+          : "vertical",
+        targetSide === Position.Left || targetSide === Position.Right
+          ? "horizontal"
+          : "vertical",
+      );
+      const sourceLead = escapeDistanceToward(
+        source,
+        sourceSide,
+        aligned[0],
+        12,
+      );
+      const targetLead = escapeDistanceToward(
+        target,
+        targetSide,
+        aligned[aligned.length - 1],
+        12,
       );
       full = [
         source,
-        escapePoint(source, sourceSide, 12, 0),
-        escapePoint(source, sourceSide, 12, sourceOffset),
-        ...warped,
-        escapePoint(target, targetSide, 12, targetOffset),
-        escapePoint(target, targetSide, 12, 0),
+        escapePoint(source, sourceSide, sourceLead, 0),
+        ...aligned,
+        escapePoint(target, targetSide, targetLead, 0),
         target,
       ];
     } else {
@@ -181,8 +226,8 @@ function RoutedEdgeComponent({
         target,
         sourceSide,
         targetSide,
-        sourceOffset,
-        targetOffset,
+        0,
+        0,
         midpointOffset,
       );
     }

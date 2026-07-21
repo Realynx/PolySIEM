@@ -2,12 +2,22 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, EyeOff, RefreshCw, ShieldCheck } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  Clock3,
+  EyeOff,
+  Gauge,
+  RefreshCw,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
+import { OperationsOverview } from "@/components/shared/operations-overview";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -23,7 +33,6 @@ import {
 } from "@/lib/security/types";
 import { FindingCard } from "./finding-card";
 import { ScoreRing } from "./score-ring";
-import { FindingSeverityBadge } from "./severity-badge";
 
 const GRADE_HEADLINE: Record<ScoreGrade, string> = {
   excellent: "Excellent posture",
@@ -69,6 +78,9 @@ export function SecurityPanel({ isAdmin }: { isAdmin: boolean }) {
 
   const report = reportQuery.data;
   const grade = report ? scoreGrade(report.score) : null;
+  const urgentFindings = report
+    ? report.bySeverity.critical + report.bySeverity.high
+    : 0;
 
   const findingsBySeverity = useMemo(() => {
     const groups = new Map<SecuritySeverity, SecurityFinding[]>();
@@ -124,36 +136,64 @@ export function SecurityPanel({ isAdmin }: { isAdmin: boolean }) {
 
       {report && grade && (
         <div className="space-y-6">
-          {/* Hero: gauge + summary */}
-          <Card>
-            <CardContent className="flex flex-col items-center gap-6 px-6 py-2 sm:flex-row sm:items-center">
-              <ScoreRing score={report.score} />
-              <div className="flex-1 space-y-3 text-center sm:text-left">
-                <div className="space-y-1">
-                  <h2 className="text-xl font-semibold tracking-tight">{GRADE_HEADLINE[grade]}</h2>
-                  <p className="text-sm text-muted-foreground">{GRADE_TEXT[grade]}</p>
-                </div>
-                <div className="flex flex-wrap items-center justify-center gap-1.5 sm:justify-start">
-                  {SECURITY_SEVERITIES.map((severity) =>
-                    report.bySeverity[severity] > 0 ? (
-                      <FindingSeverityBadge
-                        key={severity}
-                        severity={severity}
-                        count={report.bySeverity[severity]}
-                      />
-                    ) : null,
-                  )}
-                  {report.findings.length === 0 && (
-                    <span className="text-sm text-muted-foreground">No open findings.</span>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Evaluated {formatRelative(new Date(report.generatedAt))}
-                  {report.deducted > 0 ? ` — ${report.deducted} of ${report.ceiling} deduction points` : ""}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+          <OperationsOverview
+            icon={<ShieldCheck className="size-5" aria-hidden />}
+            title="Security posture"
+            description={GRADE_TEXT[grade]}
+            status={
+              <>
+                {urgentFindings > 0 ? (
+                  <ShieldAlert className="size-3.5" aria-hidden />
+                ) : (
+                  <ShieldCheck className="size-3.5" aria-hidden />
+                )}
+                {GRADE_HEADLINE[grade]}
+              </>
+            }
+            statusTone={
+              grade === "at-risk"
+                ? "destructive"
+                : grade === "fair"
+                  ? "warning"
+                  : "success"
+            }
+            metrics={[
+              {
+                icon: <Gauge />,
+                label: "Overall score",
+                value: <ScoreRing score={report.score} size={112} />,
+                detail: `${report.score} out of 100`,
+                tone:
+                  grade === "at-risk"
+                    ? "destructive"
+                    : grade === "fair"
+                      ? "warning"
+                      : "success",
+              },
+              {
+                icon: <ShieldAlert />,
+                label: "Open findings",
+                value: report.findings.length.toLocaleString(),
+                detail: urgentFindings > 0
+                  ? `${urgentFindings} critical or high priority`
+                  : "No critical or high findings",
+                tone: urgentFindings > 0 ? "destructive" : "success",
+              },
+              {
+                icon: <AlertTriangle />,
+                label: "Deduction points",
+                value: report.deducted.toLocaleString(),
+                detail: `${report.ceiling.toLocaleString()} points available`,
+                tone: report.deducted > 0 ? "warning" : "success",
+              },
+              {
+                icon: <Clock3 />,
+                label: "Last evaluated",
+                value: formatRelative(new Date(report.generatedAt)),
+                detail: `${report.categories.length} posture categories checked`,
+              },
+            ]}
+          />
 
           {/* Category subscores */}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">

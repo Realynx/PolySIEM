@@ -3,7 +3,17 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Copy, EllipsisVertical, PencilRuler, Trash2, Workflow } from "lucide-react";
+import {
+  CircleAlert,
+  CircleCheck,
+  Copy,
+  EllipsisVertical,
+  GitBranch,
+  PencilRuler,
+  Power,
+  Trash2,
+  Workflow,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -34,6 +44,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/shared/empty-state";
+import { OperationsOverview } from "@/components/shared/operations-overview";
 import { ListCard } from "@/components/inventory/list-card";
 import { apiFetch } from "@/components/shared/api-client";
 import { formatRelative } from "@/lib/format";
@@ -135,9 +146,72 @@ export function WorkflowList({ isAdmin }: { isAdmin: boolean }) {
     );
   }
 
+  const workflowRows = workflows ?? [];
+  const enabledCount = workflowRows.filter((workflow) => workflow.enabled).length;
+  const failedCount = workflowRows.filter(
+    (workflow) => workflow.lastRun?.status === "FAILED",
+  ).length;
+  const neverRunCount = workflowRows.filter((workflow) => workflow.lastRun === null).length;
+  const nodeCount = workflowRows.reduce(
+    (total, workflow) => total + workflow.graph.nodes.length,
+    0,
+  );
+
   return (
     <>
-      <ListCard>
+      <div className="space-y-4">
+        <OperationsOverview
+          icon={<Workflow className="size-5" aria-hidden />}
+          title="Automation workspace"
+          description="Reusable workflows coordinate actions across your lab."
+          status={
+            <>
+              {failedCount > 0 ? (
+                <CircleAlert className="size-3.5" aria-hidden />
+              ) : (
+                <CircleCheck className="size-3.5" aria-hidden />
+              )}
+              {failedCount > 0
+                ? `${failedCount} ${failedCount === 1 ? "workflow needs" : "workflows need"} attention`
+                : "Automations ready"}
+            </>
+          }
+          statusTone={failedCount > 0 ? "destructive" : "success"}
+          metrics={[
+            {
+              icon: <Workflow />,
+              label: "Workflows",
+              value: workflowRows.length.toLocaleString(),
+              detail: "Saved automation definitions",
+            },
+            {
+              icon: <Power />,
+              label: "Enabled",
+              value: enabledCount.toLocaleString(),
+              detail: `${workflowRows.length - enabledCount} disabled`,
+              tone: enabledCount > 0 ? "success" : "neutral",
+            },
+            {
+              icon: <GitBranch />,
+              label: "Workflow nodes",
+              value: nodeCount.toLocaleString(),
+              detail: "Across all definitions",
+            },
+            {
+              icon: <CircleAlert />,
+              label: "Never run",
+              value: neverRunCount.toLocaleString(),
+              detail: neverRunCount > 0 ? "Awaiting a first execution" : "Every workflow has run",
+              tone: neverRunCount > 0 ? "warning" : "success",
+            },
+          ]}
+        />
+
+        <ListCard
+          title="Workflow library"
+          description="Open, enable, duplicate, and manage saved automations."
+          resultCount={workflowRows.length}
+        >
         <Table>
           <TableHeader>
             <TableRow>
@@ -150,7 +224,7 @@ export function WorkflowList({ isAdmin }: { isAdmin: boolean }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {workflows!.map((wf) => (
+            {workflowRows.map((wf) => (
               <TableRow
                 key={wf.id}
                 className="cursor-pointer"
@@ -220,7 +294,8 @@ export function WorkflowList({ isAdmin }: { isAdmin: boolean }) {
             ))}
           </TableBody>
         </Table>
-      </ListCard>
+        </ListCard>
+      </div>
 
       <AlertDialog open={deleteTarget !== null} onOpenChange={(v) => !v && setDeleteTarget(null)}>
         <AlertDialogContent>

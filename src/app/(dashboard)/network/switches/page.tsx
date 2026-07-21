@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Cable } from "lucide-react";
+import { Cable, CircleCheck, EthernetPort, Link2, Network, Server } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { isMobileView } from "@/lib/device";
 import { listSwitches } from "@/lib/services/switches";
@@ -7,6 +7,7 @@ import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatRelative } from "@/lib/format";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
+import { OperationsOverview } from "@/components/shared/operations-overview";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -33,6 +34,10 @@ export default async function SwitchesPage() {
 
   if (await isMobileView()) return <MobileSwitches switches={switches} />;
 
+  const totalPorts = switches.reduce((sum, sw) => sum + sw.portCount, 0);
+  const totalVlans = switches.reduce((sum, sw) => sum + sw.vlanCount, 0);
+  const linkedDevices = switches.reduce((sum, sw) => sum + sw.connectedCount, 0);
+
   return (
     <div>
       <PageHeader
@@ -48,7 +53,51 @@ export default async function SwitchesPage() {
           action={<AddSwitchDialog />}
         />
       ) : (
-        <ListCard>
+        <div className="space-y-4">
+          <OperationsOverview
+            icon={<Cable className="size-5" aria-hidden />}
+            title="Switching fabric"
+            description="Parsed switching capacity and device links across documented configurations."
+            status={
+              <>
+                <CircleCheck className="size-3.5" aria-hidden />
+                Inventory ready
+              </>
+            }
+            statusTone="success"
+            metrics={[
+              {
+                icon: <Server />,
+                label: "Switches",
+                value: switches.length.toLocaleString(),
+                detail: "Documented configurations",
+              },
+              {
+                icon: <EthernetPort />,
+                label: "Ports",
+                value: totalPorts.toLocaleString(),
+                detail: "Physical switch ports",
+              },
+              {
+                icon: <Network />,
+                label: "VLAN references",
+                value: totalVlans.toLocaleString(),
+                detail: "Across all switches",
+              },
+              {
+                icon: <Link2 />,
+                label: "Linked devices",
+                value: linkedDevices.toLocaleString(),
+                detail: "Inventory matches",
+                tone: linkedDevices > 0 ? "primary" : "neutral",
+              },
+            ]}
+          />
+          <ListCard
+            title="Documented switches"
+            description="Parsed VLAN, port, and device-link details."
+            resultCount={switches.length}
+          >
           <Table>
             <TableHeader>
               <TableRow>
@@ -98,7 +147,8 @@ export default async function SwitchesPage() {
               ))}
             </TableBody>
           </Table>
-        </ListCard>
+          </ListCard>
+        </div>
       )}
     </div>
   );

@@ -69,6 +69,9 @@ export default async function HostsPage({ searchParams }: { searchParams: Promis
         />
       ) : (
         <ListCard
+          title="Host inventory"
+          description="Review physical systems, capacity, and connected workloads."
+          resultCount={total}
           toolbar={<TableToolbar searchPlaceholder="Filter hosts…" />}
           pagination={<PaginationNav page={query.page} pageSize={query.pageSize} total={total} />}
         >

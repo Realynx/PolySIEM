@@ -130,6 +130,44 @@ export function deformWaypoints(
   });
 }
 
+/**
+ * Carry endpoint fan-out/fan-in lanes through the nearest routed waypoint.
+ *
+ * Offsetting only the visible endpoint leaves the first stored waypoint on the
+ * handle centerline. When that waypoint lies opposite the route's destination
+ * (notably a centered Cloudflare tunnel feeding a vertical list of hostnames),
+ * the path briefly returns to center and forms a tiny 180-degree hairpin. Keep
+ * the endpoint segment straight by moving its adjacent waypoint onto the same
+ * lateral lane; the middle of the route remains untouched.
+ */
+export function alignEndpointLanes(
+  rawWaypoints: readonly Pt[],
+  source: Pt,
+  target: Pt,
+  sourceAxis: RouteAxis,
+  targetAxis: RouteAxis,
+): Pt[] {
+  if (rawWaypoints.length === 0) return [];
+
+  const align = (point: Pt, endpoint: Pt, axis: RouteAxis): Pt =>
+    axis === "horizontal"
+      ? { x: point.x, y: endpoint.y }
+      : { x: endpoint.x, y: point.y };
+
+  if (rawWaypoints.length === 1) {
+    return dedupePoints([
+      align(rawWaypoints[0], source, sourceAxis),
+      align(rawWaypoints[0], target, targetAxis),
+    ]);
+  }
+
+  const waypoints = rawWaypoints.map((point) => ({ ...point }));
+  waypoints[0] = align(waypoints[0], source, sourceAxis);
+  const last = waypoints.length - 1;
+  waypoints[last] = align(waypoints[last], target, targetAxis);
+  return dedupePoints(waypoints);
+}
+
 /** Remove points that sit on the straight segment between their neighbours. */
 export function simplifyPolyline(
   rawPoints: readonly Pt[],
@@ -236,6 +274,24 @@ export function roundedPolylinePath(
     const next = points[i + 1];
     const before = dist(prev, corner);
     const after = dist(corner, next);
+    const incoming = {
+      x: corner.x - prev.x,
+      y: corner.y - prev.y,
+    };
+    const outgoing = {
+      x: next.x - corner.x,
+      y: next.y - corner.y,
+    };
+    const turn = incoming.x * outgoing.y - incoming.y * outgoing.x;
+
+    // A collinear reversal is a real routing bend, but it is not a corner that
+    // a quadratic can round. Its entry and exit points coincide, producing a
+    // zero-width cusp that SVG renderers display as a sharp spike. Leave the
+    // reversal as line segments; the path's round stroke join renders it cleanly.
+    if (Math.abs(turn) <= 0.0001) {
+      d += ` L ${fmt(corner.x)},${fmt(corner.y)}`;
+      continue;
+    }
     const r = Math.min(radius, before / 2, after / 2);
     if (r <= 0) continue;
     const into = {

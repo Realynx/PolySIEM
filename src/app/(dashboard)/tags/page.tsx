@@ -42,7 +42,11 @@ export default async function TagsPage() {
           action={<CreateTagDialog />}
         />
       ) : (
-        <ListCard>
+        <ListCard
+          title="Tag library"
+          description="Shared labels available across inventory, networking, and documentation."
+          resultCount={tags.length}
+        >
           <Table>
             <TableHeader>
               <TableRow>

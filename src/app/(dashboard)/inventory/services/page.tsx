@@ -66,6 +66,9 @@ export default async function ServicesPage({
         />
       ) : (
         <ListCard
+          title="Service directory"
+          description="Review application endpoints and the infrastructure that hosts them."
+          resultCount={total}
           toolbar={<TableToolbar searchPlaceholder="Filter services…" />}
           pagination={<PaginationNav page={query.page} pageSize={query.pageSize} total={total} />}
         >

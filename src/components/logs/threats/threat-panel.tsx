@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   keepPreviousData,
   useMutation,
@@ -27,6 +27,7 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
+import { OperationsOverview } from "@/components/shared/operations-overview";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
@@ -217,35 +218,17 @@ export function ThreatPanel({
       />
 
       <div className="space-y-4">
-        <section
-          className={cn(
-            "relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary/[0.12] via-card to-card ring-1 ring-foreground/10",
-            urgentOpen > 0 && "ring-destructive/25",
-          )}
-        >
-          <div className="pointer-events-none absolute -top-24 right-0 size-64 rounded-full bg-primary/10 blur-3xl" />
-          <div className="relative flex flex-wrap items-center justify-between gap-4 border-b border-foreground/10 px-5 py-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/12 text-primary ring-1 ring-primary/20">
-                <Radar className="size-5" aria-hidden />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-semibold">Security operations queue</p>
-                <p className="truncate text-xs text-muted-foreground">
-                  {config?.model
-                    ? `Scanning with ${config.model}`
-                    : "AI-assisted triage across connected log sources"}
-                </p>
-              </div>
-            </div>
-            <div
-              className={cn(
-                "inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ring-1",
-                urgentOpen > 0
-                  ? "bg-destructive/10 text-destructive ring-destructive/20"
-                  : "bg-success/10 text-success ring-success/20",
-              )}
-            >
+        <OperationsOverview
+          icon={<Radar className="size-5" aria-hidden />}
+          title="Security operations queue"
+          description={
+            config?.model
+              ? `Scanning with ${config.model}`
+              : "AI-assisted triage across connected log sources"
+          }
+          statusTone={urgentOpen > 0 ? "destructive" : "success"}
+          status={
+            <>
               {urgentOpen > 0 ? (
                 <ShieldAlert className="size-3.5" aria-hidden />
               ) : (
@@ -254,15 +237,14 @@ export function ThreatPanel({
               {urgentOpen > 0
                 ? `${urgentOpen} urgent ${urgentOpen === 1 ? "ticket" : "tickets"}`
                 : "Queue is healthy"}
-            </div>
-          </div>
-
-          <div className="relative grid sm:grid-cols-2 xl:grid-cols-4">
-            <QueueMetric
-              icon={<Inbox className="size-4" />}
-              label="Open tickets"
-              value={totalOpen.toLocaleString()}
-              detail={
+            </>
+          }
+          metrics={[
+            {
+              icon: <Inbox />,
+              label: "Open tickets",
+              value: totalOpen.toLocaleString(),
+              detail:
                 openCounts && totalOpen > 0 ? (
                   <span className="flex flex-wrap gap-1">
                     {SEVERITIES.filter((s) => openCounts[s] > 0).map((s) => (
@@ -276,47 +258,41 @@ export function ThreatPanel({
                   </span>
                 ) : (
                   "Nothing needs attention"
-                )
-              }
-            />
-            <QueueMetric
-              icon={<ShieldAlert className="size-4" />}
-              label="Needs priority triage"
-              value={urgentOpen.toLocaleString()}
-              detail={urgentOpen > 0 ? "Critical and high severity" : "No urgent tickets"}
-              urgent={urgentOpen > 0}
-            />
-            <QueueMetric
-              icon={<Clock3 className="size-4" />}
-              label="Last scan"
-              value={lastRun ? formatRelative(lastRun.startedAt) : "Never"}
-              detail={
-                lastRun ? (
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <RunStatusBadge status={lastRun.status} />
-                    <span className="truncate font-mono">{lastRun.model}</span>
-                  </span>
-                ) : (
-                  "Run a scan to get started"
-                )
-              }
-            />
-            <QueueMetric
-              icon={<Database className="size-4" />}
-              label="Events analyzed"
-              value={
+                ),
+            },
+            {
+              icon: <ShieldAlert />,
+              label: "Needs priority triage",
+              value: urgentOpen.toLocaleString(),
+              detail: urgentOpen > 0 ? "Critical and high severity" : "No urgent tickets",
+              tone: urgentOpen > 0 ? "destructive" : "neutral",
+            },
+            {
+              icon: <Clock3 />,
+              label: "Last scan",
+              value: lastRun ? formatRelative(lastRun.startedAt) : "Never",
+              detail: lastRun ? (
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <RunStatusBadge status={lastRun.status} />
+                  <span className="truncate font-mono">{lastRun.model}</span>
+                </span>
+              ) : (
+                "Run a scan to get started"
+              ),
+            },
+            {
+              icon: <Database />,
+              label: "Events analyzed",
+              value:
                 lastRun?.stats?.docsScanned !== undefined
                   ? lastRun.stats.docsScanned.toLocaleString()
-                  : "—"
-              }
-              detail={
-                lastRun?.stats
-                  ? `${lastRun.stats.ticketsCreated ?? 0} new · ${lastRun.stats.ticketsUpdated ?? 0} updated`
-                  : "Most recent scan"
-              }
-            />
-          </div>
-        </section>
+                  : "—",
+              detail: lastRun?.stats
+                ? `${lastRun.stats.ticketsCreated ?? 0} new · ${lastRun.stats.ticketsUpdated ?? 0} updated`
+                : "Most recent scan",
+            },
+          ]}
+        />
 
         <section className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-foreground/10 px-4 py-3">
@@ -503,43 +479,6 @@ export function ThreatPanel({
       />
       <NewTicketDialog open={newTicketOpen} onOpenChange={setNewTicketOpen} />
     </>
-  );
-}
-
-function QueueMetric({
-  icon,
-  label,
-  value,
-  detail,
-  urgent = false,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  detail: ReactNode;
-  urgent?: boolean;
-}) {
-  return (
-    <div className="min-w-0 border-t border-foreground/10 p-4 sm:[&:nth-child(even)]:border-l xl:border-t-0 xl:border-l xl:first:border-l-0">
-      <div
-        className={cn(
-          "mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground",
-          urgent && "text-destructive",
-        )}
-      >
-        {icon}
-        {label}
-      </div>
-      <p
-        className={cn(
-          "truncate text-2xl font-semibold tracking-tight tabular-nums",
-          urgent && "text-destructive",
-        )}
-      >
-        {value}
-      </p>
-      <div className="mt-1 min-h-5 text-xs text-muted-foreground">{detail}</div>
-    </div>
   );
 }
 

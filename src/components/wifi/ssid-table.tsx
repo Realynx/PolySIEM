@@ -75,7 +75,11 @@ function bandLabel(band: string | null): string | null {
 /** Wireless networks (SSIDs) documented from a UniFi controller. */
 export function SsidTable({ ssids }: { ssids: SsidRow[] }) {
   return (
-    <ListCard>
+    <ListCard
+      title="Wireless networks"
+      description="SSIDs, security modes, bands, and VLAN assignments."
+      resultCount={ssids.length}
+    >
       <Table>
         <TableHeader>
           <TableRow>
@@ -88,7 +92,13 @@ export function SsidTable({ ssids }: { ssids: SsidRow[] }) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {ssids.map((ssid) => {
+          {ssids.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                No wireless networks documented yet.
+              </TableCell>
+            </TableRow>
+          ) : ssids.map((ssid) => {
             const security = securityInfo(ssid.security, ssid.wpaMode);
             const band = bandLabel(ssid.band);
             return (

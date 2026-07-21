@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  alignEndpointLanes,
   bundleBy,
   dagreRoute,
   dedupePoints,
@@ -169,6 +170,18 @@ describe("rounded polylines", () => {
     expect(path).not.toContain(" C ");
   });
 
+  it("renders a collinear reversal without a zero-width quadratic cusp", () => {
+    const path = roundedPolylinePath([
+      { x: 0, y: 0 },
+      { x: 12, y: 0 },
+      { x: 4, y: 0 },
+      { x: 4, y: 20 },
+    ]);
+
+    expect(path).toBe("M 0,0 L 12,0 L 8,0 Q 4,0 4,4 L 4,20");
+    expect(path).not.toContain("Q 12,0");
+  });
+
   it("places a midpoint by distance rather than waypoint index", () => {
     expect(
       pointAlongPolyline([
@@ -228,6 +241,41 @@ describe("orthogonal polylines", () => {
     );
     expect(path).toBe("M 0,0 L 20,0 L 20,10 L 40,10");
     expect(path).not.toMatch(/[QC]/);
+  });
+});
+
+describe("endpoint lane alignment", () => {
+  it("keeps a fanned horizontal endpoint from returning to the handle center", () => {
+    expect(
+      alignEndpointLanes(
+        [
+          { x: 24, y: 50 },
+          { x: 24, y: 0 },
+        ],
+        { x: 0, y: 38 },
+        { x: 48, y: 0 },
+        "horizontal",
+        "horizontal",
+      ),
+    ).toEqual([
+      { x: 24, y: 38 },
+      { x: 24, y: 0 },
+    ]);
+  });
+
+  it("splits one shared waypoint when source and target use different lanes", () => {
+    expect(
+      alignEndpointLanes(
+        [{ x: 20, y: 20 }],
+        { x: 0, y: 8 },
+        { x: 40, y: 32 },
+        "horizontal",
+        "horizontal",
+      ),
+    ).toEqual([
+      { x: 20, y: 8 },
+      { x: 20, y: 32 },
+    ]);
   });
 });
 

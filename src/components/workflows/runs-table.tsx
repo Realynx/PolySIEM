@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { History } from "lucide-react";
+import { Activity, CircleCheck, CircleX, History, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -14,6 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/shared/empty-state";
+import { OperationsOverview } from "@/components/shared/operations-overview";
 import { ListCard } from "@/components/inventory/list-card";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { useGlobalRuns } from "@/components/workflows/api";
@@ -69,9 +70,78 @@ export function GlobalRunsTable() {
     );
   }
 
+  const runRows = runs ?? [];
+  const successCount = runRows.filter((run) => run.status === "SUCCESS").length;
+  const failedCount = runRows.filter((run) => run.status === "FAILED").length;
+  const runningCount = runRows.filter((run) => run.status === "RUNNING").length;
+  const latestRun = runRows[0];
+  const latestTone =
+    latestRun.status === "FAILED"
+      ? "destructive"
+      : latestRun.status === "RUNNING"
+        ? "primary"
+        : latestRun.status === "SUCCESS"
+          ? "success"
+          : "neutral";
+
   return (
     <>
-      <ListCard>
+      <div className="space-y-4">
+        <OperationsOverview
+          icon={<Activity className="size-5" aria-hidden />}
+          title="Workflow execution"
+          description="A live operational summary of recorded workflow runs."
+          status={
+            <>
+              {latestRun.status === "SUCCESS" ? (
+                <CircleCheck className="size-3.5" aria-hidden />
+              ) : latestRun.status === "FAILED" ? (
+                <CircleX className="size-3.5" aria-hidden />
+              ) : latestRun.status === "RUNNING" ? (
+                <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
+              ) : (
+                <History className="size-3.5" aria-hidden />
+              )}
+              Latest run: {latestRun.status.toLowerCase()}
+            </>
+          }
+          statusTone={latestTone}
+          metrics={[
+            {
+              icon: <History />,
+              label: "Recorded runs",
+              value: runRows.length.toLocaleString(),
+              detail: "Across every workflow",
+            },
+            {
+              icon: <CircleCheck />,
+              label: "Successful",
+              value: successCount.toLocaleString(),
+              detail: `${Math.round((successCount / runRows.length) * 100)}% of recorded runs`,
+              tone: "success",
+            },
+            {
+              icon: <CircleX />,
+              label: "Failed",
+              value: failedCount.toLocaleString(),
+              detail: failedCount > 0 ? "Review run details for errors" : "No failed runs recorded",
+              tone: failedCount > 0 ? "destructive" : "success",
+            },
+            {
+              icon: <LoaderCircle />,
+              label: "Running now",
+              value: runningCount.toLocaleString(),
+              detail: runningCount > 0 ? "Status updates automatically" : "No active executions",
+              tone: runningCount > 0 ? "primary" : "neutral",
+            },
+          ]}
+        />
+
+        <ListCard
+          title="Execution history"
+          description="Select a run to inspect its inputs, steps, and results."
+          resultCount={runRows.length}
+        >
         <Table>
           <TableHeader>
             <TableRow>
@@ -84,7 +154,7 @@ export function GlobalRunsTable() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {runs!.map((run) => (
+            {runRows.map((run) => (
               <TableRow
                 key={run.id}
                 className="cursor-pointer"
@@ -112,7 +182,8 @@ export function GlobalRunsTable() {
             ))}
           </TableBody>
         </Table>
-      </ListCard>
+        </ListCard>
+      </div>
 
       <RunDetailSheet
         runId={selected?.id ?? null}

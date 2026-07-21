@@ -81,6 +81,9 @@ export default async function NetworksPage({
         />
       ) : (
         <ListCard
+          title="Network inventory"
+          description="Documented VLANs and subnets across connected and manually managed sources."
+          resultCount={total}
           toolbar={<TableToolbar searchPlaceholder="Filter networks…" />}
           pagination={<PaginationNav page={query.page} pageSize={query.pageSize} total={total} />}
         >

@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Search, X } from "lucide-react";
+import { FilterX, Search } from "lucide-react";
 import { useDebouncedSearchParam, useUrlFilters } from "@/components/shared/use-url-filters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,12 +38,12 @@ export function TableToolbar({
   return (
     <div className="flex flex-wrap items-center gap-2">
       <div className="relative w-full max-w-xs">
-        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={q}
           onChange={(e) => onSearch(e.target.value)}
           placeholder={searchPlaceholder}
-          className="h-8 pl-8"
+          className="h-8 pl-8 text-[0.8rem]"
           aria-label="Filter"
         />
       </div>
@@ -67,8 +67,8 @@ export function TableToolbar({
       {children}
       {hasFilters && (
         <Button variant="ghost" size="sm" onClick={() => apply({ q: null, source: null })}>
-          <X data-icon="inline-start" />
-          Clear
+          <FilterX data-icon="inline-start" />
+          Clear filters
         </Button>
       )}
     </div>

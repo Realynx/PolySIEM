@@ -68,6 +68,9 @@ export default async function VmsPage({ searchParams }: { searchParams: Promise<
         />
       ) : (
         <ListCard
+          title="Virtual machines"
+          description="Review guest power state, placement, and allocated capacity."
+          resultCount={total}
           toolbar={<TableToolbar searchPlaceholder="Filter VMs…" />}
           pagination={<PaginationNav page={query.page} pageSize={query.pageSize} total={total} />}
         >

@@ -80,6 +80,9 @@ export default async function ContainersPage({
         />
       ) : (
         <ListCard
+          title="Container workloads"
+          description="Review runtime, placement, and resource details across the lab."
+          resultCount={total}
           toolbar={<TableToolbar searchPlaceholder="Filter containers…" />}
           pagination={<PaginationNav page={query.page} pageSize={query.pageSize} total={total} />}
         >

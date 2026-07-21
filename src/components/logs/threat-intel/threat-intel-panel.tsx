@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
+import { OperationsOverview } from "@/components/shared/operations-overview";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -147,68 +148,61 @@ export function ThreatIntelPanel({ sources, isAdmin }: { sources: ThreatIntelSou
       />
 
       <div className="space-y-5">
-        <section className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-primary/[0.10] via-card to-card shadow-sm">
-          <div className="absolute -top-20 right-10 size-52 rounded-full bg-primary/10 blur-3xl" aria-hidden />
-          <div className="absolute -bottom-24 left-1/3 size-44 rounded-full bg-primary/5 blur-3xl" aria-hidden />
-          <div className="relative flex flex-wrap items-center justify-between gap-3 border-b border-primary/10 px-5 py-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary">
-                <Radar className="size-5" aria-hidden />
-              </div>
-              <div className="min-w-0">
-                <p className="font-semibold">Live intelligence stream</p>
-                <p className="truncate text-xs text-muted-foreground">
-                  {feed
-                    ? `${feed.source.name} · ${feed.feed} feed · ${feed.cachedCount.toLocaleString()} reports cached`
-                    : feedQuery.isPending
-                      ? "Connecting to your threat feed…"
-                      : "Feed status unavailable"}
-                </p>
-              </div>
-            </div>
-            {feed && (
-              <div className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-background/70 px-3 py-1.5 text-xs font-medium shadow-sm backdrop-blur">
-                <span className={cn("size-2 rounded-full", feed.unreadCount > 0 ? "bg-primary" : "bg-success")} aria-hidden />
+        <OperationsOverview
+          icon={<Radar className="size-5" aria-hidden />}
+          title="Live intelligence stream"
+          description={
+            feed
+              ? `${feed.source.name} · ${feed.feed} feed · ${feed.cachedCount.toLocaleString()} reports cached`
+              : feedQuery.isPending
+                ? "Connecting to your threat feed…"
+                : "Feed status unavailable"
+          }
+          statusTone={feed?.unreadCount ? "primary" : feed ? "success" : "neutral"}
+          status={
+            feed ? (
+              <>
+                <span
+                  className={cn("size-2 rounded-full", feed.unreadCount > 0 ? "bg-primary" : "bg-success")}
+                  aria-hidden
+                />
                 {feed.unreadCount > 0
                   ? `${feed.unreadCount} unread on this page`
                   : "All caught up on this page"}
-              </div>
-            )}
-          </div>
-
-          <div className="relative grid sm:grid-cols-2 xl:grid-cols-4">
-            <IntelMetric
-              icon={<CircleDot />}
-              label="Unread reports"
-              value={feed ? feed.unreadCount.toLocaleString() : "—"}
-              caption={feed ? `of ${feed.pulses.length} reports on this page` : "Waiting for the feed"}
-              tone={feed && feed.unreadCount > 0 ? "text-primary" : undefined}
-            />
-            <IntelMetric
-              icon={<Newspaper />}
-              label="Latest report"
-              value={stats.newestModified ? formatRelative(stats.newestModified) : "—"}
-              caption={feed ? `${stats.newThisWeek} published this week on this page` : "No report loaded"}
-            />
-            <IntelMetric
-              icon={<Crosshair />}
-              label="Indicators"
-              value={feed ? stats.indicators.toLocaleString() : "—"}
-              caption="Across the reports on this page"
-            />
-            <IntelMetric
-              icon={<ShieldAlert />}
-              label="Seen in your logs"
-              value={matchesQuery.data ? matches.length.toLocaleString() : "—"}
-              caption={
-                matchesQuery.data?.logSource
-                  ? `${matchesQuery.data.scannedIndicators.toLocaleString()} IOCs checked · last ${hours}h`
-                  : "No log source available to check"
-              }
-              tone={matches.length > 0 ? "text-destructive" : matchesQuery.data ? "text-success" : undefined}
-            />
-          </div>
-        </section>
+              </>
+            ) : undefined
+          }
+          metrics={[
+            {
+              icon: <CircleDot />,
+              label: "Unread reports",
+              value: feed ? feed.unreadCount.toLocaleString() : "—",
+              detail: feed ? `of ${feed.pulses.length} reports on this page` : "Waiting for the feed",
+              tone: feed && feed.unreadCount > 0 ? "primary" : "neutral",
+            },
+            {
+              icon: <Newspaper />,
+              label: "Latest report",
+              value: stats.newestModified ? formatRelative(stats.newestModified) : "—",
+              detail: feed ? `${stats.newThisWeek} published this week on this page` : "No report loaded",
+            },
+            {
+              icon: <Crosshair />,
+              label: "Indicators",
+              value: feed ? stats.indicators.toLocaleString() : "—",
+              detail: "Across the reports on this page",
+            },
+            {
+              icon: <ShieldAlert />,
+              label: "Seen in your logs",
+              value: matchesQuery.data ? matches.length.toLocaleString() : "—",
+              detail: matchesQuery.data?.logSource
+                ? `${matchesQuery.data.scannedIndicators.toLocaleString()} IOCs checked · last ${hours}h`
+                : "No log source available to check",
+              tone: matches.length > 0 ? "destructive" : matchesQuery.data ? "success" : "neutral",
+            },
+          ]}
+        />
 
         <IocMatchesCard
           report={matchesQuery.data}
@@ -337,30 +331,5 @@ export function ThreatIntelPanel({ sources, isAdmin }: { sources: ThreatIntelSou
       />
       <SuricataExportDialog open={exportOpen} onOpenChange={setExportOpen} integrationId={sourceId} />
     </>
-  );
-}
-
-function IntelMetric({
-  icon,
-  label,
-  value,
-  caption,
-  tone,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: ReactNode;
-  caption: string;
-  tone?: string;
-}) {
-  return (
-    <div className="min-w-0 border-t border-primary/10 p-5 first:border-t-0 sm:border-t-0 sm:odd:border-r xl:border-r xl:last:border-r-0">
-      <p className="flex items-center gap-1.5 text-[0.68rem] font-medium tracking-wider text-muted-foreground uppercase [&_svg]:size-3.5">
-        {icon}
-        {label}
-      </p>
-      <p className={cn("mt-2 text-2xl font-semibold tracking-tight tabular-nums", tone)}>{value}</p>
-      <p className="mt-1 truncate text-xs text-muted-foreground">{caption}</p>
-    </div>
   );
 }
