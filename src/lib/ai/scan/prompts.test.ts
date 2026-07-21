@@ -4,6 +4,7 @@ import {
   EXISTING_TICKET_CAP,
   renderExistingTickets,
   scoreTicketRelevance,
+  selectTicketContextCandidates,
   type ExistingTicketContext,
 } from "./prompts";
 import { parseFindings } from "./parse";
@@ -70,6 +71,52 @@ describe("scoreTicketRelevance", () => {
   it("is zero for null refs or no overlap", () => {
     expect(scoreTicketRelevance(null, "anything")).toBe(0);
     expect(scoreTicketRelevance(openTicket.refs, "unrelated text")).toBe(0);
+  });
+
+  it("uses closure rationale to recognize the same traffic when indicators change", () => {
+    const digestText = "Allowed nightly restic backup from a newly assigned address to NAS-01";
+    const rationale = "Benign: expected nightly restic backup traffic to NAS-01.";
+    expect(scoreTicketRelevance(null, digestText, rationale)).toBeGreaterThan(0);
+  });
+
+  it("weights exact indicators more strongly than generic rationale terms", () => {
+    const indicatorMatch = scoreTicketRelevance(openTicket.refs, "connection from 185.220.101.34");
+    const textMatch = scoreTicketRelevance(null, "expected nightly backup", "Expected nightly backup");
+    expect(indicatorMatch).toBeGreaterThan(textMatch);
+  });
+});
+
+describe("selectTicketContextCandidates", () => {
+  const candidate = (title: string, status: "OPEN" | "CLOSED", resolution: string | null = null) => ({
+    title,
+    status,
+    summary: `${title} summary`,
+    resolution,
+    sourceRefs: null,
+  });
+
+  it("reserves prompt room for closed rationale when the open queue is crowded", () => {
+    const open = Array.from({ length: 8 }, (_, i) => candidate(`Exact restic match ${i}`, "OPEN"));
+    const relevantClosed = candidate("Known backup flow", "CLOSED", "Benign nightly restic job to NAS-01");
+    const selected = selectTicketContextCandidates(
+      [...open, relevantClosed, candidate("Unrelated old close", "CLOSED", "Printer maintenance")],
+      "nightly restic backup completed on NAS-01",
+      4,
+    );
+
+    expect(selected).toHaveLength(4);
+    expect(selected).toContain(relevantClosed);
+    expect(selected.filter((ticket) => ticket.status === "CLOSED")).toHaveLength(2);
+  });
+
+  it("fills unused closed space with open tickets", () => {
+    const selected = selectTicketContextCandidates(
+      Array.from({ length: 5 }, (_, i) => candidate(`Open ${i}`, "OPEN")),
+      "digest",
+      4,
+    );
+    expect(selected).toHaveLength(4);
+    expect(selected.every((ticket) => ticket.status === "OPEN")).toBe(true);
   });
 });
 

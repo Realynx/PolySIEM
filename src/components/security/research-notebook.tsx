@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -15,17 +15,30 @@ import {
   FileSearch,
   Globe2,
   Loader2,
+  Link2,
   Network,
   Plus,
   RefreshCw,
   Save,
   Search,
   ShieldQuestion,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/components/shared/api-client";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { ResearchEvidenceEditor } from "@/components/security/research-evidence-editor";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -42,7 +55,6 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 type EvidenceStatus = "success" | "error" | "unavailable";
@@ -111,7 +123,7 @@ function groupEvidence(evidence: ResearchEvidence[]) {
   return [...groups.entries()].map(([runId, items]) => ({ runId, items, capturedAt: items[0]?.capturedAt ?? "" }));
 }
 
-function EvidenceCard({ evidence }: { evidence: ResearchEvidence }) {
+function EvidenceCard({ evidence, onInsert }: { evidence: ResearchEvidence; onInsert: (evidence: ResearchEvidence, embed: boolean) => void }) {
   const meta = providerMeta[evidence.provider] ?? { label: evidence.provider, icon: Database, className: "bg-muted text-muted-foreground" };
   const Icon = meta.icon;
   const censys = evidence.provider === "censys" && evidence.status === "success"
@@ -119,7 +131,7 @@ function EvidenceCard({ evidence }: { evidence: ResearchEvidence }) {
     : null;
   const censysServices = censys?.host?.services ?? [];
   return (
-    <article className={cn("rounded-xl border bg-background/80 p-3 shadow-sm", evidence.status !== "success" && "border-amber-500/35 bg-amber-500/[0.04]")}> 
+    <article id={`evidence-${evidence.id}`} className={cn("scroll-mt-6 rounded-xl border bg-background/80 p-3 shadow-sm transition-colors target:border-primary target:ring-2 target:ring-primary/20", evidence.status !== "success" && "border-amber-500/35 bg-amber-500/[0.04]")}>
       <div className="flex items-start gap-3">
         <div className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", meta.className)}><Icon className="size-4" /></div>
         <div className="min-w-0 flex-1">
@@ -161,6 +173,12 @@ function EvidenceCard({ evidence }: { evidence: ResearchEvidence }) {
             </div>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+            <button type="button" onClick={() => onInsert(evidence, false)} className="inline-flex items-center gap-1 text-primary hover:underline">
+              <Link2 className="size-3" /> Cite in notes
+            </button>
+            <button type="button" onClick={() => onInsert(evidence, true)} className="inline-flex items-center gap-1 text-primary hover:underline">
+              <FileSearch className="size-3" /> Embed card
+            </button>
             <details className="group">
               <summary className="cursor-pointer select-none text-primary hover:underline">View captured evidence</summary>
               <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/70 p-3 text-[11px] leading-5 text-foreground">
@@ -229,17 +247,23 @@ export function ResearchNotebook() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [censysOpen, setCensysOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [initialSubject, setInitialSubject] = useState("");
   const [notes, setNotes] = useState("");
   const [title, setTitle] = useState("");
   const [hours, setHours] = useState("24");
+  const draftPageId = useRef<string | null>(null);
 
   const pagesQuery = useQuery({ queryKey: ["security-research"], queryFn: () => apiFetch<ResearchPage[]>("/api/security/research") });
   const pages = pagesQuery.data ?? [];
   const activePage = pages.find((page) => page.id === activeId) ?? pages[0] ?? null;
 
   useEffect(() => {
-    if (activePage) { setNotes(activePage.notes ?? ""); setTitle(activePage.title); }
+    if (activePage && draftPageId.current !== activePage.id) {
+      draftPageId.current = activePage.id;
+      setNotes(activePage.notes ?? "");
+      setTitle(activePage.title);
+    }
   }, [activePage]);
 
   useEffect(() => {
@@ -284,7 +308,32 @@ export function ResearchNotebook() {
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiFetch<{ ok: true }>(`/api/security/research/${id}`, { method: "DELETE" }),
+    onSuccess: (_result, deletedId) => {
+      queryClient.setQueryData<ResearchPage[]>(["security-research"], (current = []) =>
+        current.filter((page) => page.id !== deletedId),
+      );
+      setActiveId(null);
+      setDeleteOpen(false);
+      toast.success("Research page deleted.");
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   const evidenceRuns = useMemo(() => groupEvidence(activePage?.evidence ?? []), [activePage?.evidence]);
+  const hasUnsavedChanges = Boolean(activePage && (notes !== (activePage.notes ?? "") || title.trim() !== activePage.title));
+  const saveActivePage = () => {
+    if (!activePage || !title.trim() || updateMutation.isPending || !hasUnsavedChanges) return;
+    const cleanTitle = title.trim();
+    setTitle(cleanTitle);
+    updateMutation.mutate({ id: activePage.id, patch: { title: cleanTitle, notes } });
+  };
+  const insertEvidenceReference = (evidence: ResearchEvidence, embed: boolean) => {
+    const token = `${embed ? "!" : ""}[[evidence:${evidence.id}|${evidence.title}]]`;
+    setNotes((current) => `${current}${current.trim() ? "\n\n" : ""}${token}`);
+    toast.success(embed ? "Evidence card added to the draft." : "Evidence citation added to the draft.");
+  };
 
   return (
     <>
@@ -335,10 +384,10 @@ export function ResearchNotebook() {
             <div className="border-t p-3"><Button variant="outline" className="w-full" onClick={openNewPage}><Plus className="size-4" /> Add a page</Button></div>
           </aside>
 
-          <main className="relative min-w-0 bg-[linear-gradient(90deg,transparent_0,transparent_calc(50%-1px),var(--color-border)_50%,transparent_calc(50%+1px))]">
+          <main className="relative min-w-0">
             <div className="absolute inset-y-0 left-0 w-2 bg-gradient-to-r from-black/[0.06] to-transparent dark:from-black/20" />
-            <div className="grid min-h-full xl:grid-cols-2">
-              <section className="min-w-0 border-b p-5 sm:p-7 xl:border-r xl:border-b-0">
+            <div className="grid min-h-full 2xl:grid-cols-[minmax(0,1.25fr)_minmax(380px,0.75fr)]">
+              <section className="min-w-0 border-b p-5 sm:p-7 2xl:border-r 2xl:border-b-0">
                 <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="mb-2 flex flex-wrap gap-2">
@@ -367,14 +416,24 @@ export function ResearchNotebook() {
                 </div>
 
                 <div className="mt-6 space-y-2">
-                  <div className="flex items-center justify-between"><Label htmlFor="research-notes">Analyst notes</Label><span className="text-xs text-muted-foreground">{notes.length.toLocaleString()} characters</span></div>
-                  <Textarea id="research-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Record hypotheses, pivots, and conclusions. Evidence captures remain unchanged below." className="min-h-60 resize-y bg-background/70 leading-6" />
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div><Label>Investigation document</Label><p className="mt-0.5 text-xs text-muted-foreground">Markdown with live evidence references</p></div>
+                    <span className={cn("text-xs", hasUnsavedChanges ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
+                      {hasUnsavedChanges ? "Unsaved changes" : "All changes saved"} · {notes.length.toLocaleString()} characters
+                    </span>
+                  </div>
+                  <ResearchEvidenceEditor value={notes} onChange={setNotes} evidence={activePage.evidence} onSave={saveActivePage} />
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                    <Button variant="ghost" size="sm" onClick={() => updateMutation.mutate({ id: activePage.id, patch: { status: activePage.status === "open" ? "archived" : "open" } })}>
-                      {activePage.status === "open" ? <Archive className="size-4" /> : <BookOpen className="size-4" />} {activePage.status === "open" ? "Archive page" : "Reopen page"}
-                    </Button>
-                    <Button size="sm" disabled={updateMutation.isPending || (!title.trim())} onClick={() => updateMutation.mutate({ id: activePage.id, patch: { title: title.trim(), notes } })}>
-                      {updateMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Save page
+                    <div className="flex flex-wrap gap-1">
+                      <Button variant="ghost" size="sm" onClick={() => updateMutation.mutate({ id: activePage.id, patch: { status: activePage.status === "open" ? "archived" : "open" } })}>
+                        {activePage.status === "open" ? <Archive className="size-4" /> : <BookOpen className="size-4" />} {activePage.status === "open" ? "Archive page" : "Reopen page"}
+                      </Button>
+                      <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)}>
+                        <Trash2 className="size-4" /> Delete page
+                      </Button>
+                    </div>
+                    <Button size="sm" disabled={updateMutation.isPending || !title.trim() || !hasUnsavedChanges} onClick={saveActivePage}>
+                      {updateMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} {hasUnsavedChanges ? "Save page" : "Saved"}
                     </Button>
                   </div>
                 </div>
@@ -416,7 +475,7 @@ export function ResearchNotebook() {
                           </span>
                           {displayDate(run.capturedAt)} · {run.items.filter((item) => item.status === "success").length}/{run.items.length} sources captured
                         </div>
-                        <div className="space-y-2 border-l pl-3">{run.items.map((item) => <EvidenceCard key={item.id} evidence={item} />)}</div>
+                        <div className="space-y-2 border-l pl-3">{run.items.map((item) => <EvidenceCard key={item.id} evidence={item} onInsert={insertEvidenceReference} />)}</div>
                       </section>
                     ))}
                   </div>
@@ -428,6 +487,30 @@ export function ResearchNotebook() {
       ) : null}
 
       <NewResearchDialog open={newOpen} onOpenChange={setNewOpen} busy={createMutation.isPending} initialSubject={initialSubject} onCreate={(input) => createMutation.mutate(input)} />
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete “{activePage?.title}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the research page, its notes, and every captured evidence run. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Keep page</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              disabled={!activePage || deleteMutation.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                if (activePage) deleteMutation.mutate(activePage.id);
+              }}
+            >
+              {deleteMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              Delete page and evidence
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Dialog open={censysOpen} onOpenChange={setCensysOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

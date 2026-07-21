@@ -170,6 +170,11 @@ export async function updateSecurityResearchPage(id: string, input: UpdateSecuri
   });
 }
 
+export async function deleteSecurityResearchPage(id: string) {
+  await getSecurityResearchPage(id);
+  await prisma.securityResearchPage.delete({ where: { id } });
+}
+
 export type SecurityResearchProvider = "dns" | "polysiem" | "elasticsearch" | "censys" | "securitytrails";
 const DEFAULT_RESEARCH_PROVIDERS: SecurityResearchProvider[] = ["dns", "polysiem", "elasticsearch", "securitytrails"];
 

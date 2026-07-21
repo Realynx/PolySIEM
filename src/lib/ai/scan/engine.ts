@@ -9,9 +9,8 @@ import { resolveLogSource } from "@/lib/services/logs";
 import { collectScope, type ScanScope, type ScopeDigest } from "@/lib/ai/scan/collect";
 import {
   buildScanPrompt,
-  EXISTING_TICKET_CAP,
-  scoreTicketRelevance,
   SCAN_SYSTEM_PROMPT,
+  selectTicketContextCandidates,
   type ExistingTicketContext,
   type NetworkContext,
 } from "@/lib/ai/scan/prompts";
@@ -20,8 +19,8 @@ import { EVIDENCE_SAMPLE_CAP, isMoreSevere, mergeEvidence, planFinding } from "@
 import type { ScanFinding } from "@/lib/validators/scan";
 import type { AiScanRunStats, TicketEvidence, TicketRefs, TicketSeverityValue } from "@/lib/types";
 
-/** Days of recently-closed tickets fed to the model as context (with resolutions). */
-const CLOSED_CONTEXT_WINDOW_DAYS = 45;
+/** Bound DB work while retaining a durable history of operator decisions. */
+const CONTEXT_CANDIDATE_CAP_PER_STATUS = 500;
 
 /** Fields of an existing ticket needed to build prompt context and attach evidence. */
 interface ContextTicket {
@@ -37,35 +36,39 @@ interface ContextTicket {
 }
 
 /**
- * Candidate tickets for prompt context: every OPEN ticket plus CLOSED tickets
- * from the recent window that carry a resolution (so the model can reuse the
- * operator's reasoning). Ordered most-severe / most-recent first; hard-capped
- * before per-scope prioritization.
+ * Candidate tickets for prompt context: recent OPEN tickets plus a durable
+ * history of CLOSED tickets that carry operator rationale. Closed decisions do
+ * not expire after an arbitrary time window: recurring scheduled traffic may
+ * be months apart. The per-status caps bound DB/memory work; the prompt is
+ * separately relevance-ranked and much smaller.
  */
-async function fetchContextTickets(now: Date): Promise<ContextTicket[]> {
-  const closedSince = new Date(now.getTime() - CLOSED_CONTEXT_WINDOW_DAYS * 86_400_000);
-  const rows = await prisma.securityTicket.findMany({
-    where: {
-      OR: [
-        { status: "OPEN" },
-        { status: "CLOSED", closedAt: { gte: closedSince }, resolution: { not: null } },
-      ],
-    },
-    select: {
-      id: true,
-      dedupeKey: true,
-      title: true,
-      status: true,
-      severity: true,
-      summary: true,
-      resolution: true,
-      sourceRefs: true,
-      evidence: true,
-    },
-    orderBy: [{ severity: "asc" }, { lastSeenAt: "desc" }],
-    take: 200,
-  });
-  return rows as ContextTicket[];
+async function fetchContextTickets(): Promise<ContextTicket[]> {
+  const select = {
+    id: true,
+    dedupeKey: true,
+    title: true,
+    status: true,
+    severity: true,
+    summary: true,
+    resolution: true,
+    sourceRefs: true,
+    evidence: true,
+  } as const;
+  const [open, closed] = await Promise.all([
+    prisma.securityTicket.findMany({
+      where: { status: "OPEN" },
+      select,
+      orderBy: [{ severity: "asc" }, { lastSeenAt: "desc" }],
+      take: CONTEXT_CANDIDATE_CAP_PER_STATUS,
+    }),
+    prisma.securityTicket.findMany({
+      where: { status: "CLOSED", resolution: { not: null } },
+      select,
+      orderBy: { closedAt: "desc" },
+      take: CONTEXT_CANDIDATE_CAP_PER_STATUS,
+    }),
+  ]);
+  return [...open, ...closed] as ContextTicket[];
 }
 
 /**
@@ -77,15 +80,11 @@ function buildScopeContext(candidates: ContextTicket[], digestText: string): {
   contexts: ExistingTicketContext[];
   byHandle: Map<string, ContextTicket>;
 } {
-  const selected = candidates
-    .map((ticket, i) => ({ ticket, i, score: scoreTicketRelevance(ticket.sourceRefs as TicketRefs | null, digestText) }))
-    // Tickets whose refs overlap the current digest first; ties keep DB order.
-    .sort((a, b) => b.score - a.score || a.i - b.i)
-    .slice(0, EXISTING_TICKET_CAP);
+  const selected = selectTicketContextCandidates(candidates, digestText);
 
   const contexts: ExistingTicketContext[] = [];
   const byHandle = new Map<string, ContextTicket>();
-  selected.forEach(({ ticket }, idx) => {
+  selected.forEach((ticket, idx) => {
     const handle = `T${idx + 1}`;
     contexts.push({
       handle,
@@ -269,7 +268,7 @@ export async function runScan(trigger: "manual" | "interval"): Promise<AiScanRun
 
   // Existing tickets fed to the model as context so it attaches to / respects
   // them instead of duplicating. Fetched once; prioritized per scope below.
-  const contextCandidates = await fetchContextTickets(new Date());
+  const contextCandidates = await fetchContextTickets();
 
   const stats: AiScanRunStats = { docsScanned: 0, ticketsCreated: 0, ticketsUpdated: 0, scopesRun: [] };
   const errors: string[] = [];

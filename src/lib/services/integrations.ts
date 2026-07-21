@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { audit, type AuditActor } from "@/lib/audit";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
-import { generateEd25519Keypair } from "@/lib/ssh/keys";
+import { generateEd25519Keypair, type GeneratedKeypair } from "@/lib/ssh/keys";
 import {
   elasticsearchSettingsSchema,
   elasticsearchCredentialsSchema,
@@ -57,6 +57,26 @@ function inputJson(value: unknown): Prisma.InputJsonValue | undefined {
   return value === undefined
     ? undefined
     : (JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue);
+}
+
+/** Public inventory record for the service key generated for an SSH edge server. */
+export function edgeNatDocumentedKeyData(
+  integration: { name: string; baseUrl: string },
+  pair: Pick<GeneratedKeypair, "publicKeyLine" | "fingerprint">,
+) {
+  return {
+    name: `${integration.name} Edge NAT service key`,
+    keyType: "ssh-ed25519",
+    publicKey: pair.publicKeyLine,
+    fingerprint: pair.fingerprint,
+    bits: 256,
+    comment: "polysiem-edge@polysiem",
+    ownerLabel: "PolySIEM",
+    purpose:
+      `Authenticates PolySIEM to the Edge NAT Server "${integration.name}" at ${integration.baseUrl}. ` +
+      "Used by the restricted polysiem-edge account to inspect the server and apply or clear only PolySIEM-managed NAT rules.",
+    source: "EDGE_NAT_SERVER" as const,
+  };
 }
 
 function validatedCredentials(type: IntegrationConfig["type"], value: unknown) {
@@ -136,31 +156,46 @@ export async function createIntegration(
               })
             : undefined;
   try {
-    const row = await prisma.integrationConfig.create({
-      data: {
-        type: input.type,
-        name: input.name,
-        baseUrl: input.baseUrl,
-        enabled: input.enabled,
-        verifyTls: input.verifyTls,
-        syncIntervalMinutes: input.syncIntervalMinutes,
-        encryptedCredentials: encryptSecret(
-          JSON.stringify(
-            input.type === "EDGE_NAT_SERVER"
-              ? storedEdgeNatCredentialsSchema.parse({ ...input.credentials, privateKey: edgePair!.privateKeyPem })
-              : isMockIntegrationUrl(input.baseUrl)
-              ? {}
-              : validatedCredentials(input.type, input.credentials),
+    const { row, documentedKey } = await prisma.$transaction(async (tx) => {
+      const row = await tx.integrationConfig.create({
+        data: {
+          type: input.type,
+          name: input.name,
+          baseUrl: input.baseUrl,
+          enabled: input.enabled,
+          verifyTls: input.verifyTls,
+          syncIntervalMinutes: input.syncIntervalMinutes,
+          encryptedCredentials: encryptSecret(
+            JSON.stringify(
+              input.type === "EDGE_NAT_SERVER"
+                ? storedEdgeNatCredentialsSchema.parse({ ...input.credentials, privateKey: edgePair!.privateKeyPem })
+                : isMockIntegrationUrl(input.baseUrl)
+                ? {}
+                : validatedCredentials(input.type, input.credentials),
+            ),
           ),
-        ),
-        settings: inputJson(settings),
-      },
+          settings: inputJson(settings),
+        },
+      });
+      const documentedKey = edgePair
+        ? await tx.sshKey.create({ data: edgeNatDocumentedKeyData(input, edgePair) })
+        : null;
+      return { row, documentedKey };
     });
     await audit(actor, "integration.create", { type: "integration", id: row.id }, {
       name: row.name,
       integrationType: row.type,
       baseUrl: row.baseUrl,
     });
+    if (documentedKey) {
+      await audit(actor, "sshkey.create", { type: "sshkey", id: documentedKey.id }, {
+        name: documentedKey.name,
+        fingerprint: documentedKey.fingerprint,
+        keyType: documentedKey.keyType,
+        source: documentedKey.source,
+        integrationId: row.id,
+      });
+    }
     return sanitizeIntegration(row);
   } catch (err) {
     if (isUniqueViolation(err)) {

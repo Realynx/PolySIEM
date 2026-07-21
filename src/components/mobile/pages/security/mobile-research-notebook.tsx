@@ -20,10 +20,22 @@ import {
   Save,
   Search,
   ShieldQuestion,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
+import { ResearchEvidenceEditor } from "@/components/security/research-evidence-editor";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,7 +50,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import { MobilePageHeader } from "@/components/mobile/ui/mobile-page-header";
 import { MobilePage, MobileSection } from "@/components/mobile/ui/mobile-page";
 import { MobileEmpty, MobileList, MobileListRow } from "@/components/mobile/ui/mobile-list";
@@ -116,6 +127,7 @@ export function MobileResearchNotebook() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [censysOpen, setCensysOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [initialSubject, setInitialSubject] = useState("");
   const [notes, setNotes] = useState("");
   const [title, setTitle] = useState("");
@@ -199,7 +211,27 @@ export function MobileResearchNotebook() {
     onError: (error: Error) => toast.error(error.message),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiFetch<{ ok: true }>(`/api/security/research/${id}`, { method: "DELETE" }),
+    onSuccess: (_result, deletedId) => {
+      queryClient.setQueryData<ResearchPage[]>(["security-research"], (current = []) =>
+        current.filter((page) => page.id !== deletedId),
+      );
+      setActiveId(null);
+      setDeleteOpen(false);
+      toast.success("Research page deleted.");
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+
   const evidenceRuns = useMemo(() => groupEvidence(activePage?.evidence ?? []), [activePage?.evidence]);
+  const hasUnsavedChanges = Boolean(activePage && (notes !== (activePage.notes ?? "") || title.trim() !== activePage.title));
+  const saveActivePage = () => {
+    if (!activePage || !title.trim() || updateMutation.isPending || !hasUnsavedChanges) return;
+    const cleanTitle = title.trim();
+    setTitle(cleanTitle);
+    updateMutation.mutate({ id: activePage.id, patch: { title: cleanTitle, notes } });
+  };
 
   return (
     <>
@@ -276,33 +308,36 @@ export function MobileResearchNotebook() {
                   aria-label="Research page title"
                   className="bg-card"
                 />
-                <Textarea
-                  value={notes}
-                  onChange={(event) => setNotes(event.target.value)}
-                  placeholder="Record hypotheses, pivots, and conclusions. Evidence captures remain unchanged below."
-                  className="min-h-36 resize-y bg-card leading-6"
-                />
+                <ResearchEvidenceEditor value={notes} onChange={setNotes} evidence={activePage.evidence} onSave={saveActivePage} compact />
+                <p className={cn("text-right text-[11px]", hasUnsavedChanges ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
+                  {hasUnsavedChanges ? "Unsaved changes" : "All changes saved"}
+                </p>
                 <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        updateMutation.mutate({
+                          id: activePage.id,
+                          patch: { status: activePage.status === "open" ? "archived" : "open" },
+                        })
+                      }
+                    >
+                      {activePage.status === "open" ? <Archive className="size-4" /> : <BookOpen className="size-4" />}
+                      {activePage.status === "open" ? "Archive" : "Reopen"}
+                    </Button>
+                    <Button variant="destructive" size="icon-sm" aria-label="Delete page" onClick={() => setDeleteOpen(true)}>
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
                   <Button
-                    variant="ghost"
                     size="sm"
-                    onClick={() =>
-                      updateMutation.mutate({
-                        id: activePage.id,
-                        patch: { status: activePage.status === "open" ? "archived" : "open" },
-                      })
-                    }
-                  >
-                    {activePage.status === "open" ? <Archive className="size-4" /> : <BookOpen className="size-4" />}
-                    {activePage.status === "open" ? "Archive" : "Reopen"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    disabled={updateMutation.isPending || !title.trim()}
-                    onClick={() => updateMutation.mutate({ id: activePage.id, patch: { title: title.trim(), notes } })}
+                    disabled={updateMutation.isPending || !title.trim() || !hasUnsavedChanges}
+                    onClick={saveActivePage}
                   >
                     {updateMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
-                    Save page
+                    {hasUnsavedChanges ? "Save page" : "Saved"}
                   </Button>
                 </div>
               </div>
@@ -491,6 +526,31 @@ export function MobileResearchNotebook() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete “{activePage?.title}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the page, its notes, and every captured evidence run. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Keep page</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              disabled={!activePage || deleteMutation.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                if (activePage) deleteMutation.mutate(activePage.id);
+              }}
+            >
+              {deleteMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              Delete page and evidence
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
@@ -558,6 +618,7 @@ function MobileEvidenceCard({ evidence }: { evidence: ResearchEvidence }) {
   const Icon = meta.icon;
   return (
     <article
+      id={`evidence-${evidence.id}`}
       className={cn(
         "rounded-xl border bg-card p-2.5",
         evidence.status !== "success" && "border-amber-500/35 bg-amber-500/[0.04]",

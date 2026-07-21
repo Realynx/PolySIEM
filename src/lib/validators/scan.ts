@@ -49,11 +49,19 @@ export type TicketCreateInput = z.infer<typeof ticketCreateSchema>;
  */
 export const ticketPatchSchema = z.object({
   status: z.enum(["OPEN", "CLOSED"]).optional(),
-  resolution: z.string().max(20_000).optional(),
+  resolution: z.string().trim().min(3).max(20_000).optional(),
   title: z.string().min(1).max(200).optional(),
   summary: z.string().min(1).max(20_000).optional(),
   severity: ticketSeverityEnum.optional(),
   category: ticketCategoryEnum.optional(),
+}).superRefine((input, ctx) => {
+  if (input.status === "CLOSED" && !input.resolution) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["resolution"],
+      message: "Add a closure rationale so the AI scanner can learn whether this traffic is benign or handled.",
+    });
+  }
 });
 export type TicketPatchInput = z.infer<typeof ticketPatchSchema>;
 

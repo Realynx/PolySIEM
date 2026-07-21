@@ -25,10 +25,25 @@ export interface ExistingTicketContext {
   resolution: string | null;
 }
 
+/** DB-facing shape used to choose which tickets fit in a scope prompt. */
+export interface TicketContextCandidate {
+  title: string;
+  status: "OPEN" | "CLOSED";
+  summary: string;
+  resolution: string | null;
+  sourceRefs: unknown;
+}
+
 /** Max existing tickets rendered into a prompt (token budget). */
 export const EXISTING_TICKET_CAP = 20;
 /** Max chars kept from a ticket's summary / resolution when rendering. */
 const CONTEXT_FIELD_CHAR_CAP = 240;
+
+const RELEVANCE_STOP_WORDS = new Set([
+  "about", "after", "again", "alert", "alerts", "been", "before", "being", "closed", "from", "into",
+  "issue", "logs", "more", "network", "observed", "same", "security", "seen", "that", "their", "this",
+  "ticket", "traffic", "using", "when", "with",
+]);
 
 export const SCAN_SYSTEM_PROMPT =
   "You are a security analyst reviewing logs for a self-hosted home lab (Proxmox cluster, OPNsense firewall, " +
@@ -73,25 +88,71 @@ function renderRefs(refs: TicketRefs | null): string {
 }
 
 /**
- * Relevance score of an existing ticket to the current digest: how many of its
- * ref values (IPs / signatures / hosts) literally appear in the digest text.
- * Pure and case-insensitive — used to prioritize which tickets make the prompt.
+ * Relevance score of an existing ticket to the current digest. Exact refs
+ * dominate, while shared terms from its title, summary, and closure rationale
+ * let recurring traffic match even when an address has changed.
  */
-export function scoreTicketRelevance(refs: TicketRefs | null, digestText: string): number {
-  if (!refs) return 0;
+export function scoreTicketRelevance(
+  refs: TicketRefs | null,
+  digestText: string,
+  rationaleText = "",
+): number {
   const haystack = digestText.toLowerCase();
   const needles = [
-    ...(refs.srcIps ?? []),
-    ...(refs.destIps ?? []),
-    ...(refs.signatures ?? []),
-    ...(refs.hosts ?? []),
+    ...(refs?.srcIps ?? []),
+    ...(refs?.destIps ?? []),
+    ...(refs?.signatures ?? []),
+    ...(refs?.hosts ?? []),
   ];
   let score = 0;
   for (const needle of needles) {
     const value = needle.trim().toLowerCase();
-    if (value && haystack.includes(value)) score++;
+    // Concrete indicators are much stronger than prose overlap.
+    if (value && haystack.includes(value)) score += 100;
+  }
+
+  // Titles, summaries, and especially close rationales often contain the
+  // stable service/signature name even when an IP changes between scans.
+  const terms = rationaleText.toLowerCase().match(/[a-z0-9][a-z0-9._:-]{2,}/g) ?? [];
+  for (const term of new Set(terms)) {
+    if (term.length < 4 || RELEVANCE_STOP_WORDS.has(term)) continue;
+    if (haystack.includes(term)) score++;
   }
   return score;
+}
+
+/**
+ * Select a relevance-ranked prompt subset while reserving equal room for open
+ * work and closed operator decisions. Unused room from either side is filled
+ * by the next strongest candidate overall.
+ */
+export function selectTicketContextCandidates<T extends TicketContextCandidate>(
+  candidates: T[],
+  digestText: string,
+  cap = EXISTING_TICKET_CAP,
+): T[] {
+  const ranked = candidates
+    .map((ticket, i) => ({
+      ticket,
+      i,
+      score: scoreTicketRelevance(
+        ticket.sourceRefs as TicketRefs | null,
+        digestText,
+        `${ticket.title}\n${ticket.summary}\n${ticket.resolution ?? ""}`,
+      ),
+    }))
+    .sort((a, b) => b.score - a.score || a.i - b.i);
+
+  const perStatusCap = Math.floor(cap / 2);
+  const selectedSet = new Set([
+    ...ranked.filter(({ ticket }) => ticket.status === "OPEN").slice(0, perStatusCap),
+    ...ranked.filter(({ ticket }) => ticket.status === "CLOSED").slice(0, perStatusCap),
+  ]);
+  for (const candidate of ranked) {
+    if (selectedSet.size >= cap) break;
+    selectedSet.add(candidate);
+  }
+  return ranked.filter((candidate) => selectedSet.has(candidate)).map(({ ticket }) => ticket);
 }
 
 /** Render the existing-ticket block, capped at EXISTING_TICKET_CAP entries. */

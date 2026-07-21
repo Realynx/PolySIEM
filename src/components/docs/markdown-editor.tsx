@@ -26,6 +26,11 @@ import { NodePicker } from "./node-picker";
 
 type ViewMode = "write" | "preview" | "split";
 
+export interface MarkdownEditorInsertApi {
+  insertAtCursor: (text: string) => void;
+  disabled: boolean;
+}
+
 export interface MarkdownEditorProps {
   value: string;
   onChange: (value: string) => void;
@@ -35,6 +40,15 @@ export interface MarkdownEditorProps {
   /** Enables "Generate description" in the AI menu, seeded with this entity's facts. */
   entity?: AiAssistMenuProps["entity"];
   minHeightClass?: string;
+  /** Optional domain-specific insertion control, such as an evidence picker. */
+  insertSlot?: (api: MarkdownEditorInsertApi) => ReactNode;
+  /** Replaces the standard Markdown preview while retaining the editor chrome. */
+  renderPreview?: (value: string) => ReactNode;
+  /** Hides infrastructure node embeds when the editor has its own reference type. */
+  showNodePicker?: boolean;
+  /** Invoked by Ctrl/Cmd+S while focus is anywhere inside the editor. */
+  onSave?: () => void;
+  defaultMode?: ViewMode;
 }
 
 /**
@@ -48,9 +62,14 @@ export function MarkdownEditor({
   aiSlot,
   entity,
   minHeightClass = "min-h-64",
+  insertSlot,
+  renderPreview,
+  showNodePicker = true,
+  onSave,
+  defaultMode = "write",
 }: MarkdownEditorProps) {
   const { resolvedTheme } = useTheme();
-  const [mode, setMode] = useState<ViewMode>("write");
+  const [mode, setMode] = useState<ViewMode>(defaultMode);
   const cmRef = useRef<ReactCodeMirrorRef>(null);
 
   const surround = (before: string, after = before, placeholderText = "text") => {
@@ -114,12 +133,20 @@ export function MarkdownEditor({
 
   const previewPane = (
     <div className={cn("overflow-y-auto p-4", minHeightClass)}>
-      <Markdown content={value} />
+      {renderPreview ? renderPreview(value) : <Markdown content={value} />}
     </div>
   );
 
   return (
-    <div className="overflow-hidden rounded-lg border bg-background">
+    <div
+      className="overflow-hidden rounded-lg border bg-background"
+      onKeyDownCapture={(event) => {
+        if (onSave && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+          event.preventDefault();
+          onSave();
+        }
+      }}
+    >
       <div className="flex flex-wrap items-center gap-1 border-b bg-muted/40 px-2 py-1.5">
         {formatActions.map((action) => (
           <Tooltip key={action.label}>
@@ -138,10 +165,13 @@ export function MarkdownEditor({
             <TooltipContent>{action.label}</TooltipContent>
           </Tooltip>
         ))}
-        <NodePicker
-          disabled={mode === "preview"}
-          onInsert={(kind, id) => insertAtCursor(serializeNodeToken(kind, id))}
-        />
+        {insertSlot?.({ insertAtCursor, disabled: mode === "preview" })}
+        {showNodePicker && (
+          <NodePicker
+            disabled={mode === "preview"}
+            onInsert={(kind, id) => insertAtCursor(serializeNodeToken(kind, id))}
+          />
+        )}
         <Separator orientation="vertical" className="mx-1 h-5" />
         {viewModes.map((vm) => (
           <Tooltip key={vm.mode}>

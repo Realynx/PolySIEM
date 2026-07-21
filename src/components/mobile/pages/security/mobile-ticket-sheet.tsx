@@ -68,7 +68,7 @@ export function MobileTicketSheet({
 
   const close = () =>
     patch.mutate(
-      { status: "CLOSED", ...(resolution.trim() ? { resolution: resolution.trim() } : {}) },
+      { status: "CLOSED", resolution: resolution.trim() },
       { onSuccess: () => toast.success("Ticket closed") },
     );
   const reopen = () => patch.mutate({ status: "OPEN" }, { onSuccess: () => toast.success("Ticket reopened") });
@@ -210,16 +210,16 @@ export function MobileTicketSheet({
         ) : (
           <section className="space-y-2 border-t pt-3">
             <Label htmlFor="mobile-ticket-resolution" className="text-xs text-muted-foreground">
-              Resolution note (optional)
+              Closure rationale (required; used by the AI scanner)
             </Label>
             <Textarea
               id="mobile-ticket-resolution"
               value={resolution}
               onChange={(e) => setResolution(e.target.value)}
-              placeholder="What was done about this?"
+              placeholder="Say whether this was benign or handled and why."
               rows={2}
             />
-            <Button className="w-full" onClick={close} disabled={patch.isPending}>
+            <Button className="w-full" onClick={close} disabled={patch.isPending || resolution.trim().length < 3}>
               <ShieldCheck className="size-4" />
               {patch.isPending ? "Closing…" : "Close ticket"}
             </Button>

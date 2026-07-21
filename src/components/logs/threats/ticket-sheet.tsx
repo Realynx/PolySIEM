@@ -89,7 +89,7 @@ export function TicketSheet({
 
   const close = () =>
     patch.mutate(
-      { status: "CLOSED", ...(resolution.trim() ? { resolution: resolution.trim() } : {}) },
+      { status: "CLOSED", resolution: resolution.trim() },
       { onSuccess: () => toast.success("Ticket closed") },
     );
   const reopen = () => patch.mutate({ status: "OPEN" }, { onSuccess: () => toast.success("Ticket reopened") });
@@ -294,16 +294,16 @@ export function TicketSheet({
           ) : (
             <div className="w-full space-y-2">
               <Label htmlFor="ticket-resolution" className="text-xs text-muted-foreground">
-                Resolution note (optional)
+                Closure rationale (required; used by the AI scanner)
               </Label>
               <Textarea
                 id="ticket-resolution"
                 value={resolution}
                 onChange={(e) => setResolution(e.target.value)}
-                placeholder="What was done about this? e.g. Blocked the source IP on OPNsense."
+                placeholder="Say whether this was benign or handled and why, e.g. Benign backup traffic from NAS-01."
                 rows={2}
               />
-              <Button className="w-full" onClick={close} disabled={patch.isPending}>
+              <Button className="w-full" onClick={close} disabled={patch.isPending || resolution.trim().length < 3}>
                 <ShieldCheck data-icon="inline-start" />
                 {patch.isPending ? "Closing…" : "Close ticket"}
               </Button>

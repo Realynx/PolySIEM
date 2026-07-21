@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { handleApi, jsonOk } from "@/lib/api";
 import { requireUser } from "@/lib/auth/guards";
 import { audit } from "@/lib/audit";
-import { getSecurityResearchPage, updateSecurityResearchPage } from "@/lib/security/research-service";
+import { deleteSecurityResearchPage, getSecurityResearchPage, updateSecurityResearchPage } from "@/lib/security/research-service";
 import { updateSecurityResearchPageSchema } from "@/lib/validators/security-research";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -24,4 +24,12 @@ export const PATCH = handleApi(async (req: NextRequest, ctx: Ctx) => {
     fields: Object.keys(input),
   });
   return jsonOk(page);
+});
+
+export const DELETE = handleApi(async (_req: NextRequest, ctx: Ctx) => {
+  const { user } = await requireUser();
+  const { id } = await ctx.params;
+  await deleteSecurityResearchPage(id);
+  await audit({ type: "user", userId: user.id }, "security.research.delete", { type: "security_research_page", id });
+  return jsonOk({ ok: true as const });
 });
