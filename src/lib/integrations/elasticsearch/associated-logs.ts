@@ -56,6 +56,7 @@ const RETURN_FIELDS = [
   "cloudflared.error",
   "url.full",
   "url.original",
+  "url.scheme",
   "url.domain",
   "url.path",
   "source.ip",
@@ -71,11 +72,36 @@ const RETURN_FIELDS = [
   "source.geo.city_name",
   "source.geo.region_name",
   "source.geo.country_name",
+  "log.level",
+  "level",
+  "severity",
+  "service.name",
+  "service.version",
+  "event.dataset",
+  "event.action",
+  "event.category",
+  "event.duration",
+  "event.id",
+  "user.name",
+  "user.id",
+  "request.id",
+  "trace.id",
+  "network.protocol",
+  "log.logger",
+  "http.version",
   "nextcloud.method",
   "nextcloud.url",
   "nextcloud.remoteAddr",
   "nextcloud.userAgent",
+  "nextcloud.level",
+  "nextcloud.app",
+  "nextcloud.user",
+  "nextcloud.reqId",
+  "nextcloud.message",
+  "nextcloud.version",
+  "nextcloud.statusCode",
   "cloudflared.originService",
+  "cloudflared.hostname",
 ];
 
 function text(
@@ -97,20 +123,149 @@ function text(
   return null;
 }
 
+function objectValue(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Some shippers keep an application's structured event inside message/event.original. */
+function embeddedEvent(
+  source: Record<string, unknown>,
+  messageField?: string,
+): Record<string, unknown> | null {
+  for (const path of [messageField, "message", "event.original"].filter(
+    (path): path is string => Boolean(path),
+  )) {
+    const event = objectValue(getField(source, path));
+    if (event) return event;
+  }
+  return null;
+}
+
+function eventText(
+  source: Record<string, unknown>,
+  event: Record<string, unknown> | null,
+  ...paths: string[]
+): string | null {
+  return text(source, ...paths) ?? (event ? text(event, ...paths) : null);
+}
+
+function additionalDetails(
+  source: Record<string, unknown>,
+  event: Record<string, unknown> | null,
+): { label: string; value: string }[] {
+  const candidates: [label: string, paths: string[]][] = [
+    ["Action", ["event.action", "action"]],
+    ["Category", ["event.category", "category"]],
+    ["Component", ["log.logger", "logger", "component"]],
+    ["Protocol", ["network.protocol", "http.version", "protocol"]],
+    ["Version", ["service.version", "nextcloud.version", "version"]],
+    ["Trace ID", ["trace.id", "traceId"]],
+    ["Duration", ["event.duration", "duration"]],
+  ];
+  const seen = new Set<string>();
+  return candidates.flatMap(([label, paths]) => {
+    const value = eventText(source, event, ...paths);
+    if (!value || seen.has(`${label}:${value}`)) return [];
+    seen.add(`${label}:${value}`);
+    return [{ label, value }];
+  });
+}
+
+function displayLevel(
+  source: Record<string, unknown>,
+  event: Record<string, unknown> | null,
+): string | null {
+  const level = eventText(
+    source,
+    event,
+    "log.level",
+    "nextcloud.level",
+    "level",
+    "severity",
+  );
+  // Nextcloud's JSON log format uses 0-4 instead of names. Its reqId is a
+  // reliable schema marker, so avoid guessing at numeric levels from others.
+  if (
+    (event && getField(event, "reqId") !== undefined) ||
+    getField(source, "nextcloud.reqId") !== undefined
+  ) {
+    return (
+      (
+        {
+          "0": "debug",
+          "1": "info",
+          "2": "warning",
+          "3": "error",
+          "4": "fatal",
+        } as Record<string, string>
+      )[level ?? ""] ?? level
+    );
+  }
+  return level;
+}
+
+function eventSummary(input: {
+  application: string | null;
+  user: string | null;
+  action: string | null;
+  method: string | null;
+  request: string | null;
+  statusCode: string | null;
+  host: string | null;
+}): string {
+  if (input.method && input.request) {
+    return `${input.method} ${input.request}${input.statusCode ? ` returned ${input.statusCode}` : ""}`;
+  }
+  if (input.application && input.action) {
+    return `${input.application}: ${input.action}`;
+  }
+  if (input.action) return input.action;
+  if (input.application) {
+    return `${input.application} activity${input.user ? ` for ${input.user}` : ""}`;
+  }
+  if (input.host) return `Event reported by ${input.host}`;
+  return "Application event";
+}
+
 function urlParts(value: string | null): {
+  scheme: string | null;
   domain: string | null;
   path: string | null;
 } {
-  if (!value) return { domain: null, path: null };
+  if (!value) return { scheme: null, domain: null, path: null };
   try {
     const parsed = new URL(value, "http://polysiem.invalid");
     return {
+      scheme:
+        parsed.hostname === "polysiem.invalid"
+          ? null
+          : parsed.protocol.replace(/:$/, ""),
       domain: parsed.hostname === "polysiem.invalid" ? null : parsed.hostname,
       path: `${parsed.pathname}${parsed.search}`,
     };
   } catch {
-    return { domain: null, path: null };
+    return { scheme: null, domain: null, path: null };
   }
+}
+
+function tunnelHostname(value: string | null): string | null {
+  if (!value) return null;
+  const parsed = urlParts(value);
+  if (parsed.domain) return parsed.domain;
+  return value.replace(/^\/+/, "").split(/[/?#]/, 1)[0] || null;
 }
 
 /** Normalize only useful display fields; the complete ES document never leaves the server. */
@@ -123,21 +278,128 @@ export function associatedHitToRow(
   } = {},
 ): AssociatedLogRow {
   const source = hit._source ?? {};
-  const url = text(
+  const event = embeddedEvent(source, fields.messageField);
+  const rawMessage = text(
     source,
+    fields.messageField ?? "message",
+    "message",
+    "nextcloud.message",
+    "event.original",
+  );
+  const url = eventText(
+    source,
+    event,
     "url.full",
     "url.original",
+    "url",
+    "request.url",
+    "request.uri",
     "nextcloud.url",
-    "cloudflared.originService",
   );
   const parsed = urlParts(url);
-  const error = text(source, "cloudflared.error", "error.message");
-  const method = text(source, "http.request.method", "nextcloud.method");
-  const statusCode = text(
+  const originService = eventText(
     source,
+    event,
+    "cloudflared.originService",
+    "originService",
+    "origin_service",
+  );
+  const cloudflaredHostname = eventText(
+    source,
+    event,
+    "cloudflared.hostname",
+  );
+  const error = eventText(
+    source,
+    event,
+    "cloudflared.error",
+    "error.message",
+    "exception.message",
+  );
+  const method = eventText(
+    source,
+    event,
+    "http.request.method",
+    "request.method",
+    "method",
+    "nextcloud.method",
+  );
+  const statusCode = eventText(
+    source,
+    event,
     "http.response.status_code",
     "http.response.status",
+    "response.status",
+    "nextcloud.statusCode",
+    "statusCode",
+    "status",
   );
+  const host = text(
+    source,
+    fields.hostField ?? "host.name",
+    "host.name",
+    "host.hostname",
+    "container.name",
+    "agent.name",
+  );
+  const application = eventText(
+    source,
+    event,
+    "service.name",
+    "event.dataset",
+    "nextcloud.app",
+    "app",
+    "application",
+  );
+  const user = eventText(
+    source,
+    event,
+    "user.name",
+    "user.id",
+    "nextcloud.user",
+    "user",
+    "username",
+  );
+  const requestId = eventText(
+    source,
+    event,
+    "request.id",
+    "event.id",
+    "nextcloud.reqId",
+    "reqId",
+    "requestId",
+  );
+  const action = eventText(source, event, "event.action", "action");
+  const domain =
+    eventText(source, event, "url.domain") ??
+    parsed.domain ??
+    tunnelHostname(cloudflaredHostname);
+  const path =
+    eventText(source, event, "url.path", "request.path", "path") ??
+    parsed.path;
+  const scheme =
+    eventText(source, event, "url.scheme") ??
+    parsed.scheme ??
+    (cloudflaredHostname ? "https" : null);
+  const request =
+    url ??
+    (domain
+      ? `${scheme ? `${scheme}://` : ""}${domain}${path ?? ""}`
+      : path);
+  const summary = eventSummary({
+    application,
+    user,
+    action,
+    method,
+    request,
+    statusCode,
+    host,
+  });
+  const message = event
+    ? text(event, "message", "data.message", "event.reason") ??
+      error ??
+      summary
+    : rawMessage ?? error ?? summary;
   return {
     id: hit._id,
     index: hit._index,
@@ -148,44 +410,54 @@ export function associatedHitToRow(
         "@timestamp",
         "timestamp",
       ) ?? new Date(0).toISOString(),
-    kind: error ? "error" : method || statusCode || url ? "http" : "event",
-    host: text(
-      source,
-      fields.hostField ?? "host.name",
-      "host.name",
-      "host.hostname",
-      "container.name",
-      "agent.name",
-    ),
-    message: text(
-      source,
-      fields.messageField ?? "message",
-      "message",
-      "event.original",
-    ),
+    kind:
+      error
+        ? "error"
+        : method || statusCode || url || domain || originService
+          ? "http"
+          : "event",
+    host,
+    message,
     error,
     url,
-    domain: text(source, "url.domain") ?? parsed.domain,
-    path: text(source, "url.path") ?? parsed.path,
-    sourceIp: text(
+    scheme,
+    domain,
+    path,
+    originService,
+    sourceIp: eventText(
       source,
+      event,
       "source.ip",
       "source.address",
       "client.ip",
+      "remoteAddr",
       "nextcloud.remoteAddr",
     ),
-    destinationIp: text(
+    destinationIp: eventText(
       source,
+      event,
       "destination.ip",
       "destination.address",
       "server.ip",
     ),
     method,
     statusCode,
-    userAgent: text(source, "user_agent.original", "nextcloud.userAgent"),
-    city: text(source, "source.geo.city_name"),
-    region: text(source, "source.geo.region_name"),
-    country: text(source, "source.geo.country_name"),
+    userAgent: eventText(
+      source,
+      event,
+      "user_agent.original",
+      "userAgent",
+      "nextcloud.userAgent",
+    ),
+    city: eventText(source, event, "source.geo.city_name"),
+    region: eventText(source, event, "source.geo.region_name"),
+    country: eventText(source, event, "source.geo.country_name"),
+    level: displayLevel(source, event),
+    application,
+    user,
+    requestId,
+    details: additionalDetails(source, event),
+    eventJson: event ? JSON.stringify(event, null, 2) : null,
   };
 }
 

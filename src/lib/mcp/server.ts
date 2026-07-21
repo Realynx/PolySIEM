@@ -469,7 +469,9 @@ export function registerPolySIEMServer(server: McpServer): void {
     {
       title: "Create documentation page",
       description:
-        "Create a markdown documentation page (createdVia: mcp). Slug is derived from the title. Returns the created page including its slug and id.",
+        "Create a markdown documentation page (createdVia: mcp). Slug is derived from the title. " +
+        "Link inventory with {{node:<kind>:<id>}} tokens (device, vm, container, network, service); linked pages appear on inventory details. " +
+        "Returns the created page including its slug and id.",
       inputSchema: {
         title: z.string().min(1).max(255).describe("Page title"),
         content: z.string().max(500_000).describe("Markdown content"),
@@ -490,7 +492,9 @@ export function registerPolySIEMServer(server: McpServer): void {
     {
       title: "Update documentation page",
       description:
-        "Update the title and/or content of an existing documentation page addressed by slug or id. Returns the updated page.",
+        "Update the title and/or content of an existing documentation page addressed by slug or id. " +
+        "Preserve relevant {{node:<kind>:<id>}} inventory links in Markdown; add them for inventory items the page documents. " +
+        "Returns the updated page.",
       inputSchema: {
         slugOrId: z.string().min(1).describe("Page slug or id"),
         title: z.string().min(1).max(255).optional().describe("New title"),

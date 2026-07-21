@@ -5,6 +5,7 @@ import { Handle, Position, type EdgeTypes, type Node, type NodeProps, type NodeT
 import { Cable, Cloud, Container, Globe, HardDrive, Monitor, Network as NetworkIcon, Pin, Radar, Router, Shield, ShieldCheck, Users, Wifi } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatBps } from "@/lib/format";
+import { networkTrafficRates } from "@/lib/bandwidth/summary";
 import { Badge } from "@/components/ui/badge";
 import { hiddenHandle } from "@/components/topology/topology-canvas";
 import { RoutedEdge } from "@/components/topology/routed-edge";
@@ -371,6 +372,7 @@ function MemberList({
 
 function NetworkNode({ data }: NodeProps<NetworkNodeType>) {
   const { node, members, carriers, wifi, expanded, bandwidth } = data;
+  const traffic = bandwidth ? networkTrafficRates(bandwidth, node.category === "wan") : null;
   const expandable =
     members.length > COLLAPSED_MAX ||
     carriers.some((c) => c.entries.length > 0);
@@ -412,12 +414,12 @@ function NetworkNode({ data }: NodeProps<NetworkNodeType>) {
             <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
               {node.cidr ?? "no CIDR"}
             </p>
-            {bandwidth && (bandwidth.inBps > 0 || bandwidth.outBps > 0) && (
+            {traffic && (traffic.downBps > 0 || traffic.upBps > 0) && (
               <span
                 className="shrink-0 font-mono text-[9px] text-info"
-                title="Live interface throughput averaged over the selected window"
+                title="Network download/upload throughput averaged over the selected window"
               >
-                ↓{formatBps(bandwidth.inBps)} ↑{formatBps(bandwidth.outBps)}
+                ↓{formatBps(traffic.downBps)} ↑{formatBps(traffic.upBps)}
               </span>
             )}
           </div>

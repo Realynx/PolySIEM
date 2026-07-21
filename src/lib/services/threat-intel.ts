@@ -20,9 +20,11 @@ import {
   elasticsearchSettingsSchema,
   otxSettingsSchema,
   type IocMatchQuery,
+  type ThreatIntelReadInput,
   type ThreatIntelQuery,
 } from "@/lib/validators/integrations";
 import { decryptSecret } from "@/lib/crypto";
+import { withThreatIntelReadState } from "@/lib/threat-intel/read-state";
 import {
   PERSONAL_OTX_SOURCE_ID,
   type IocMatch,
@@ -238,8 +240,11 @@ export async function getPulseFeed(query: ThreatIntelQuery, userId?: string): Pr
 
   if (isMock(cfg)) {
     const page = mockFetchPulses({ feed, page: query.page, limit: query.limit }, cfg);
+    const readAtByPulse = await pulseReadTimes(userId, cfg.id, page.pulses.map((pulse) => pulse.id));
+    const pulses = withThreatIntelReadState(page.pulses, readAtByPulse);
     return {
-      pulses: page.pulses,
+      pulses,
+      unreadCount: pulses.filter((pulse) => pulse.readAt === null).length,
       totalCount: page.totalCount,
       cachedCount: page.totalCount,
       page: query.page,
@@ -267,8 +272,13 @@ export async function getPulseFeed(query: ThreatIntelQuery, userId?: string): Pr
     prisma.otxPulseCache.count({ where: { sourceKey: cfg.id } }),
   ]);
 
+  const pulseViews = rows.map((row) => (row.data as unknown as CachedPulseData).view);
+  const readAtByPulse = await pulseReadTimes(userId, cfg.id, pulseViews.map((pulse) => pulse.id));
+  const pulses = withThreatIntelReadState(pulseViews, readAtByPulse);
+
   return {
-    pulses: rows.map((row) => (row.data as unknown as CachedPulseData).view),
+    pulses,
+    unreadCount: pulses.filter((pulse) => pulse.readAt === null).length,
     totalCount: cachedCount,
     cachedCount,
     page: query.page,
@@ -276,6 +286,35 @@ export async function getPulseFeed(query: ThreatIntelQuery, userId?: string): Pr
     feed,
     source,
   };
+}
+
+async function pulseReadTimes(
+  userId: string | undefined,
+  sourceKey: string,
+  pulseIds: string[],
+): Promise<Map<string, string>> {
+  if (!userId || pulseIds.length === 0) return new Map();
+  const receipts = await prisma.otxPulseRead.findMany({
+    where: { userId, sourceKey, pulseId: { in: pulseIds } },
+    select: { pulseId: true, readAt: true },
+  });
+  return new Map(receipts.map((receipt) => [receipt.pulseId, receipt.readAt.toISOString()]));
+}
+
+/** Persist per-user read receipts for reports in one resolved feed source. */
+export async function markPulsesRead(input: ThreatIntelReadInput, userId: string) {
+  const cfg = await resolveOtxSource(input.integrationId, userId);
+  const readAt = new Date();
+  await prisma.$transaction(
+    input.pulseIds.map((pulseId) =>
+      prisma.otxPulseRead.upsert({
+        where: { userId_sourceKey_pulseId: { userId, sourceKey: cfg.id, pulseId } },
+        create: { userId, sourceKey: cfg.id, pulseId, readAt },
+        update: { readAt },
+      }),
+    ),
+  );
+  return { pulseIds: input.pulseIds, readAt: readAt.toISOString() };
 }
 
 /* ------------------------------------------------------------------ */

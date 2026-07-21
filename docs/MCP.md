@@ -101,6 +101,13 @@ npx @modelcontextprotocol/inspector --cli https://HOST:3000/api/mcp \
 | `set_firewall_annotation` | `ruleId`, `annotation` (null clears) | Set the PolySIEM-owned note on a firewall rule |
 | `add_tag` | `entityType`, `entityId`, `tagName` | Get-or-create tag and assign it |
 
+Documentation Markdown can link directly to live inventory with
+`{{node:<kind>:<id>}}`, where kind is `device`, `vm`, `container`, `network`, or
+`service`. The editor renders the token as a live inventory card, and the page
+automatically appears under Linked documentation in that inventory item's
+Description area. AI and MCP clients should use ids returned by inventory read
+tools and preserve relevant tokens when updating a page.
+
 ### `trigger_sync` scope
 
 | Tool | Input | Effect |

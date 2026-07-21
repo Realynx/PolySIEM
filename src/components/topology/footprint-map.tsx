@@ -20,7 +20,11 @@ import { FpSwitchNode, RouteNode, TunnelNode, UnknownNode } from "@/components/t
 import { CLIENT_COLLAPSED_MAX, type FirewallNodeType, type FootprintFlowNode, type LaneLabelNodeType, type LaneNodeType } from "@/components/topology/footprint-node-model";
 import { buildFlow } from "@/components/topology/footprint-flow-builder";
 import { applyFocus, applyNodeFocus } from "@/components/topology/footprint-flow-focus";
-import { hostnameRow, type TrafficState } from "@/components/topology/footprint-flow-shared";
+import {
+  hostnameRow,
+  scopeTunnelTraffic,
+  type TunnelTrafficPayload,
+} from "@/components/topology/footprint-flow-shared";
 
 const nodeTypes: NodeTypes = {
   internet: InternetNode,
@@ -85,7 +89,7 @@ export function FootprintMap({
     initialFocusId,
   );
   const [expandedLanes, setExpandedLanes] = useState<Set<string>>(new Set());
-  const [traffic, setTraffic] = useState<TrafficState | null>(null);
+  const [trafficPayload, setTrafficPayload] = useState<TunnelTrafficPayload | null>(null);
   const [refreshMs, setRefreshMs] = useRefreshInterval(
     FOOTPRINT_REFRESH_STORAGE_KEY,
   );
@@ -118,33 +122,10 @@ export function FootprintMap({
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(String(response.status));
-        const body = (await response.json()) as {
-          data: {
-            window: string;
-            mode: TrafficState["mode"];
-            tunnels: {
-              tunnelId: string;
-              total: number;
-              byHostname?: { hostname: string; count: number }[];
-            }[];
-          };
-        };
+        const body = (await response.json()) as { data: TunnelTrafficPayload };
         const data = body.data;
         if (data.mode !== "unavailable") {
-          const byTunnel = new Map<string, number>();
-          const byHostname = new Map<string, number>();
-          for (const tunnel of data.tunnels) {
-            byTunnel.set(tunnel.tunnelId, tunnel.total);
-            for (const hostname of tunnel.byHostname ?? []) {
-              byHostname.set(hostname.hostname.toLowerCase(), hostname.count);
-            }
-          }
-          setTraffic({
-            window: data.window,
-            mode: data.mode,
-            byTunnel,
-            byHostname,
-          });
+          setTrafficPayload(data);
         }
       } catch {
         /* offline / no ES source — counters just stay hidden */
@@ -157,6 +138,14 @@ export function FootprintMap({
       if (timer) clearTimeout(timer);
     };
   }, [graph.tunnels, refreshMs]);
+
+  const traffic = useMemo(
+    () =>
+      trafficPayload && graph.tunnels.length > 0
+        ? scopeTunnelTraffic(trafficPayload, graph.tunnels)
+        : null,
+    [graph.tunnels, trafficPayload],
+  );
 
   // Expensive pass (dagre + node/edge construction). Depends on graph/traffic
   // and the deliberate lane-expand toggle (which changes lane heights → layout)

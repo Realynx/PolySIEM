@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { audit, type AuditActor } from "@/lib/audit";
 import { ApiError } from "@/lib/api";
 import { deleteSourceChunks, reindexDoc } from "@/lib/rag/index";
+import { serializeNodeToken, type NodeEmbedKind } from "@/lib/docs/node-embed";
 import type { CreateDocInput, UpdateDocInput } from "@/lib/validators/docs";
 
 export function slugify(title: string): string {
@@ -38,6 +39,25 @@ export async function listDocs() {
       updatedAt: true,
       author: { select: { id: true, username: true, displayName: true } },
       tags: { include: { tag: true } },
+    },
+  });
+}
+
+/**
+ * Documentation pages that contain a live reference to an inventory node.
+ * The Markdown token is the relationship's source of truth, so adding or
+ * removing a node in the doc editor immediately updates the inventory
+ * backlink without a second association table to keep in sync.
+ */
+export async function listDocsReferencingNode(kind: NodeEmbedKind, id: string) {
+  return prisma.docPage.findMany({
+    where: { content: { contains: serializeNodeToken(kind, id) } },
+    orderBy: { title: "asc" },
+    select: {
+      id: true,
+      title: true,
+      slug: true,
+      updatedAt: true,
     },
   });
 }

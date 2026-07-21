@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, RefreshCw, ScrollText } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  Copy,
+  RefreshCw,
+  ScrollText,
+} from "lucide-react";
+import { toast } from "sonner";
 import { apiFetch } from "@/components/shared/api-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -52,76 +59,315 @@ function StatusBadge({ value }: { value: string | null }) {
 }
 
 function EventRow({ row }: { row: AssociatedLogRow }) {
+  const [expanded, setExpanded] = useState(false);
   const location = [row.city, row.region, row.country]
     .filter(Boolean)
     .join(", ");
-  const request = [row.domain, row.path].filter(Boolean).join("");
+  const request = row.domain
+    ? `${row.scheme ? `${row.scheme}://` : ""}${row.domain}${row.path ?? ""}`
+    : (row.url ?? row.path ?? "");
+  const hasHttpRoute = Boolean(request || row.originService);
   const detail = row.error ?? row.message;
+  const eventJson = row.eventJson;
+  const facts = [
+    { label: "Application", value: row.application },
+    { label: "Level", value: row.level },
+    { label: "User", value: row.user },
+    { label: "Request ID", value: row.requestId },
+    { label: "Client IP", value: row.sourceIp },
+    { label: "Destination IP", value: row.destinationIp },
+    { label: "Location", value: location || null },
+    { label: "User agent", value: row.userAgent },
+    ...row.details,
+  ].filter(
+    (fact): fact is { label: string; value: string } => Boolean(fact.value),
+  );
+  const compactDetails = row.details.slice(0, 3);
+
   return (
-    <div className="grid gap-2 border-t px-4 py-3 first:border-t-0 md:grid-cols-[8.5rem_minmax(0,1fr)]">
-      <div
-        className="text-xs text-muted-foreground"
-        title={formatDateTime(row.timestamp)}
-      >
-        {formatRelative(row.timestamp)}
-        {row.host && (
-          <p className="mt-1 truncate font-mono" title={row.host}>
-            {row.host}
-          </p>
-        )}
-      </div>
-      <div className="min-w-0 space-y-1.5">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {row.method && (
-            <Badge variant="secondary" className="font-mono">
-              {row.method}
-            </Badge>
-          )}
-          <StatusBadge value={row.statusCode} />
-          {request && (
-            <span
-              className="min-w-0 truncate font-mono text-xs"
-              title={row.url ?? request}
-            >
-              {request}
-            </span>
-          )}
-          {!request && (
-            <span className="text-xs capitalize text-muted-foreground">
-              {row.kind}
-            </span>
-          )}
-        </div>
-        {detail && (
-          <p
-            className={cn(
-              "break-words font-mono text-xs",
-              row.error && "text-destructive",
-            )}
-            title={detail}
+    <div className="border-t first:border-t-0">
+      {!expanded && (
+        <button
+          type="button"
+          aria-expanded={false}
+          onClick={() => setExpanded(true)}
+          className="grid w-full gap-2 px-4 py-3 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset md:grid-cols-[8.5rem_minmax(0,1fr)_1.25rem]"
+        >
+          <div
+            className="text-xs text-muted-foreground"
+            title={formatDateTime(row.timestamp)}
           >
-            {detail.length > 320 ? `${detail.slice(0, 320)}…` : detail}
-          </p>
-        )}
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-          {row.sourceIp && (
-            <span>
-              Client <code>{row.sourceIp}</code>
-            </span>
+          {formatRelative(row.timestamp)}
+          {row.host && (
+            <p className="mt-1 truncate font-mono" title={row.host}>
+              {row.host}
+            </p>
           )}
-          {row.destinationIp && (
-            <span>
-              Destination <code>{row.destinationIp}</code>
-            </span>
+          </div>
+          <div className="min-w-0 space-y-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            {row.method && (
+              <Badge variant="secondary" className="font-mono">
+                {row.method}
+              </Badge>
+            )}
+            <StatusBadge value={row.statusCode} />
+            {row.level && (
+              <Badge variant="outline" className="capitalize">
+                {row.level}
+              </Badge>
+            )}
+            {row.application && (
+              <span className="text-xs text-muted-foreground">
+                {row.application}
+              </span>
+            )}
+            {row.domain && (
+              <span className="text-xs text-muted-foreground">
+                HTTP request
+              </span>
+            )}
+            {!request && !row.application && (
+              <span className="text-xs capitalize text-muted-foreground">
+                {row.kind}
+              </span>
+            )}
+          </div>
+          {detail && (
+            <p
+              className={cn(
+                "line-clamp-3 break-words text-xs",
+                row.error ? "text-destructive" : "text-foreground",
+              )}
+              title={detail}
+            >
+              {detail.length > 320 ? `${detail.slice(0, 320)}…` : detail}
+            </p>
           )}
-          {location && <span>{location}</span>}
+          {hasHttpRoute && (
+            <div className="overflow-hidden rounded-md border border-border/70 bg-background/60">
+              {request && (
+                <div className="px-2.5 py-2">
+                  <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                    Request URL
+                  </p>
+                  {row.domain ? (
+                    <div className="mt-0.5 min-w-0 font-mono text-xs">
+                      <p className="break-all">
+                        {row.scheme && (
+                          <span className="text-muted-foreground">
+                            {row.scheme}://
+                          </span>
+                        )}
+                        <span className="font-medium text-foreground">
+                          {row.domain}
+                        </span>
+                      </p>
+                      {row.path && (
+                        <p className="mt-0.5 break-all text-muted-foreground">
+                          {row.path}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-0.5 font-mono text-xs break-all">
+                      {request}
+                    </p>
+                  )}
+                </div>
+              )}
+              {row.originService && (
+                <div className="border-t border-border/60 px-2.5 py-1.5 text-[11px]">
+                  <span className="text-muted-foreground">Tunnel origin </span>
+                  <code className="break-all text-foreground">
+                    {row.originService}
+                  </code>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+            {row.sourceIp && (
+              <span>
+                Client <code>{row.sourceIp}</code>
+              </span>
+            )}
+            {row.destinationIp && (
+              <span>
+                Destination <code>{row.destinationIp}</code>
+              </span>
+            )}
+            {row.user && <span>User {row.user}</span>}
+            {row.requestId && (
+              <span>
+                Request <code>{row.requestId}</code>
+              </span>
+            )}
+            {location && <span>{location}</span>}
+            {compactDetails.map((fact) => (
+              <span key={`${fact.label}:${fact.value}`}>
+                {fact.label} <code>{fact.value}</code>
+              </span>
+            ))}
+          </div>
           {row.userAgent && (
-            <span className="max-w-full truncate" title={row.userAgent}>
-              Agent: {row.userAgent}
-            </span>
+            <p
+              className="truncate text-[11px] text-muted-foreground"
+              title={row.userAgent}
+            >
+              Client software: {row.userAgent}
+            </p>
           )}
+          </div>
+          <ChevronDown
+            className="mt-0.5 size-4 text-muted-foreground"
+            aria-hidden="true"
+          />
+        </button>
+      )}
+      {expanded && (
+        <div className="border-l-2 border-l-primary bg-muted/15">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/50 px-4 py-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <p className="mr-1 text-sm font-semibold">Event details</p>
+                {row.method && (
+                  <Badge variant="secondary" className="font-mono">
+                    {row.method}
+                  </Badge>
+                )}
+                <StatusBadge value={row.statusCode} />
+                {row.level && (
+                  <Badge variant="outline" className="capitalize">
+                    {row.level}
+                  </Badge>
+                )}
+              </div>
+              <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                {formatDateTime(row.timestamp)}
+                {row.host ? ` · ${row.host}` : ""}
+                {row.application ? ` · ${row.application}` : ""}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {eventJson && (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(eventJson);
+                      toast.success("Event JSON copied");
+                    } catch {
+                      toast.error("Could not access the clipboard");
+                    }
+                  }}
+                >
+                  <Copy data-icon="inline-start" />
+                  Copy JSON
+                </Button>
+              )}
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={() => setExpanded(false)}
+              >
+                <ChevronDown className="rotate-180" data-icon="inline-start" />
+                Collapse
+              </Button>
+            </div>
+          </div>
+          <div className="p-4">
+            {detail && (
+              <div className="mb-4">
+                <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                  Message
+                </p>
+                <p
+                  className={cn(
+                    "mt-1 text-sm leading-relaxed break-words",
+                    row.error && "text-destructive",
+                  )}
+                >
+                  {detail}
+                </p>
+              </div>
+            )}
+          {hasHttpRoute && (
+            <div className="mb-3 rounded-md border bg-background/70 p-3">
+              <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                HTTP route
+              </p>
+              <dl className="mt-2 grid gap-x-6 gap-y-3 sm:grid-cols-2">
+                {request && (
+                  <div className="min-w-0 sm:col-span-2">
+                    <dt className="text-[10px] text-muted-foreground uppercase">
+                      Request URL
+                    </dt>
+                    <dd className="mt-0.5 font-mono text-xs break-all">
+                      {request}
+                    </dd>
+                  </div>
+                )}
+                {row.domain && (
+                  <div className="min-w-0">
+                    <dt className="text-[10px] text-muted-foreground uppercase">
+                      Host
+                    </dt>
+                    <dd className="mt-0.5 font-mono text-xs break-all">
+                      {row.domain}
+                    </dd>
+                  </div>
+                )}
+                {row.path && (
+                  <div className="min-w-0">
+                    <dt className="text-[10px] text-muted-foreground uppercase">
+                      Path and query
+                    </dt>
+                    <dd className="mt-0.5 font-mono text-xs break-all">
+                      {row.path}
+                    </dd>
+                  </div>
+                )}
+                {row.originService && (
+                  <div className="min-w-0 sm:col-span-2">
+                    <dt className="text-[10px] text-muted-foreground uppercase">
+                      Cloudflare tunnel origin
+                    </dt>
+                    <dd className="mt-0.5 font-mono text-xs break-all">
+                      {row.originService}
+                    </dd>
+                  </div>
+                )}
+              </dl>
+            </div>
+          )}
+          {facts.length > 0 && (
+            <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+              {facts.map((fact) => (
+                <div key={`${fact.label}:${fact.value}`} className="min-w-0">
+                  <dt className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                    {fact.label}
+                  </dt>
+                  <dd className="mt-0.5 font-mono text-xs break-all">
+                    {fact.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t pt-2 font-mono text-[10px] text-muted-foreground">
+            <span>{formatDateTime(row.timestamp)}</span>
+            <span title={row.index} className="break-all">
+              {row.index}
+            </span>
+            <span title={row.id} className="break-all">
+              Event {row.id}
+            </span>
+          </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

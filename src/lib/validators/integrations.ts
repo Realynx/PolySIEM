@@ -611,6 +611,13 @@ export const threatIntelQuerySchema = z.object({
 });
 export type ThreatIntelQuery = z.infer<typeof threatIntelQuerySchema>;
 
+/** Body for marking one or more threat-intel reports read. */
+export const threatIntelReadSchema = z.object({
+  integrationId: z.string().min(1),
+  pulseIds: z.array(z.string().min(1).max(500)).min(1).max(50),
+});
+export type ThreatIntelReadInput = z.infer<typeof threatIntelReadSchema>;
+
 /** Query params for the IOC log cross-match (/api/logs/threat-intel/matches). */
 export const iocMatchQuerySchema = z.object({
   integrationId: z.string().optional(), // OTX integration; default: first enabled

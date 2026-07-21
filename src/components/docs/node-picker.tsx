@@ -47,7 +47,8 @@ interface NodePickerProps {
 /**
  * Toolbar control that searches embeddable entities (via /api/search, filtered
  * to device/vm/container/network/service) and inserts a `{{node:kind:id}}`
- * token at the editor cursor on selection.
+ * token at the editor cursor on selection. The token renders a live card and
+ * makes this page appear as linked documentation on the inventory detail.
  */
 export function NodePicker({ onInsert, disabled }: NodePickerProps) {
   const [open, setOpen] = useState(false);
@@ -95,14 +96,14 @@ export function NodePicker({ onInsert, disabled }: NodePickerProps) {
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label="Insert node"
+              aria-label="Link inventory item"
               disabled={disabled}
             >
               <Boxes />
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent>Insert node</TooltipContent>
+        <TooltipContent>Link inventory item</TooltipContent>
       </Tooltip>
       <PopoverContent className="w-80 p-0" align="start">
         <Command shouldFilter={false}>

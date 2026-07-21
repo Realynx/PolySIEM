@@ -24,6 +24,8 @@ describe("documentation interview prompt", () => {
     expect(prompt).toMatch(/Never repeat or prefix the parent title/);
     expect(prompt).toMatch(/Never invent, guess, or predeclare a documentation link/);
     expect(prompt).toMatch(/write tool rejects nonexistent targets/);
+    expect(prompt).toMatch(/live reference tokens/);
+    expect(prompt).toMatch(/create backlinks from the inventory Description area/);
   });
 
   it("keeps a services-only interview from writing docs", () => {

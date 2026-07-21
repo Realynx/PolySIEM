@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Plus, Radar, SearchX, ShieldAlert, ShieldCheck, Sparkles, UserRound } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Radar, Search, SearchX, ShieldAlert, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatRelative } from "@/lib/format";
 import { useDebounced } from "@/components/shared/use-debounced";
-import type { AiScanConfigDto, AiScanRunDto, SecurityTicketDto, TicketListResponse } from "@/lib/types";
+import type { AiScanConfigDto, AiScanRunDto, SecurityTicketDto, TicketListResponse, TicketSeverityValue } from "@/lib/types";
 import { hasActiveInvestigation } from "@/components/logs/threats/investigation-state";
 import { InvestigationBadge } from "@/components/logs/threats/investigation-badge";
 import { NewTicketDialog } from "@/components/logs/threats/new-ticket-dialog";
@@ -30,6 +30,14 @@ const STATUS_ITEMS = [
 ] as const;
 
 type StatusFilter = (typeof STATUS_ITEMS)[number]["value"];
+
+const SEVERITY_MARK: Record<TicketSeverityValue, string> = {
+  CRITICAL: "bg-destructive",
+  HIGH: "bg-orange-500",
+  MEDIUM: "bg-warning",
+  LOW: "bg-info",
+  INFO: "bg-muted-foreground",
+};
 
 /**
  * Phone Threat-watch tab: the desktop ThreatPanel's ticket queue as touch rows.
@@ -116,6 +124,41 @@ export function MobileThreatWatch({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <>
+      <section
+        className={cn(
+          "relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary/[0.14] via-card to-card p-4 ring-1 ring-foreground/10",
+          urgentOpen > 0 && "ring-destructive/25",
+        )}
+      >
+        <div className="pointer-events-none absolute -top-12 -right-10 size-32 rounded-full bg-primary/15 blur-2xl" />
+        <div className="relative flex items-center gap-3">
+          <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/12 text-primary ring-1 ring-primary/20">
+            <Radar className={cn("size-5", runScan.isPending && "animate-spin")} aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">Security operations</p>
+            <p className={cn("truncate text-xs text-muted-foreground", urgentOpen > 0 && "text-destructive")}>
+              {urgentOpen > 0
+                ? `${urgentOpen} urgent ${urgentOpen === 1 ? "ticket needs" : "tickets need"} triage`
+                : configQuery.data?.model
+                  ? `Queue healthy · ${configQuery.data.model}`
+                  : "AI-assisted SIEM triage"}
+            </p>
+          </div>
+          {isAdmin && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="relative h-9 shrink-0 bg-background/70"
+              onClick={() => runScan.mutate()}
+              disabled={runScan.isPending}
+            >
+              {runScan.isPending ? "Scanning…" : "Run scan"}
+            </Button>
+          )}
+        </div>
+      </section>
+
       <MobileStatStrip>
         <MobileStat label="Open" value={openCounts ? totalOpen : "—"} />
         <MobileStat
@@ -148,29 +191,20 @@ export function MobileThreatWatch({ isAdmin }: { isAdmin: boolean }) {
             </button>
           ))}
         </div>
-        {isAdmin && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 shrink-0"
-            onClick={() => runScan.mutate()}
-            disabled={runScan.isPending}
-          >
-            <Radar className={cn("size-3.5", runScan.isPending && "animate-spin")} />
-            {runScan.isPending ? "Scanning…" : "Scan"}
-          </Button>
-        )}
       </div>
 
-      <input
-        type="search"
-        inputMode="search"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search tickets…"
-        aria-label="Search tickets"
-        className="h-10 w-full rounded-xl border-0 bg-muted px-3.5 text-base outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/40 [&::-webkit-search-cancel-button]:hidden"
-      />
+      <div className="relative">
+        <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+        <input
+          type="search"
+          inputMode="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search tickets…"
+          aria-label="Search tickets"
+          className="h-10 w-full rounded-xl border-0 bg-muted pr-3.5 pl-10 text-base outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/40 [&::-webkit-search-cancel-button]:hidden"
+        />
+      </div>
 
       {ticketsQuery.isError ? (
         <MobileEmpty
@@ -220,6 +254,12 @@ export function MobileThreatWatch({ isAdmin }: { isAdmin: boolean }) {
               <MobileListRow
                 key={ticket.id}
                 onClick={() => setSelected(ticket)}
+                leading={<span className={cn("h-8 w-1 rounded-full", SEVERITY_MARK[ticket.severity])} />}
+                className={cn(
+                  ticket.status === "OPEN" &&
+                    (ticket.severity === "CRITICAL" || ticket.severity === "HIGH") &&
+                    "bg-destructive/[0.025]",
+                )}
                 title={
                   <>
                     <SeverityBadge severity={ticket.severity} className="shrink-0 text-[0.6rem]" />

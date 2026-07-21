@@ -2,8 +2,10 @@
 
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Loader2, PencilLine } from "lucide-react";
+import { FileText, Loader2, PencilLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiSend } from "@/components/inventory/client-api";
 import type { AiAssistMenuProps } from "@/components/ai";
@@ -40,6 +42,26 @@ export function DescriptionEditor({
   const [value, setValue] = useState(initialValue ?? "");
   const [saved, setSaved] = useState(initialValue ?? "");
   const [saving, setSaving] = useState(false);
+  const { data: linkedDocs = [] } = useQuery<
+    Array<{ id: string; title: string; slug: string; updatedAt: string }>
+  >({
+    queryKey: ["linked-docs", entity?.type, entity?.id],
+    queryFn: async () => {
+      if (!entity) return [];
+      const response = await fetch(
+        `/api/docs/linked?kind=${encodeURIComponent(entity.type)}&id=${encodeURIComponent(entity.id)}`,
+      );
+      if (!response.ok) {
+        throw new Error(`Failed to load linked documentation (${response.status})`);
+      }
+      const body = (await response.json()) as {
+        data?: Array<{ id: string; title: string; slug: string; updatedAt: string }>;
+      };
+      return body.data ?? [];
+    },
+    enabled: Boolean(entity),
+    staleTime: 30_000,
+  });
 
   const save = async () => {
     setSaving(true);
@@ -58,26 +80,54 @@ export function DescriptionEditor({
 
   if (!editing) {
     return (
-      <div className="group relative">
-        {saved.trim() === "" ? (
-          <p className="text-sm text-muted-foreground italic">
-            No description yet. Click edit to add one.
-          </p>
-        ) : (
-          <Markdown content={saved} />
+      <div className="space-y-4">
+        <div className="group relative">
+          {saved.trim() === "" ? (
+            <p className="text-sm text-muted-foreground italic">
+              No description yet. Click edit to add one.
+            </p>
+          ) : (
+            <Markdown content={saved} />
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="absolute -top-1 right-0"
+            onClick={() => {
+              setValue(saved);
+              setEditing(true);
+            }}
+          >
+            <PencilLine />
+            Edit
+          </Button>
+        </div>
+        {entity && (
+          <div className="border-t pt-3">
+            <p className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+              Linked documentation
+            </p>
+            {linkedDocs.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No pages link this item yet. In a documentation page, use Link inventory item.
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {linkedDocs.map((doc) => (
+                  <li key={doc.id}>
+                    <Link
+                      href={`/docs/${doc.slug}`}
+                      className="group/link flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted"
+                    >
+                      <FileText className="size-4 shrink-0 text-muted-foreground" />
+                      <span className="truncate group-hover/link:text-primary">{doc.title}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
-        <Button
-          variant="outline"
-          size="sm"
-          className="absolute -top-1 right-0"
-          onClick={() => {
-            setValue(saved);
-            setEditing(true);
-          }}
-        >
-          <PencilLine />
-          Edit
-        </Button>
       </div>
     );
   }

@@ -413,7 +413,7 @@ function assistantWriteTools(ctx: ToolContext): AnyTool[] {
     makeTool(
       ctx,
       "write_doc",
-      "Create or update a markdown documentation page in the docs tree. Provide slugOrId to update an existing page, or omit it to create a new one. Use parentId to place focused pages beneath their subject's root page. Read the existing page before updating it. Internal doc links are validated against saved pages and the write is rejected if a target does not exist; create the target first and use its returned slug or id.",
+      "Create or update a markdown documentation page in the docs tree. Provide slugOrId to update an existing page, or omit it to create a new one. Use parentId to place focused pages beneath their subject's root page. Read the existing page before updating it. Link inventory with live Markdown tokens such as {{node:device:<id>}}, {{node:vm:<id>}}, {{node:container:<id>}}, {{node:network:<id>}}, and {{node:service:<id>}}; these also create backlinks on inventory details. Internal doc links are validated against saved pages and the write is rejected if a target does not exist; create the target first and use its returned slug or id.",
       z.object({
         title: z
           .string()
@@ -425,7 +425,9 @@ function assistantWriteTools(ctx: ToolContext): AnyTool[] {
           .string()
           .max(500_000)
           .optional()
-          .describe("Markdown content"),
+          .describe(
+            "Markdown content; include {{node:<kind>:<inventory-id>}} tokens for inventory items this page documents",
+          ),
         slugOrId: z
           .string()
           .min(1)

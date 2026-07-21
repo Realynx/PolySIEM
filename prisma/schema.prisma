@@ -107,6 +107,7 @@ model User {
   closedTickets SecurityTicket[]       @relation("TicketCloser")
   researchPages SecurityResearchPage[] @relation("ResearchPageCreator")
   workflows     Workflow[]             @relation("WorkflowCreator")
+  otxPulseReads OtxPulseRead[]
 }
 
 model Session {
@@ -1161,6 +1162,20 @@ model OtxPulseCache {
 
   @@id([sourceKey, pulseId])
   @@index([sourceKey, modified(sort: Desc)])
+}
+
+/// Per-user read receipts for OTX reports. These intentionally do not point at
+/// OtxPulseCache: demo feeds are not cached, and receipts should survive a
+/// cache refresh or eviction.
+model OtxPulseRead {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceKey String
+  pulseId   String
+  readAt    DateTime @default(now())
+
+  @@id([userId, sourceKey, pulseId])
+  @@index([sourceKey, pulseId])
 }
 
 // ---------- workflows (automation rules engine) ----------

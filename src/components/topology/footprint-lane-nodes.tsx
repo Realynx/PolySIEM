@@ -21,6 +21,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatBps } from "@/lib/format";
+import { networkTrafficRates } from "@/lib/bandwidth/summary";
 import { hiddenHandle } from "@/components/topology/topology-canvas";
 import { PowerDot } from "@/components/topology/inventory-map-nodes";
 import type { FootprintLane, FootprintMachine, FpClient } from "@/lib/topology/footprint";
@@ -358,6 +359,7 @@ export const LaneNode = memo(function LaneNode({
   data,
 }: NodeProps<LaneNodeType>) {
   const { lane, expanded, bw } = data;
+  const traffic = bw ? networkTrafficRates(bw, lane.category === "wan") : null;
   const clients = lane.clients;
   const hasClients = clients.length > 0;
   const machineArea = machineGridSize(lane.machines.length);
@@ -391,7 +393,7 @@ export const LaneNode = memo(function LaneNode({
       style={{
         backgroundImage: `linear-gradient(135deg, color-mix(in oklab, ${routeColor} 7%, transparent), transparent 42%)`,
       }}
-      title={`${lane.name}${lane.vlanId !== null ? ` · VLAN ${lane.vlanId}` : ""}${lane.cidr ? ` · ${lane.cidr}` : ""}${bw ? ` · ↓${formatBps(bw.inBps)} ↑${formatBps(bw.outBps)}` : ""}`}
+      title={`${lane.name}${lane.vlanId !== null ? ` · VLAN ${lane.vlanId}` : ""}${lane.cidr ? ` · ${lane.cidr}` : ""}${traffic ? ` · ↓${formatBps(traffic.downBps)} ↑${formatBps(traffic.upBps)}` : ""}`}
     >
       <Handle
         type="target"
@@ -502,6 +504,7 @@ export const LaneLabelNode = memo(function LaneLabelNode({
   data,
 }: NodeProps<LaneLabelNodeType>) {
   const { lane, bw } = data;
+  const traffic = bw ? networkTrafficRates(bw, lane.category === "wan") : null;
   const routeColor = LANE_ROUTE_COLOR[lane.category];
   return (
     <div className="pointer-events-none flex h-full w-full items-center gap-2 overflow-hidden rounded-lg border border-border/80 bg-card px-2.5 shadow-sm">
@@ -548,12 +551,12 @@ export const LaneLabelNode = memo(function LaneLabelNode({
                 {lane.cidr}
               </span>
             )}
-            {bw && (
+            {traffic && (
               <span
                 className="min-w-0 truncate font-mono text-[9px] font-medium text-info"
-                title={`Network throughput at the firewall interface, averaged over the last hour: down ${formatBps(bw.inBps)}, up ${formatBps(bw.outBps)}`}
+                title={`Network throughput at the firewall interface, averaged over the last hour: down ${formatBps(traffic.downBps)}, up ${formatBps(traffic.upBps)}`}
               >
-                ↓{formatBps(bw.inBps)} ↑{formatBps(bw.outBps)}
+                ↓{formatBps(traffic.downBps)} ↑{formatBps(traffic.upBps)}
               </span>
             )}
           </div>

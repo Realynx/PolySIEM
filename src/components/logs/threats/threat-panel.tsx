@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   keepPreviousData,
   useMutation,
@@ -9,14 +9,19 @@ import {
 } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Clock3,
   ChevronLeft,
   ChevronRight,
+  Database,
   FilterX,
+  Inbox,
   Plus,
   Radar,
   RefreshCw,
+  Search,
   SearchX,
   Settings2,
+  ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -172,8 +177,8 @@ export function ThreatPanel({
   return (
     <>
       <PageHeader
-        title="Threat watch"
-        description="Your configured AI provider reads Elasticsearch log digests — Suricata alerts, Cloudflared, and error spikes — and opens tickets for anything worth a look."
+        title="SIEM tickets"
+        description="Triage findings from Suricata, Cloudflared, and your other Elastic log sources in one focused security queue."
         actions={
           <>
             <Button
@@ -212,89 +217,120 @@ export function ThreatPanel({
       />
 
       <div className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <Card>
-            <CardContent className="space-y-1.5">
-              <p className="text-xs text-muted-foreground">Open tickets</p>
-              <p className="text-2xl font-semibold tabular-nums">{totalOpen}</p>
-              <div className="flex flex-wrap gap-1">
-                {openCounts &&
-                  SEVERITIES.filter((s) => openCounts[s] > 0).map((s) => (
-                    <SeverityBadge
-                      key={s}
-                      severity={s}
-                      count={openCounts[s]}
-                      className="text-[0.65rem]"
-                    />
-                  ))}
-                {openCounts && totalOpen === 0 && (
-                  <span className="text-xs text-muted-foreground">
-                    nothing needs attention
-                  </span>
-                )}
+        <section
+          className={cn(
+            "relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary/[0.12] via-card to-card ring-1 ring-foreground/10",
+            urgentOpen > 0 && "ring-destructive/25",
+          )}
+        >
+          <div className="pointer-events-none absolute -top-24 right-0 size-64 rounded-full bg-primary/10 blur-3xl" />
+          <div className="relative flex flex-wrap items-center justify-between gap-4 border-b border-foreground/10 px-5 py-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/12 text-primary ring-1 ring-primary/20">
+                <Radar className="size-5" aria-hidden />
               </div>
-            </CardContent>
-          </Card>
-          <Card className={cn(urgentOpen > 0 && "border-destructive/40")}>
-            <CardContent className="space-y-1.5">
-              <p className="text-xs text-muted-foreground">
-                Critical &amp; high
-              </p>
-              <p
-                className={cn(
-                  "text-2xl font-semibold tabular-nums",
-                  urgentOpen > 0 && "text-destructive",
-                )}
-              >
-                {urgentOpen}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {urgentOpen > 0
-                  ? "open tickets to triage first"
-                  : "no urgent tickets"}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="space-y-1.5">
-              <p className="text-xs text-muted-foreground">Last scan</p>
-              <p className="text-2xl font-semibold">
-                {lastRun ? formatRelative(lastRun.startedAt) : "never"}
-              </p>
-              <div className="flex items-center gap-1.5">
-                {lastRun && <RunStatusBadge status={lastRun.status} />}
-                {lastRun && (
-                  <span className="truncate font-mono text-xs text-muted-foreground">
-                    {lastRun.model}
-                  </span>
-                )}
-                {!lastRun && (
-                  <span className="text-xs text-muted-foreground">
-                    run one to get started
-                  </span>
-                )}
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">Security operations queue</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {config?.model
+                    ? `Scanning with ${config.model}`
+                    : "AI-assisted triage across connected log sources"}
+                </p>
               </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="space-y-1.5">
-              <p className="text-xs text-muted-foreground">Last run activity</p>
-              <p className="text-2xl font-semibold tabular-nums">
-                {lastRun?.stats?.docsScanned !== undefined
-                  ? lastRun.stats.docsScanned.toLocaleString()
-                  : "—"}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {lastRun?.stats
-                  ? `events scanned · ${lastRun.stats.ticketsCreated ?? 0} new / ${lastRun.stats.ticketsUpdated ?? 0} updated`
-                  : "events scanned"}
-              </p>
-            </CardContent>
-          </Card>
-        </div>
+            </div>
+            <div
+              className={cn(
+                "inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ring-1",
+                urgentOpen > 0
+                  ? "bg-destructive/10 text-destructive ring-destructive/20"
+                  : "bg-success/10 text-success ring-success/20",
+              )}
+            >
+              {urgentOpen > 0 ? (
+                <ShieldAlert className="size-3.5" aria-hidden />
+              ) : (
+                <ShieldCheck className="size-3.5" aria-hidden />
+              )}
+              {urgentOpen > 0
+                ? `${urgentOpen} urgent ${urgentOpen === 1 ? "ticket" : "tickets"}`
+                : "Queue is healthy"}
+            </div>
+          </div>
 
-        <Card>
-          <CardContent className="flex flex-wrap items-end gap-3">
+          <div className="relative grid sm:grid-cols-2 xl:grid-cols-4">
+            <QueueMetric
+              icon={<Inbox className="size-4" />}
+              label="Open tickets"
+              value={totalOpen.toLocaleString()}
+              detail={
+                openCounts && totalOpen > 0 ? (
+                  <span className="flex flex-wrap gap-1">
+                    {SEVERITIES.filter((s) => openCounts[s] > 0).map((s) => (
+                      <SeverityBadge
+                        key={s}
+                        severity={s}
+                        count={openCounts[s]}
+                        className="text-[0.62rem]"
+                      />
+                    ))}
+                  </span>
+                ) : (
+                  "Nothing needs attention"
+                )
+              }
+            />
+            <QueueMetric
+              icon={<ShieldAlert className="size-4" />}
+              label="Needs priority triage"
+              value={urgentOpen.toLocaleString()}
+              detail={urgentOpen > 0 ? "Critical and high severity" : "No urgent tickets"}
+              urgent={urgentOpen > 0}
+            />
+            <QueueMetric
+              icon={<Clock3 className="size-4" />}
+              label="Last scan"
+              value={lastRun ? formatRelative(lastRun.startedAt) : "Never"}
+              detail={
+                lastRun ? (
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <RunStatusBadge status={lastRun.status} />
+                    <span className="truncate font-mono">{lastRun.model}</span>
+                  </span>
+                ) : (
+                  "Run a scan to get started"
+                )
+              }
+            />
+            <QueueMetric
+              icon={<Database className="size-4" />}
+              label="Events analyzed"
+              value={
+                lastRun?.stats?.docsScanned !== undefined
+                  ? lastRun.stats.docsScanned.toLocaleString()
+                  : "—"
+              }
+              detail={
+                lastRun?.stats
+                  ? `${lastRun.stats.ticketsCreated ?? 0} new · ${lastRun.stats.ticketsUpdated ?? 0} updated`
+                  : "Most recent scan"
+              }
+            />
+          </div>
+        </section>
+
+        <section className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-foreground/10 px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold">Ticket queue</h2>
+              <p className="text-xs text-muted-foreground">
+                Review, investigate, and resolve security findings.
+              </p>
+            </div>
+            <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium tabular-nums text-muted-foreground">
+              {total.toLocaleString()} {total === 1 ? "result" : "results"}
+            </span>
+          </div>
+          <div className="flex flex-wrap items-end gap-3 p-4">
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">Status</Label>
               <Tabs
@@ -333,20 +369,23 @@ export function ThreatPanel({
                 </SelectContent>
               </Select>
             </div>
-            <div className="min-w-48 flex-1 space-y-1.5">
+            <div className="min-w-52 flex-1 space-y-1.5">
               <Label
                 htmlFor="ticket-search"
                 className="text-xs text-muted-foreground"
               >
                 Search
               </Label>
-              <Input
-                id="ticket-search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search tickets…"
-                className="h-7 text-[0.8rem]"
-              />
+              <div className="relative">
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="ticket-search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search titles, summaries, and indicators…"
+                  className="h-8 pl-8 text-[0.8rem]"
+                />
+              </div>
             </div>
             {hasFilters && (
               <Button variant="ghost" size="sm" onClick={clearFilters}>
@@ -354,8 +393,8 @@ export function ThreatPanel({
                 Clear filters
               </Button>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </section>
 
         {ticketsQuery.isError ? (
           <ErrorCard
@@ -464,6 +503,43 @@ export function ThreatPanel({
       />
       <NewTicketDialog open={newTicketOpen} onOpenChange={setNewTicketOpen} />
     </>
+  );
+}
+
+function QueueMetric({
+  icon,
+  label,
+  value,
+  detail,
+  urgent = false,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  detail: ReactNode;
+  urgent?: boolean;
+}) {
+  return (
+    <div className="min-w-0 border-t border-foreground/10 p-4 sm:[&:nth-child(even)]:border-l xl:border-t-0 xl:border-l xl:first:border-l-0">
+      <div
+        className={cn(
+          "mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground",
+          urgent && "text-destructive",
+        )}
+      >
+        {icon}
+        {label}
+      </div>
+      <p
+        className={cn(
+          "truncate text-2xl font-semibold tracking-tight tabular-nums",
+          urgent && "text-destructive",
+        )}
+      >
+        {value}
+      </p>
+      <div className="mt-1 min-h-5 text-xs text-muted-foreground">{detail}</div>
+    </div>
   );
 }
 

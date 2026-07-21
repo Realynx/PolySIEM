@@ -81,7 +81,7 @@ export function PulseSheet({
 
   return (
     <Sheet open onOpenChange={onOpenChange}>
-      <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto sm:max-w-xl">
+      <SheetContent className="flex w-full flex-col gap-0 overflow-y-auto data-[side=right]:sm:max-w-2xl data-[side=right]:xl:max-w-3xl">
         <SheetHeader className="space-y-2">
           <div className="flex items-center gap-2 pr-6">
             <TlpBadge tlp={pulse.tlp} className="text-[0.65rem]" />

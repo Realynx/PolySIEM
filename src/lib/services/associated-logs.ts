@@ -150,8 +150,10 @@ function mockRows(identity: AssetLogIdentity): AssociatedLogRow[] {
       message: "Cloudflare tunnel request",
       error: null,
       url: `https://${domain}/api/health`,
+      scheme: "https",
       domain,
       path: "/api/health",
+      originService: `http://${identity.ips[0] ?? "10.0.3.59"}:8080`,
       sourceIp: "203.0.113.42",
       destinationIp: identity.ips[0] ?? null,
       method: "GET",
@@ -160,6 +162,22 @@ function mockRows(identity: AssetLogIdentity): AssociatedLogRow[] {
       city: "Ashburn",
       region: "Virginia",
       country: "United States",
+      level: "info",
+      application: "cloudflared",
+      user: null,
+      requestId: "demo-request-42",
+      details: [{ label: "Protocol", value: "https" }],
+      eventJson: JSON.stringify(
+        {
+          level: "info",
+          method: "GET",
+          url: `https://${domain}/api/health`,
+          statusCode: 200,
+          requestId: "demo-request-42",
+        },
+        null,
+        2,
+      ),
     },
   ];
 }

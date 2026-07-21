@@ -210,7 +210,7 @@ export async function bandwidthReport(
     }),
     prisma.networkGateway.findMany({
       where: { integrationId: integration.id, status: { not: "REMOVED" } },
-      select: { name: true, interfaceName: true, isDefault: true },
+      select: { name: true, interfaceName: true, isDefault: true, metadata: true },
     }),
   ]);
   const nameByKey = new Map(networks.map((n) => [n.externalId, n.name]));

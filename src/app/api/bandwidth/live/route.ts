@@ -28,7 +28,7 @@ export const GET = handleApi(async (req: NextRequest) => {
   const snapshot = await fetchLiveInterfaceCounters(toDriverConfig(integration), sampledAt.getTime());
   const gateways = await prisma.networkGateway.findMany({
     where: { integrationId, status: { not: "REMOVED" } },
-    select: { name: true, interfaceName: true, isDefault: true },
+    select: { name: true, interfaceName: true, isDefault: true, metadata: true },
   });
   const summaryInterfaces = selectTrafficSummaryInterfaces(snapshot.interfaces, gateways);
   const bytesIn = summaryInterfaces.reduce((total, iface) => total + iface.bytesIn, BigInt(0));

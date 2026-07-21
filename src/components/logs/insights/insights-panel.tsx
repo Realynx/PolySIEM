@@ -6,7 +6,6 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { NetworkInsightsWidgetDashboard } from "@/components/network-insights";
 import { apiFetch } from "@/components/shared/api-client";
-import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -69,52 +68,46 @@ export function InsightsPanel({ sources, isAdmin }: { sources: InsightsSource[];
 
   return (
     <>
-      <PageHeader
-        title="Network insights"
-        description="Shape a live view of network traffic, security signals, tunnels, and infrastructure activity from Elasticsearch."
-        actions={
-          <>
-            {sources.length > 1 && (
-              <Select value={sourceId} onValueChange={setSourceId}>
-                <SelectTrigger size="sm" className="w-44" aria-label="Elasticsearch source">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {sources.map((source) => (
-                    <SelectItem key={source.id} value={source.id}>
-                      {source.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-            <Select value={String(hours)} onValueChange={(value) => setHours(Number(value))}>
-              <SelectTrigger size="sm" className="w-36" aria-label="Insights time range">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {WINDOWS.map((window) => (
-                  <SelectItem key={window.hours} value={String(window.hours)}>
-                    {window.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void query.refetch()}
-              disabled={query.isFetching}
-            >
-              <RefreshCw
-                data-icon="inline-start"
-                className={cn(query.isFetching && "animate-spin")}
-              />
-              Refresh
-            </Button>
-          </>
-        }
-      />
+      <div className="mb-6 flex flex-wrap items-center justify-end gap-2">
+        {sources.length > 1 && (
+          <Select value={sourceId} onValueChange={setSourceId}>
+            <SelectTrigger size="sm" className="w-44" aria-label="Elasticsearch source">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {sources.map((source) => (
+                <SelectItem key={source.id} value={source.id}>
+                  {source.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        <Select value={String(hours)} onValueChange={(value) => setHours(Number(value))}>
+          <SelectTrigger size="sm" className="w-36" aria-label="Insights time range">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {WINDOWS.map((window) => (
+              <SelectItem key={window.hours} value={String(window.hours)}>
+                {window.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void query.refetch()}
+          disabled={query.isFetching}
+        >
+          <RefreshCw
+            data-icon="inline-start"
+            className={cn(query.isFetching && "animate-spin")}
+          />
+          Refresh
+        </Button>
+      </div>
 
       {query.isError ? (
         <Card className="border-destructive/40">

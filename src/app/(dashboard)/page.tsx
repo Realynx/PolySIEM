@@ -30,7 +30,6 @@ import { loadFootprintInput } from "@/lib/topology/footprint-data";
 import { deriveFootprint } from "@/lib/topology/footprint";
 import { FootprintMap } from "@/components/topology/footprint-map";
 import { MobileHome } from "@/components/mobile/pages/home/mobile-home";
-import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { SyncStatusBadge } from "@/components/shared/badges";
 import { SyncNowButton } from "@/components/dashboard/sync-now-button";
@@ -133,11 +132,6 @@ export default async function DashboardHomePage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Dashboard"
-        description="Your lab's footprint — every machine, every path in, at a glance."
-      />
-
       {/* Stat tiles */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         {tiles.map((tile) => (

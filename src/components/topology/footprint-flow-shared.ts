@@ -1,7 +1,54 @@
 import { formatCount } from "@/lib/format";
 import type { EdgeDetailRow, EdgeDetailStatus } from "@/components/topology/edge-details";
-import type { DnsClassification, FpHostnameResolution } from "@/lib/topology/footprint";
+import type { DnsClassification, FootprintTunnel, FpHostnameResolution } from "@/lib/topology/footprint";
 export interface TrafficState { window: string; mode: "hostname" | "tunnel" | "unavailable"; byTunnel: Map<string, number>; byHostname: Map<string, number>; }
+export interface TunnelTrafficPayload {
+  window: string;
+  mode: TrafficState["mode"];
+  tunnels: {
+    tunnelId: string;
+    total: number;
+    byHostname?: { hostname: string; count: number }[];
+  }[];
+}
+
+/** Restrict the lab-wide traffic response to the routes present in this graph. */
+export function scopeTunnelTraffic(
+  data: TunnelTrafficPayload,
+  tunnels: Pick<FootprintTunnel, "id" | "hostnames">[],
+): TrafficState {
+  const rowsByTunnel = new Map(data.tunnels.map((row) => [row.tunnelId, row]));
+  const byTunnel = new Map<string, number>();
+  const byHostname = new Map<string, number>();
+
+  for (const tunnel of tunnels) {
+    const row = rowsByTunnel.get(tunnel.id);
+    if (!row) continue;
+
+    if (data.mode !== "hostname") {
+      byTunnel.set(tunnel.id, row.total);
+      continue;
+    }
+
+    const counts = new Map(
+      (row.byHostname ?? []).map((hostname) => [
+        hostname.hostname.toLowerCase(),
+        hostname.count,
+      ]),
+    );
+    let total = 0;
+    for (const hostname of tunnel.hostnames) {
+      const key = hostname.hostname.toLowerCase();
+      const count = counts.get(key);
+      if (count === undefined) continue;
+      byHostname.set(key, count);
+      total += count;
+    }
+    byTunnel.set(tunnel.id, total);
+  }
+
+  return { window: data.window, mode: data.mode, byTunnel, byHostname };
+}
 export const DNS_STATUS: Record<DnsClassification, EdgeDetailStatus> = { proxied: "ok", "unproxied-wan-exposed": "danger", "unproxied-other": "warn", unresolved: "muted" };
 export function hostnameRow(h: FpHostnameResolution, tunnelName: string, count: number | undefined): EdgeDetailRow {
   const edge = h.resolvedIps.length > 0 ? `${h.resolvedIps.slice(0, 2).join(", ")}${h.resolvedIps.length > 2 ? ` +${h.resolvedIps.length - 2}` : ""}` : "unresolved";

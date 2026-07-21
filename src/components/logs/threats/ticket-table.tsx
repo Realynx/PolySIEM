@@ -1,10 +1,11 @@
 "use client";
 
-import { Sparkles, UserRound } from "lucide-react";
+import { ChevronRight, Clock3, Sparkles, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatRelative } from "@/lib/format";
 import type { SecurityTicketDto } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import { InvestigationBadge } from "./investigation-badge";
 import { SeverityBadge, TicketStatusBadge } from "./severity-badge";
 
@@ -19,20 +20,20 @@ export function TicketTable({
   onSelect: (ticket: SecurityTicketDto) => void;
 }) {
   return (
-    <div className="overflow-x-auto rounded-lg border">
+    <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-foreground/10">
       <Table>
-        <TableHeader>
+        <TableHeader className="bg-muted/35">
           <TableRow className="hover:bg-transparent">
-            <TableHead className="w-24">Severity</TableHead>
-            <TableHead>Ticket</TableHead>
-            <TableHead className="w-28">Category</TableHead>
-            <TableHead className="w-20">Source</TableHead>
-            <TableHead className="w-28">Last seen</TableHead>
-            <TableHead className="w-20">Status</TableHead>
+            <TableHead className="w-24 text-[0.68rem] font-semibold tracking-wider uppercase">Severity</TableHead>
+            <TableHead className="text-[0.68rem] font-semibold tracking-wider uppercase">Finding</TableHead>
+            <TableHead className="w-28 text-[0.68rem] font-semibold tracking-wider uppercase">Category</TableHead>
+            <TableHead className="w-20 text-[0.68rem] font-semibold tracking-wider uppercase">Source</TableHead>
+            <TableHead className="w-32 text-[0.68rem] font-semibold tracking-wider uppercase">Last seen</TableHead>
+            <TableHead className="w-28 text-[0.68rem] font-semibold tracking-wider uppercase">Status</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {tickets.map((ticket, i) => (
+          {tickets.map((ticket) => (
             <TableRow
               key={ticket.id}
               role="button"
@@ -44,30 +45,39 @@ export function TicketTable({
                   onSelect(ticket);
                 }
               }}
-              className={`cursor-pointer ${i % 2 === 1 ? "bg-muted/30" : ""} ${
-                selectedId === ticket.id ? "bg-muted/50" : ""
-              }`}
+              aria-label={`Open ${ticket.severity.toLowerCase()} severity ticket: ${ticket.title}`}
+              className={cn(
+                "group cursor-pointer border-l-2 border-l-transparent transition-colors hover:bg-primary/[0.035] focus-visible:bg-primary/[0.05] focus-visible:outline-none",
+                ticket.status === "OPEN" &&
+                  (ticket.severity === "CRITICAL" || ticket.severity === "HIGH") &&
+                  "border-l-destructive/50 bg-destructive/[0.025]",
+                selectedId === ticket.id &&
+                  "border-l-primary bg-primary/[0.06] hover:bg-primary/[0.07]",
+              )}
             >
-              <TableCell>
+              <TableCell className="py-3">
                 <SeverityBadge severity={ticket.severity} />
               </TableCell>
-              <TableCell className="max-w-0 min-w-64">
+              <TableCell className="max-w-0 min-w-72 py-3 whitespace-normal">
                 <div className="flex items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{ticket.title}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">{ticket.title}</span>
                   <InvestigationBadge ticket={ticket} className="shrink-0 text-[0.65rem]" />
                 </div>
-                {ticket.timesSeen > 1 && (
-                  <span className="text-xs text-muted-foreground">
-                    seen {ticket.timesSeen}× — last {formatRelative(ticket.lastSeenAt)}
-                  </span>
-                )}
+                <p className="mt-0.5 line-clamp-1 text-xs leading-5 text-muted-foreground">
+                  {ticket.summary}
+                </p>
+                <p className="mt-0.5 text-[0.68rem] text-muted-foreground/80">
+                  {ticket.timesSeen > 1
+                    ? `Observed ${ticket.timesSeen} times`
+                    : `Opened ${formatRelative(ticket.createdAt)}`}
+                </p>
               </TableCell>
-              <TableCell>
-                <Badge variant="secondary" className="font-mono text-xs">
+              <TableCell className="py-3">
+                <Badge variant="secondary" className="font-mono text-[0.68rem]">
                   {ticket.category}
                 </Badge>
               </TableCell>
-              <TableCell>
+              <TableCell className="py-3">
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                   {ticket.createdBy === "ai" ? (
                     <>
@@ -82,11 +92,17 @@ export function TicketTable({
                   )}
                 </span>
               </TableCell>
-              <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
-                {formatRelative(ticket.lastSeenAt)}
+              <TableCell className="py-3 text-xs whitespace-nowrap text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <Clock3 className="size-3.5 opacity-70" aria-hidden />
+                  {formatRelative(ticket.lastSeenAt)}
+                </span>
               </TableCell>
-              <TableCell>
-                <TicketStatusBadge status={ticket.status} />
+              <TableCell className="py-3">
+                <div className="flex items-center justify-between gap-2">
+                  <TicketStatusBadge status={ticket.status} />
+                  <ChevronRight className="size-4 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" aria-hidden />
+                </div>
               </TableCell>
             </TableRow>
           ))}

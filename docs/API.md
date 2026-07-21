@@ -19,6 +19,7 @@ One rule worth repeating: all mutations go through the `src/lib/services/*` func
 | GET/PATCH/DELETE | /api/inventory/{entity}/[id] | session | A |
 | PATCH | /api/firewall/rules/[id] (annotation only) | session | B |
 | GET/POST | /api/docs; GET/PATCH/DELETE /api/docs/[id] | session | A |
+| GET | /api/docs/linked?kind=&id= | session | Documentation backlinks for an inventory item |
 | GET/POST/DELETE | /api/tags; POST/DELETE /api/tags/assign | session | A |
 | GET | /api/audit?entityType=&entityId= | session | C |
 | GET/POST | /api/admin/users; PATCH/DELETE /api/admin/users/[id] | admin | C |

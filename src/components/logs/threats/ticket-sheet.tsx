@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { FileSearch, Lightbulb, Pencil, RotateCcw, ShieldCheck, Sparkles, UserRound } from "lucide-react";
+import { FileSearch, FileText, Lightbulb, Pencil, RotateCcw, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/components/shared/api-client";
 import { Badge } from "@/components/ui/badge";
@@ -17,7 +17,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import {
   Sheet,
   SheetContent,
@@ -107,8 +106,8 @@ export function TicketSheet({
 
   return (
     <Sheet open={ticket !== null} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="data-[side=right]:sm:max-w-2xl">
-        <SheetHeader className="pr-10">
+      <SheetContent side="right" className="overflow-hidden data-[side=right]:sm:max-w-2xl">
+        <SheetHeader className="border-b bg-gradient-to-br from-primary/[0.09] via-background to-background pr-12 pb-5">
           <div className="mb-1 flex flex-wrap items-center gap-1.5">
             <SeverityBadge severity={ticket.severity} />
             <TicketStatusBadge status={ticket.status} />
@@ -128,18 +127,18 @@ export function TicketSheet({
             </span>
             <InvestigationBadge ticket={ticket} className="text-xs" />
           </div>
-          <SheetTitle>{ticket.title}</SheetTitle>
+          <SheetTitle className="text-xl leading-snug">{ticket.title}</SheetTitle>
           <SheetDescription>
             Opened {formatRelative(ticket.createdAt)}
             {ticket.timesSeen > 1 && <> · seen {ticket.timesSeen}× · last {formatRelative(ticket.lastSeenAt)}</>}
           </SheetDescription>
         </SheetHeader>
 
-        <div className="flex-1 space-y-5 overflow-y-auto px-4 pb-4">
+        <div className="flex-1 space-y-5 overflow-y-auto px-5 pb-5">
           {ticket.createdBy === "user" && !isClosed && (
             <div>
               {editing ? (
-                <div className="space-y-3 rounded-md border p-3">
+                <div className="space-y-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10">
                   <div className="grid gap-2">
                     <Label htmlFor="ticket-edit-title">Title</Label>
                     <Input
@@ -191,8 +190,11 @@ export function TicketSheet({
             </div>
           )}
 
-          <section className="space-y-1.5">
-            <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">What happened</h3>
+          <section className="space-y-2 rounded-xl bg-muted/25 p-4 ring-1 ring-foreground/10">
+            <h3 className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              <FileText className="size-3.5" aria-hidden />
+              What happened
+            </h3>
             <p className="text-sm leading-relaxed whitespace-pre-wrap">{ticket.summary}</p>
           </section>
 
@@ -202,7 +204,7 @@ export function TicketSheet({
                 <Lightbulb className="size-3.5" aria-hidden />
                 Suggested response
               </h3>
-              <div className="rounded-md border border-info/30 bg-info/5 p-3">
+              <div className="rounded-xl bg-info/5 p-4 ring-1 ring-info/25">
                 <p className="text-sm leading-relaxed whitespace-pre-wrap">{ticket.suggestions}</p>
               </div>
             </section>
@@ -226,9 +228,9 @@ export function TicketSheet({
           />
 
           {refGroups.length > 0 && (
-            <section className="space-y-2">
+            <section className="space-y-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10">
               <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Indicators</h3>
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 {refGroups.map((group) => (
                   <div key={group.label} className="flex flex-wrap items-baseline gap-1.5">
                     <span className="w-28 shrink-0 text-xs text-muted-foreground">{group.label}</span>
@@ -260,7 +262,7 @@ export function TicketSheet({
                   </span>
                 )}
               </h3>
-              <div className="divide-y rounded-md border">
+              <div className="divide-y overflow-hidden rounded-xl ring-1 ring-foreground/10">
                 {ticket.evidence.samples.map((sample, i) => (
                   <EvidenceRow key={i} sample={sample} scope={ticket.evidence?.scope} />
                 ))}
@@ -269,9 +271,8 @@ export function TicketSheet({
           )}
 
           {isClosed && (
-            <section className="space-y-1.5">
-              <Separator />
-              <h3 className="flex items-center gap-1.5 pt-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            <section className="space-y-2 rounded-xl bg-success/5 p-4 ring-1 ring-success/20">
+              <h3 className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-success uppercase">
                 <ShieldCheck className="size-3.5" aria-hidden />
                 Resolution
               </h3>
@@ -286,7 +287,7 @@ export function TicketSheet({
           )}
         </div>
 
-        <SheetFooter className="border-t">
+        <SheetFooter className="border-t bg-muted/20">
           {isClosed ? (
             <Button variant="outline" onClick={reopen} disabled={patch.isPending}>
               <RotateCcw data-icon="inline-start" />

@@ -83,8 +83,10 @@ export interface AssociatedLogRow {
   message: string | null;
   error: string | null;
   url: string | null;
+  scheme: string | null;
   domain: string | null;
   path: string | null;
+  originService: string | null;
   sourceIp: string | null;
   destinationIp: string | null;
   method: string | null;
@@ -93,6 +95,13 @@ export interface AssociatedLogRow {
   city: string | null;
   region: string | null;
   country: string | null;
+  level: string | null;
+  application: string | null;
+  user: string | null;
+  requestId: string | null;
+  details: { label: string; value: string }[];
+  /** Original embedded structured event, formatted for inspection/copying. */
+  eventJson: string | null;
 }
 
 export interface AssociatedLogsResponse {
@@ -264,8 +273,15 @@ export interface PulseView {
   url: string;
 }
 
+/** A pulse in a signed-in user's feed, annotated with their reading state. */
+export interface ThreatIntelPulseView extends PulseView {
+  readAt: string | null;
+}
+
 export interface ThreatIntelFeedResponse {
-  pulses: PulseView[];
+  pulses: ThreatIntelPulseView[];
+  /** Reports on this page that the current user has not opened. */
+  unreadCount: number;
   /** Total pulses on the remote feed (falls back to cachedCount when unknown). */
   totalCount: number;
   /** Pulses held in the local incremental cache — the navigable set. */
