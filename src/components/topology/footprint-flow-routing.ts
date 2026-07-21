@@ -337,6 +337,7 @@ export function routeFootprintFlow({
         mode: FamilyMode;
         trackX: number;
         junctionY?: number;
+        followsTargetGroup: boolean;
       }
     >();
     for (const family of [...families.values()].sort(
@@ -398,29 +399,68 @@ export function routeFootprintFlow({
       const familyBottom = Math.max(...familyYs);
       const laneSpacing = RIBBON_PITCH;
       const bundleHalfWidth = ((family.edges.length - 1) * laneSpacing) / 2;
+      const familyMembers = family.edges.map((edge) => ({
+        id: edge.id,
+        sourceX: nodeCenter(edge.source)!.x,
+        targetX: nodeCenter(edge.target)!.x,
+      }));
       const gutterCandidates = familyObstacles.flatMap((obstacle) => [
         obstacle.x - 8 - bundleHalfWidth,
         obstacle.x + obstacle.width + 8 + bundleHalfWidth,
       ]);
-      const highwayX = footprintTraceHighwayX(
-        family.edges.map((edge) => ({
-          id: edge.id,
-          sourceX: nodeCenter(edge.source)!.x,
-          targetX: nodeCenter(edge.target)!.x,
-        })),
-        gutterCandidates,
-        (x) =>
-          familyObstacles.every((obstacle) => {
-            const overlapsY =
-              obstacle.y < familyBottom &&
-              obstacle.y + obstacle.height > familyTop;
-            if (!overlapsY) return true;
-            return (
-              x + bundleHalfWidth <= obstacle.x - 8 ||
-              x - bundleHalfWidth >= obstacle.x + obstacle.width + 8
-            );
-          }),
+      const highwayIsClear = (x: number) =>
+        familyObstacles.every((obstacle) => {
+          const overlapsY =
+            obstacle.y < familyBottom &&
+            obstacle.y + obstacle.height > familyTop;
+          if (!overlapsY) return true;
+          return (
+            x + bundleHalfWidth <= obstacle.x - 8 ||
+            x - bundleHalfWidth >= obstacle.x + obstacle.width + 8
+          );
+        });
+      const targetLaneIds = new Set(
+        family.edges.map((edge) => laneOfMachine.get(edge.target)),
       );
+      const sharedTargetLane =
+        targetLaneIds.size === 1 ? [...targetLaneIds][0] : undefined;
+      const targetLaneNode = sharedTargetLane
+        ? nodeById.get(sharedTargetLane)
+        : undefined;
+      const targetLanePosition = sharedTargetLane
+        ? absolutePosition(sharedTargetLane)
+        : null;
+      // When every destination is a child of the same VLAN card, put the bus
+      // just outside its corridor-facing edge. The full bundle then stays
+      // together until it reaches the group, and only the short final leads
+      // fan inward to individual machines.
+      const targetGroupTrackX =
+        targetLaneNode && targetLanePosition
+          ? bank === "left"
+            ? targetLanePosition.x +
+              (targetLaneNode.width ?? 0) +
+              8 +
+              bundleHalfWidth
+            : targetLanePosition.x - 8 - bundleHalfWidth
+          : undefined;
+      const targetGroupTrackIsNatural =
+        targetGroupTrackX !== undefined &&
+        highwayIsClear(targetGroupTrackX) &&
+        familyMembers.every((member) => {
+          const direct = Math.abs(member.sourceX - member.targetX);
+          const via =
+            Math.abs(member.sourceX - targetGroupTrackX) +
+            Math.abs(member.targetX - targetGroupTrackX);
+          const extra = Math.max(0, via - direct);
+          return extra <= Math.max(24, Math.min(64, direct * 0.2));
+        });
+      const highwayX = targetGroupTrackIsNatural
+        ? targetGroupTrackX
+        : footprintTraceHighwayX(
+            familyMembers,
+            gutterCandidates,
+            highwayIsClear,
+          );
       if (highwayX === null) continue;
       const ordered = [...family.edges].sort((a, b) => {
         if (family.mode === "target" || family.mode === "region") {
@@ -453,6 +493,7 @@ export function routeFootprintFlow({
           trackX:
             highwayX +
             (index - (ordered.length - 1) / 2) * laneSpacing,
+          followsTargetGroup: targetGroupTrackIsNatural,
           junctionY:
             junctionY === undefined
               ? undefined
@@ -516,7 +557,11 @@ export function routeFootprintFlow({
         continue;
       const serviceTrack = familyTrack.get(edge.id);
       const approachTrackX = approachTrackByTraceKey.get(data.traceKey);
-      if (serviceTrack && approachTrackX !== undefined) {
+      if (
+        serviceTrack &&
+        !serviceTrack.followsTargetGroup &&
+        approachTrackX !== undefined
+      ) {
         const sourceX = nodeCenter(edge.source)!.x;
         const targetX = nodeCenter(edge.target)!.x;
         const extra =

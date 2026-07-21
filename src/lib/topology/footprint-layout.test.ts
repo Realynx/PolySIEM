@@ -222,6 +222,35 @@ describe("cost-based PCB routing", () => {
     expect(overlapsUsedRun).toBe(false);
   });
 
+  it("keeps overlapping vertical runs at least one casing-width apart", () => {
+    const occupied = [{
+      owner: "existing",
+      a: { x: 140, y: 100 },
+      b: { x: 140, y: 320 },
+    }];
+    const route = routeFootprintTrace(
+      { x: 143, y: 80, width: 0, height: 0 },
+      { x: 143, y: 340, width: 0, height: 0 },
+      { occupied, sourceLead: 0, targetLead: 0 },
+    )!;
+
+    const overlappingVerticalRuns = route
+      .slice(1)
+      .map((point, index) => ({ a: route[index], b: point }))
+      .filter(({ a, b }) => {
+        if (a.x !== b.x) return false;
+        return (
+          Math.min(Math.max(a.y, b.y), 320) -
+            Math.max(Math.min(a.y, b.y), 100) >
+          0.01
+        );
+      });
+    expect(overlappingVerticalRuns.length).toBeGreaterThan(0);
+    expect(
+      overlappingVerticalRuns.every(({ a }) => Math.abs(a.x - 140) >= 5),
+    ).toBe(true);
+  });
+
   it("lets the local majority choose a highway without following an outlier", () => {
     const highway = footprintTraceHighwayX([
       { id: "a", sourceX: 100, targetX: 120 },

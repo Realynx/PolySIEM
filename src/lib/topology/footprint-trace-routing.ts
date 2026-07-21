@@ -103,6 +103,8 @@ export interface FootprintRouteOptions extends FootprintTraceRails {
   owner?: string;
   group?: string;
   clearance?: number;
+  /** Minimum centerline spacing for overlapping vertical trace runs. */
+  minimumTraceSpacing?: number;
   bendPenalty?: number;
   /** Extra score a route may spend to join its family's PCB highway. */
   preferredTrackTolerance?: number;
@@ -295,6 +297,22 @@ function overlapLength(
   );
 }
 
+function verticalRunIsTooClose(
+  a: TracePoint,
+  b: TracePoint,
+  c: TracePoint,
+  d: TracePoint,
+  minimumSpacing: number,
+): boolean {
+  const firstVertical = Math.abs(a.x - b.x) < 0.01;
+  const secondVertical = Math.abs(c.x - d.x) < 0.01;
+  if (!firstVertical || !secondVertical) return false;
+  const overlap =
+    Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y)) -
+    Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y));
+  return overlap > 0.01 && Math.abs(a.x - c.x) < minimumSpacing;
+}
+
 function segmentsCross(
   a: TracePoint,
   b: TracePoint,
@@ -335,6 +353,7 @@ export function routeFootprintTrace(
   const sourceLead = options.sourceLead ?? 12;
   const targetLead = options.targetLead ?? 12;
   const clearance = options.clearance ?? 8;
+  const minimumTraceSpacing = options.minimumTraceSpacing ?? 5;
   const rawObstacles = options.obstacles ?? [];
   const occupied = options.occupied ?? [];
   const owner = options.owner ?? "";
@@ -485,17 +504,27 @@ export function routeFootprintTrace(
     ) continue;
     let overlap = 0;
     let crossings = 0;
+    let verticalCrowding = false;
     for (const segment of segments) {
       for (const used of occupied) {
         if (used.owner === owner) continue;
         overlap += overlapLength(segment.a, segment.b, used.a, used.b);
+        if (
+          verticalRunIsTooClose(
+            segment.a,
+            segment.b,
+            used.a,
+            used.b,
+            minimumTraceSpacing,
+          )
+        ) verticalCrowding = true;
         if (
           (group === undefined || used.group !== group) &&
           segmentsCross(segment.a, segment.b, used.a, used.b)
         ) crossings += 1;
       }
     }
-    if (overlap > 0) continue;
+    if (overlap > 0 || verticalCrowding) continue;
     const length = segments.reduce(
       (sum, segment) => sum + segmentLength(segment.a, segment.b),
       0,
@@ -630,16 +659,26 @@ export function routeFootprintTrace(
       if (!segmentIsClear(a, b, obstacles, clearance)) continue;
       let overlap = 0;
       let crossings = 0;
+      let verticalCrowding = false;
       for (const used of occupied) {
         if (used.owner === owner) continue;
         overlap += overlapLength(a, b, used.a, used.b);
+        if (
+          verticalRunIsTooClose(
+            a,
+            b,
+            used.a,
+            used.b,
+            minimumTraceSpacing,
+          )
+        ) verticalCrowding = true;
         if (
           (group === undefined || used.group !== group) &&
           segmentsCross(a, b, used.a, used.b)
         )
           crossings += 1;
       }
-      if (overlap > 0) continue;
+      if (overlap > 0 || verticalCrowding) continue;
       const nextCost =
         current.cost +
         segmentLength(a, b) +

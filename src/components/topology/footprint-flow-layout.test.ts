@@ -410,6 +410,7 @@ describe("footprint switch layout", () => {
       edge.data as {
         traceFamily?: string;
         traceHighway?: string;
+        tracePlannedTrackX?: number;
         traceTrackX?: number;
         waypoints?: { x: number; y: number }[];
       },
@@ -440,6 +441,28 @@ describe("footprint switch layout", () => {
       expect(laneGap).toBeGreaterThanOrEqual(6);
       expect(laneGap % 6).toBe(0);
     }
+
+    const destination = built.nodes.find(
+      (node) => node.id === services[0].target,
+    )!;
+    const destinationLane = built.nodes.find(
+      (node) => node.id === destination.parentId,
+    )!;
+    const laneLeft = destinationLane.position.x;
+    const laneRight = laneLeft + (destinationLane.width ?? 0);
+    const plannedTracks = data
+      .map((route) => route.tracePlannedTrackX!)
+      .sort((a, b) => a - b);
+    const tracksLeftOfLane = plannedTracks.every((x) => x < laneLeft);
+    const tracksRightOfLane = plannedTracks.every((x) => x > laneRight);
+    expect(tracksLeftOfLane || tracksRightOfLane).toBe(true);
+    const nearestGroupClearance = tracksLeftOfLane
+      ? laneLeft - Math.max(...plannedTracks)
+      : Math.min(...plannedTracks) - laneRight;
+    // Prefer the 8px edge gutter; a neighboring card may push the whole
+    // ribbon outward by a few pitches, but it should remain local to the VLAN.
+    expect(nearestGroupClearance).toBeGreaterThanOrEqual(8);
+    expect(nearestGroupClearance).toBeLessThanOrEqual(32);
 
     const segments = ribbonMembers.flatMap((route, routeIndex) =>
       route.waypoints!.slice(1).map((point, pointIndex) => ({
