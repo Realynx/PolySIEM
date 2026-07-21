@@ -11,6 +11,9 @@ import {
 import type { FootprintGraph } from "@/lib/topology/footprint";
 import type { FootprintFlowNode } from "@/components/topology/footprint-node-model";
 
+/** Conductor spacing and corner-step pitch for PCB-style ribbon traces. */
+const RIBBON_PITCH = 6;
+
 interface RouteFootprintFlowInput {
   graph: FootprintGraph;
   nodes: FootprintFlowNode[];
@@ -128,7 +131,7 @@ export function routeFootprintFlow({
       source: `${edge.source}:${endpointAxis(handleSide(edge.sourceHandle, "bottom"))}`,
       target: `${edge.target}:${endpointAxis(handleSide(edge.targetHandle, "top"))}`,
     })),
-    6,
+    RIBBON_PITCH,
     Math.max(36, traceCorridorWidth / 2 - 24),
   );
   const circuitEdges: Record<FootprintCircuitBank, Edge[]> = {
@@ -184,7 +187,21 @@ export function routeFootprintFlow({
     const ranks = new Map<string, number>();
     for (const group of groups.values()) {
       group
-        .sort((a, b) => a.id.localeCompare(b.id))
+        // A folded ribbon must turn in the same order as its conductors.
+        // Sorting these escape distances by edge id made the bend staircase
+        // shuffle whenever semantic ids did not match the visible lane order.
+        .sort((a, b) => {
+          const aOffset = traceOffsets.get(a.id);
+          const bOffset = traceOffsets.get(b.id);
+          return (
+            (endpoint === "source"
+              ? (aOffset?.sourceOffset ?? 0) -
+                (bOffset?.sourceOffset ?? 0)
+              : (aOffset?.targetOffset ?? 0) -
+                (bOffset?.targetOffset ?? 0)) ||
+            a.id.localeCompare(b.id)
+          );
+        })
         .forEach((edge, index) => ranks.set(edge.id, index));
     }
     return ranks;
@@ -379,7 +396,7 @@ export function routeFootprintFlow({
               ]);
       const familyTop = Math.min(...familyYs);
       const familyBottom = Math.max(...familyYs);
-      const laneSpacing = 6;
+      const laneSpacing = RIBBON_PITCH;
       const bundleHalfWidth = ((family.edges.length - 1) * laneSpacing) / 2;
       const gutterCandidates = familyObstacles.flatMap((obstacle) => [
         obstacle.x - 8 - bundleHalfWidth,
@@ -437,10 +454,13 @@ export function routeFootprintFlow({
             highwayX +
             (index - (ordered.length - 1) / 2) * laneSpacing,
           junctionY:
-            (family.mode === "target" || family.mode === "region") &&
-              junctionY !== undefined
-              ? junctionY + index * 5
-              : junctionY,
+            junctionY === undefined
+              ? undefined
+              : family.mode === "source"
+                // Stay above the closest destination row while the fan-out
+                // folds; target/region fans mirror this below their sources.
+                ? junctionY - index * RIBBON_PITCH
+                : junctionY + index * RIBBON_PITCH,
         });
       });
     }
@@ -544,10 +564,10 @@ export function routeFootprintFlow({
       const baseLead = isPublishedTrace ? 8 : 12;
       const baseSourceLead =
         baseLead +
-        (sourceLeadRanks.get(edge.id) ?? 0) * 5 +
-        (familySourceRailRank.get(edge.id) ?? 0) * 6;
+        (sourceLeadRanks.get(edge.id) ?? 0) * RIBBON_PITCH +
+        (familySourceRailRank.get(edge.id) ?? 0) * RIBBON_PITCH;
       const baseTargetLead =
-        baseLead + (targetLeadRanks.get(edge.id) ?? 0) * 5;
+        baseLead + (targetLeadRanks.get(edge.id) ?? 0) * RIBBON_PITCH;
       const sourceSide = handleSide(edge.sourceHandle, "bottom");
       const targetSide = handleSide(edge.targetHandle, "top");
       const exactPairLateral = exactPairLateralByEdge.get(edge.id);
@@ -752,7 +772,7 @@ export function routeFootprintFlow({
       ].join("→"),
       target: edge.id,
     })),
-    6,
+    RIBBON_PITCH,
     30,
   );
   for (const edge of edges) {

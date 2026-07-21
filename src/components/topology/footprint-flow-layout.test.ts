@@ -237,6 +237,27 @@ describe("footprint switch layout", () => {
       ...highwayIntervals.map(({ bottom }) => bottom),
     );
     expect(sharedBottom - sharedTop).toBeGreaterThanOrEqual(100);
+
+    // The two corners of a dense ribbon should fold in conductor order. Each
+    // neighboring track turns one pitch farther from the card, forming a clean
+    // 45-degree staircase instead of an id-ordered scatter of elbows.
+    const foldedLanes = traceData
+      .map((data) => ({
+        trackX: data.traceTrackX!,
+        sourceTurnY: data.waypoints!.at(0)!.y,
+        targetTurnY: data.waypoints!.at(-1)!.y,
+      }))
+      .sort((a, b) => a.trackX - b.trackX);
+    for (let index = 1; index < foldedLanes.length; index += 1) {
+      expect(
+        foldedLanes[index].sourceTurnY -
+          foldedLanes[index - 1].sourceTurnY,
+      ).toBe(6);
+      expect(
+        foldedLanes[index].targetTurnY -
+          foldedLanes[index - 1].targetTurnY,
+      ).toBe(-6);
+    }
   });
 
   it("keeps compact WAN and tunnel nodes bottom-out/top-in at saved positions", () => {
