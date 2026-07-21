@@ -57,6 +57,30 @@ describe("AI assistant tool registry", () => {
     expect(toolNames(context("ADMIN", "chat"))).not.toContain("ask_question");
   });
 
+  it("accepts batches of one to five structured interview questions", () => {
+    const askQuestion = buildToolSet(context("USER", "doc-interview")).find(
+      (tool) => tool.name === "ask_question",
+    );
+    const question = {
+      question: "How is this service backed up?",
+      options: [
+        { label: "Snapshots", answer: "It uses nightly snapshots." },
+        { label: "Application backup", answer: "It uses app-level backups." },
+      ],
+    };
+
+    expect(askQuestion?.schema.safeParse({ questions: [question] }).success).toBe(
+      true,
+    );
+    expect(
+      askQuestion?.schema.safeParse({ questions: Array(5).fill(question) }).success,
+    ).toBe(true);
+    expect(askQuestion?.schema.safeParse({ questions: [] }).success).toBe(false);
+    expect(
+      askQuestion?.schema.safeParse({ questions: Array(6).fill(question) }).success,
+    ).toBe(false);
+  });
+
   it("keeps documentation writes disabled in a locked public demo", () => {
     const previousMode = process.env.POLYSIEM_DEMO_MODE;
     const previousLock = process.env.POLYSIEM_DEMO_LOCKED;

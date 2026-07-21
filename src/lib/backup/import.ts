@@ -11,6 +11,8 @@ import {
   type RestoreSummary,
 } from "./types";
 import { DEFERRED_FK_COLUMNS, FIELD_TYPES, currentSecretFingerprint, revive, tableName } from "./revive";
+import { decodeEncryptedBackup, isEncryptedBackup, type DecodedBackupFile } from "./archive-crypto";
+import { rewrapArchiveSecrets } from "./portable-secrets";
 
 /**
  * Backup restore engine. Restore is a DESTRUCTIVE wipe-and-replace: every backup
@@ -32,14 +34,7 @@ const RESTORE_TX_TIMEOUT_MS = 120_000;
  * `formatVersion`, and only reference known models. Throws actionable errors so
  * the UI can tell the operator exactly what is wrong.
  */
-export function decodeArchive(buffer: Buffer): BackupArchive {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(gunzipSync(buffer).toString("utf8"));
-  } catch {
-    throw new Error("This file is not a valid PolySIEM backup (expected gzipped JSON — it may be corrupt or the wrong file).");
-  }
-
+function validateArchive(parsed: unknown): BackupArchive {
   if (!parsed || typeof parsed !== "object") {
     throw new Error("Backup archive is malformed: top-level value is not an object.");
   }
@@ -69,6 +64,36 @@ export function decodeArchive(buffer: Buffer): BackupArchive {
   return archive as BackupArchive;
 }
 
+export function decodeArchive(buffer: Buffer): BackupArchive {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(gunzipSync(buffer).toString("utf8"));
+  } catch {
+    throw new Error("This file is not a valid PolySIEM backup (expected gzipped JSON — it may be corrupt or the wrong file).");
+  }
+
+  return validateArchive(parsed);
+}
+
+/** Decode either the legacy gzip archive or a password-protected portable file. */
+export function decodeBackupFile(buffer: Buffer, password?: string): DecodedBackupFile {
+  if (!isEncryptedBackup(buffer)) {
+    return { archive: decodeArchive(buffer), passwordProtected: false, sourceAppSecret: null };
+  }
+  const decoded = decodeEncryptedBackup(buffer, password);
+  return { ...decoded, archive: validateArchive(decoded.archive) };
+}
+
+/** Re-key protected credentials for this instance without changing process.env. */
+export function prepareBackupForRestore(decoded: DecodedBackupFile): BackupArchive {
+  if (!decoded.sourceAppSecret) return decoded.archive;
+  const destinationAppSecret = process.env.APP_SECRET ?? "";
+  if (destinationAppSecret.length < 32) {
+    throw new Error("This instance does not have a valid APP_SECRET and cannot restore credentials.");
+  }
+  return rewrapArchiveSecrets(decoded.archive, decoded.sourceAppSecret, destinationAppSecret);
+}
+
 /* ------------------------------- preview ------------------------------ */
 
 /** Per-model row counts and total, taken from what the archive would actually restore. */
@@ -91,13 +116,16 @@ function summarize(archive: BackupArchive): { counts: Partial<Record<BackupModel
  * fingerprint against this instance's; when false, the encrypted secret columns
  * in the archive will not decrypt here.
  */
-export function previewRestore(archive: BackupArchive): RestoreSummary {
+export function previewRestore(archive: BackupArchive, passwordProtected = false): RestoreSummary {
   const { counts, totalRows } = summarize(archive);
+  const secretMatches = archive.manifest.appSecretFingerprint === currentSecretFingerprint();
   return {
     formatVersion: archive.manifest.formatVersion,
     createdAt: archive.manifest.createdAt,
     instanceName: archive.manifest.instanceName,
-    secretMatches: archive.manifest.appSecretFingerprint === currentSecretFingerprint(),
+    secretMatches,
+    passwordProtected,
+    secretsRestorable: secretMatches,
     counts,
     totalRows,
   };
@@ -154,7 +182,11 @@ function nullifyColumns(row: Record<string, unknown>, cols: readonly string[]): 
  * SecurityTicket.scanRunId — and Prisma's `createMany` batching makes intra-batch
  * self-references unreliable regardless.
  */
-export async function restoreArchive(actor: AuditActor, archive: BackupArchive): Promise<RestoreSummary> {
+export async function restoreArchive(
+  actor: AuditActor,
+  archive: BackupArchive,
+  passwordProtected = false,
+): Promise<RestoreSummary> {
   const { counts, totalRows } = summarize(archive);
 
   const truncateSql = `TRUNCATE TABLE ${BACKUP_MODELS.map((m) => `"${tableName(m)}"`).join(", ")} RESTART IDENTITY CASCADE`;
@@ -213,6 +245,8 @@ export async function restoreArchive(actor: AuditActor, archive: BackupArchive):
     createdAt: archive.manifest.createdAt,
     instanceName: archive.manifest.instanceName,
     secretMatches: archive.manifest.appSecretFingerprint === currentSecretFingerprint(),
+    passwordProtected,
+    secretsRestorable: archive.manifest.appSecretFingerprint === currentSecretFingerprint(),
     counts,
     totalRows,
   };

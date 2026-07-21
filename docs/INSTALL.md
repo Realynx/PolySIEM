@@ -195,6 +195,10 @@ Prisma migrations are forward-only, but release migrations must remain operation
 
 ## Backup & restore
 
+The admin **Settings → Backup & restore** page can download and restore a full logical archive. Enter a backup password before downloading to create a portable `.psbackup` file. That file includes the key material needed for integration credentials, personal OTX keys, hosted-AI keys, backup-destination credentials, and stored TLS private keys; the entire file is protected with scrypt and AES-256-GCM. On another instance, enter the same password during restore and PolySIEM re-encrypts those values with the destination's `APP_SECRET`. The password is not stored and cannot be recovered.
+
+An unprotected `.json.gz` export keeps credential ciphertext as stored and is suitable only when the restoring instance uses the same `APP_SECRET`. Scheduled cloud backups currently use this same-instance form. For portable disaster recovery, keep a password-protected download off-box.
+
 There are **two** things to back up — the database and `.env`:
 
 ```bash

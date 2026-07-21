@@ -34,7 +34,11 @@ import { ChatMessageView } from "@/components/chat/chat-message";
 import { ToolCallList } from "@/components/chat/tool-call-chip";
 import type { DocInterviewGoal } from "@/lib/ai/agent/contract";
 import { AiInterviewComposer } from "./ai-interview-composer";
-import { interviewQuestionPrompt } from "./ai-interview-lib";
+import {
+  formatInterviewQuestionAnswers,
+  interviewQuestionPrompt,
+  type InterviewQuestionAnswer,
+} from "./ai-interview-lib";
 import { AiInterviewQuestion } from "./ai-interview-question";
 import { ServicesReview } from "./services-review";
 import { useDocInterview } from "./use-doc-interview";
@@ -142,7 +146,6 @@ export function AiInterviewLauncher() {
   const [open, setOpen] = useState(false);
   const interview = useDocInterview();
   const [input, setInput] = useState("");
-  const [focusRequest, setFocusRequest] = useState(0);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const nearBottomRef = useRef(true);
@@ -169,19 +172,15 @@ export function AiInterviewLauncher() {
     setInput("");
   }, [input, streaming, interview]);
 
-  const handleSuggestedAnswer = useCallback(
-    (answer: string) => {
+  const handleQuestionAnswers = useCallback(
+    (answers: InterviewQuestionAnswer[]) => {
       if (streaming) return;
       nearBottomRef.current = true;
-      interview.answer(answer);
+      interview.answer(formatInterviewQuestionAnswers(answers));
       setInput("");
     },
     [interview, streaming],
   );
-
-  const handleCustomAnswer = useCallback(() => {
-    setFocusRequest((value) => value + 1);
-  }, []);
 
   const handleFinish = useCallback(() => {
     if (streaming) return;
@@ -198,7 +197,6 @@ export function AiInterviewLauncher() {
   const handleEnd = useCallback(() => {
     interview.reset();
     setInput("");
-    setFocusRequest(0);
     setOpen(false);
     router.refresh();
     toast.success("Interview ended — completed documentation changes were kept");
@@ -307,7 +305,6 @@ export function AiInterviewLauncher() {
                     onClick={() => {
                       interview.reset();
                       setInput("");
-                      setFocusRequest(0);
                     }}
                     aria-label="Start over"
                   >
@@ -447,16 +444,6 @@ export function AiInterviewLauncher() {
 
           {messages.length > 0 && phase === "interview" && (
             <div className="shrink-0 border-t bg-popover shadow-[0_-12px_30px_-24px_hsl(var(--foreground))]">
-              {activeQuestion && (
-                <div className="max-h-[min(46svh,430px)] overflow-y-auto overscroll-contain p-3 pb-0">
-                  <AiInterviewQuestion
-                    prompt={activeQuestion}
-                    disabled={streaming}
-                    onSelect={handleSuggestedAnswer}
-                    onCustom={handleCustomAnswer}
-                  />
-                </div>
-              )}
               <AiInterviewComposer
                 value={input}
                 onValueChange={setInput}
@@ -467,12 +454,20 @@ export function AiInterviewLauncher() {
                 canGenerate={canGenerate}
                 generateLabel={generateLabel}
                 autoFocus={open}
-                focusRequest={focusRequest}
               />
             </div>
           )}
         </SheetContent>
       </Sheet>
+
+      {open && phase === "interview" && activeQuestion && (
+        <AiInterviewQuestion
+          key={activeQuestion.id}
+          prompt={activeQuestion}
+          disabled={streaming}
+          onSubmit={handleQuestionAnswers}
+        />
+      )}
     </>
   );
 }

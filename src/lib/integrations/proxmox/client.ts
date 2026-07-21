@@ -18,6 +18,29 @@ import {
   type PveNodeIface,
   type PveStorage,
 } from "./sync";
+import type {
+  RawAgentNetworkInterface,
+  PveContainerOptions,
+  RawAgentNetworkResult,
+  RawClusterResource,
+  RawFwAlias,
+  RawFwGroup,
+  RawFwIpset,
+  RawFwIpsetEntry,
+  RawFwRule,
+  RawGuestConfig,
+  RawGuestFwOptions,
+  RawGuestListItem,
+  RawNetIface,
+  RawNode,
+  RawNodeStatus,
+  RawStorage,
+  RawStorageContent,
+  RawStorageResource,
+  RawTaskStatus,
+} from "./client-types";
+
+export type { PveContainerOptions } from "./client-types";
 
 /**
  * Minimal Proxmox VE API client (token auth). Docs: https://pve.proxmox.com/pve-docs/api-viewer/
@@ -101,56 +124,6 @@ export async function testProxmoxConnection(cfg: DriverConfig): Promise<TestResu
   } catch (err) {
     return { ok: false, detail: err instanceof Error ? err.message : String(err) };
   }
-}
-
-// ---------- raw API shapes (subset) ----------
-
-interface RawNode {
-  node: string;
-  status?: string;
-  maxcpu?: number;
-  maxmem?: number;
-  uptime?: number;
-}
-
-interface RawNodeStatus {
-  pveversion?: string;
-  cpuinfo?: { model?: string; cores?: number; sockets?: number };
-  memory?: { total?: number };
-}
-
-interface RawClusterResource {
-  id?: string;
-  type?: "node" | "qemu" | "lxc" | string;
-  node?: string;
-  vmid?: number | string;
-  name?: string;
-  status?: string;
-  cpu?: number | string;
-  maxcpu?: number | string;
-  mem?: number | string;
-  maxmem?: number | string;
-  disk?: number | string;
-  maxdisk?: number | string;
-  uptime?: number | string;
-}
-
-interface RawStorageResource {
-  id?: string;
-  type?: string;
-  node?: string;
-  storage?: string;
-  status?: string;
-  shared?: number | boolean;
-  disk?: number | string;
-  maxdisk?: number | string;
-}
-
-interface RawGuestListItem {
-  vmid: number | string;
-  name?: string;
-  status?: string;
-  maxdisk?: number;
 }
 
 function liveNumber(value: number | string | undefined): number | null {
@@ -286,67 +259,6 @@ export async function fetchProxmoxStoragePools(cfg: DriverConfig): Promise<Compu
   });
 }
 
-interface RawGuestConfig {
-  cores?: number;
-  sockets?: number;
-  memory?: number | string; // MiB
-  ostype?: string;
-  description?: string;
-  [key: string]: unknown; // net0..netN and everything else
-}
-
-interface RawAgentNetworkInterface {
-  name?: string;
-  "hardware-address"?: string;
-  "ip-addresses"?: Array<{
-    "ip-address"?: string;
-    "ip-address-type"?: string;
-    prefix?: number;
-  }>;
-}
-
-interface RawAgentNetworkResult {
-  result?: RawAgentNetworkInterface[];
-}
-
-interface RawStorage {
-  storage: string;
-  type?: string;
-  total?: number;
-  used?: number;
-  content?: string;
-  shared?: number | boolean;
-  active?: number | boolean;
-  enabled?: number | boolean;
-  avail?: number;
-}
-
-interface RawNetIface {
-  iface: string;
-  type?: string;
-  address?: string;
-  cidr?: string;
-  gateway?: string;
-  active?: number | boolean;
-  // Proxmox does not expose the MAC here for most iface types
-}
-
-interface RawStorageContent {
-  volid?: string;
-}
-
-interface RawTaskStatus {
-  status?: string;
-  exitstatus?: string;
-}
-
-export interface PveContainerOptions {
-  nextVmid: number;
-  storages: { id: string; availableBytes: number | null }[];
-  templates: { id: string; label: string }[];
-  networks: { id: string }[];
-}
-
 export type PveCreateContainerInput = ContainerCreateRequest;
 
 export async function listPveProvisioningNodes(
@@ -444,53 +356,6 @@ export async function waitForPveTask(
     await new Promise((resolve) => setTimeout(resolve, 1_500));
   }
   throw new Error("Timed out waiting for Proxmox to create the container");
-}
-
-interface RawFwRule {
-  pos?: number;
-  /** "in" | "out" for plain rules; "group" for a security-group reference. */
-  type?: string;
-  /** ACCEPT | DROP | REJECT — or the group name when type is "group". */
-  action?: string;
-  source?: string;
-  dest?: string;
-  proto?: string;
-  dport?: number | string;
-  sport?: number | string;
-  comment?: string;
-  enable?: number;
-  macro?: string;
-  iface?: string;
-  log?: string;
-}
-
-interface RawFwGroup {
-  group: string;
-  comment?: string;
-}
-
-interface RawFwIpset {
-  name: string;
-  comment?: string;
-}
-
-interface RawFwIpsetEntry {
-  cidr: string;
-  comment?: string;
-  nomatch?: number | boolean;
-}
-
-interface RawFwAlias {
-  name: string;
-  cidr: string;
-  comment?: string;
-}
-
-interface RawGuestFwOptions {
-  enable?: number;
-  policy_in?: string;
-  policy_out?: string;
-  [key: string]: unknown;
 }
 
 // ---------- parsing helpers ----------

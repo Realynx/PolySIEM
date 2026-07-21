@@ -623,33 +623,48 @@ function assistantWriteTools(ctx: ToolContext): AnyTool[] {
 /* ------------------------ interview interaction -------------------------- */
 
 function interviewInteractionTools(ctx: ToolContext): AnyTool[] {
+  const questionSchema = z.object({
+    question: z.string().min(1).max(500).describe("Focused question to ask"),
+    options: z
+      .array(
+        z.object({
+          label: z.string().min(1).max(80).describe("Short option label"),
+          answer: z
+            .string()
+            .min(1)
+            .max(500)
+            .describe("Complete answer sent when selected"),
+          description: z
+            .string()
+            .max(180)
+            .optional()
+            .describe("Optional clarification shown below the label"),
+        }),
+      )
+      .min(2)
+      .max(4),
+  });
+
   return [
     makeTool(
       ctx,
       "ask_question",
-      "Present the operator with one focused interview question and 2-4 likely single-select answers. The UI always also offers a custom typed or spoken answer.",
+      "Present the operator with 1-5 focused interview questions at once. Each question has 2-4 likely single-select answers, and the UI also offers a custom typed or spoken answer.",
       z.object({
-        question: z.string().min(1).max(500).describe("Focused question to ask"),
-        options: z
-          .array(
-            z.object({
-              label: z.string().min(1).max(80).describe("Short option label"),
-              answer: z
-                .string()
-                .min(1)
-                .max(500)
-                .describe("Complete answer sent when selected"),
-              description: z
-                .string()
-                .max(180)
-                .optional()
-                .describe("Optional clarification shown below the label"),
-            }),
-          )
-          .min(2)
-          .max(4),
+        questions: z
+          .array(questionSchema)
+          .min(1)
+          .max(5)
+          .describe("Related questions the operator can answer together"),
       }),
-      async (args) => ({ presented: true, optionCount: args.options.length }),
+      async (args) => ({
+        presented: true,
+        questionCount: args.questions.length,
+        optionCount: args.questions.reduce(
+          (total, question) => total + question.options.length,
+          0,
+        ),
+      }),
     ),
   ];
 }

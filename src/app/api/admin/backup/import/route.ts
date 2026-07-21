@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { ApiError, handleApi, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guards";
-import { decodeArchive, previewRestore, restoreArchive } from "@/lib/backup/import";
+import { decodeBackupFile, prepareBackupForRestore, previewRestore, restoreArchive } from "@/lib/backup/import";
 
 /**
  * POST /api/admin/backup/import — restore this PolySIEM instance from a backup
@@ -22,6 +22,7 @@ export const POST = handleApi(async (req: NextRequest) => {
   const previewParam = new URL(req.url).searchParams.get("preview");
   let preview = previewParam === "1" || previewParam === "true";
   let confirm = req.headers.get("x-confirm-restore") === "true";
+  let password: string | undefined;
 
   let buffer: Buffer;
   const contentType = req.headers.get("content-type") ?? "";
@@ -35,6 +36,8 @@ export const POST = handleApi(async (req: NextRequest) => {
     if (form.get("mode") === "preview") preview = true;
     const confirmField = form.get("confirm");
     if (confirmField === "true" || confirmField === "1") confirm = true;
+    const passwordField = form.get("password");
+    if (typeof passwordField === "string" && passwordField.length > 0) password = passwordField;
   } else {
     buffer = Buffer.from(await req.arrayBuffer());
   }
@@ -47,15 +50,17 @@ export const POST = handleApi(async (req: NextRequest) => {
   // version, unknown model). Surface those to the client as a 400 rather than
   // letting handleApi mask them behind a generic 500 — the operator needs to
   // know exactly why their file was rejected.
+  let decoded;
   let archive;
   try {
-    archive = decodeArchive(buffer);
+    decoded = decodeBackupFile(buffer, password);
+    archive = prepareBackupForRestore(decoded);
   } catch (err) {
     throw new ApiError(400, "invalid_backup", err instanceof Error ? err.message : "Invalid backup file.");
   }
 
   if (preview) {
-    return jsonOk(previewRestore(archive));
+    return jsonOk(previewRestore(archive, decoded.passwordProtected));
   }
 
   if (!confirm) {
@@ -66,6 +71,6 @@ export const POST = handleApi(async (req: NextRequest) => {
     );
   }
 
-  const summary = await restoreArchive({ type: "user", userId: user.id }, archive);
+  const summary = await restoreArchive({ type: "user", userId: user.id }, archive, decoded.passwordProtected);
   return jsonOk(summary);
 });

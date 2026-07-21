@@ -23,8 +23,6 @@ interface AiInterviewComposerProps {
   canGenerate: boolean;
   generateLabel?: string;
   autoFocus?: boolean;
-  /** Increment to focus the custom answer field (for "Another answer"). */
-  focusRequest?: number;
 }
 
 const MAX_HEIGHT = 160;
@@ -44,7 +42,6 @@ export function AiInterviewComposer({
   canGenerate,
   generateLabel = "End interview",
   autoFocus = false,
-  focusRequest = 0,
 }: AiInterviewComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dictation = useDictationText(value, onValueChange);
@@ -59,8 +56,8 @@ export function AiInterviewComposer({
   useEffect(resize, [value, resize]);
 
   useEffect(() => {
-    if (autoFocus || focusRequest > 0) textareaRef.current?.focus();
-  }, [autoFocus, focusRequest]);
+    if (autoFocus) textareaRef.current?.focus();
+  }, [autoFocus]);
 
   const canSend = !streaming && value.trim().length > 0;
 

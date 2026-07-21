@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sha256Hex } from "@/lib/crypto";
+import {
+  decryptSecretWithAppSecret,
+  encryptSecretWithAppSecret,
+  sha256Hex,
+} from "@/lib/crypto";
 import { encodeArchive } from "./export";
 import { decodeArchive, previewRestore } from "./import";
 import { currentSecretFingerprint, revive } from "./revive";
+import { decodeEncryptedBackup, encodeEncryptedBackup, isEncryptedBackup } from "./archive-crypto";
+import { rewrapArchiveSecrets } from "./portable-secrets";
 import { BACKUP_FORMAT_VERSION, type BackupArchive } from "./types";
 
 /**
@@ -147,5 +153,58 @@ describe("decodeArchive validation", () => {
   it("rejects bytes with no manifest", () => {
     const bytes = encodeArchive({ data: {} } as unknown as BackupArchive);
     expect(() => decodeArchive(bytes)).toThrow(/missing a valid manifest/i);
+  });
+});
+
+describe("password-protected portable backups", () => {
+  const SOURCE_SECRET = "source-app-secret-value-that-is-long-enough";
+  const DESTINATION_SECRET = "destination-app-secret-that-is-long-enough";
+
+  it("encrypts the archive and source key material with the backup password", () => {
+    const archive = makeArchive();
+    const bytes = encodeEncryptedBackup(archive, "correct horse battery staple", SOURCE_SECRET);
+
+    expect(isEncryptedBackup(bytes)).toBe(true);
+    expect(bytes.toString("utf8")).not.toContain(SOURCE_SECRET);
+    expect(bytes.toString("utf8")).not.toContain("Test Lab");
+
+    const decoded = decodeEncryptedBackup(bytes, "correct horse battery staple");
+    expect(decoded.archive).toEqual(archive);
+    expect(decoded.sourceAppSecret).toBe(SOURCE_SECRET);
+    expect(decoded.passwordProtected).toBe(true);
+  });
+
+  it("requires the password and rejects an incorrect password", () => {
+    const bytes = encodeEncryptedBackup(makeArchive(), "correct horse battery staple", SOURCE_SECRET);
+    expect(() => decodeEncryptedBackup(bytes)).toThrow(/enter its backup password/i);
+    expect(() => decodeEncryptedBackup(bytes, "wrong password")).toThrow(/incorrect.*corrupt/i);
+  });
+
+  it("re-encrypts nested stored credentials for the destination APP_SECRET", () => {
+    const encryptedCredential = encryptSecretWithAppSecret(
+      JSON.stringify({ username: "backup-user", password: "integration-secret" }),
+      SOURCE_SECRET,
+    );
+    const archive = makeArchive({ appSecretFingerprint: sha256Hex(SOURCE_SECRET).slice(0, 16) });
+    archive.data.integrationConfig = [{ id: "int1", encryptedCredentials: encryptedCredential }];
+    archive.data.appSetting = [{
+      key: "ai_text_config",
+      value: { openai: { apiKeyEncrypted: encryptSecretWithAppSecret("hosted-ai-key", SOURCE_SECRET) } },
+    }];
+
+    const rewrapped = rewrapArchiveSecrets(archive, SOURCE_SECRET, DESTINATION_SECRET);
+    const integrationBlob = rewrapped.data.integrationConfig?.[0]?.encryptedCredentials as string;
+    const setting = rewrapped.data.appSetting?.[0]?.value as {
+      openai: { apiKeyEncrypted: string };
+    };
+
+    expect(integrationBlob).not.toBe(encryptedCredential);
+    expect(JSON.parse(decryptSecretWithAppSecret(integrationBlob, DESTINATION_SECRET))).toEqual({
+      username: "backup-user",
+      password: "integration-secret",
+    });
+    expect(decryptSecretWithAppSecret(setting.openai.apiKeyEncrypted, DESTINATION_SECRET)).toBe("hosted-ai-key");
+    expect(rewrapped.manifest.appSecretFingerprint).toBe(sha256Hex(DESTINATION_SECRET).slice(0, 16));
+    expect(() => decryptSecretWithAppSecret(integrationBlob, SOURCE_SECRET)).toThrow();
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveFootprintFocusCircuit,
   type FootprintFocusEdge,
-} from "./footprint-focus";
+} from "./footprint-focus-circuit";
 
 const edges: FootprintFocusEdge[] = [
   {

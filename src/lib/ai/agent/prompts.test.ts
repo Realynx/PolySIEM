@@ -4,7 +4,8 @@ import { docInterviewSystemPrompt } from "./prompts";
 describe("documentation interview prompt", () => {
   it("allows structured questions without forcing a completion loop", () => {
     const prompt = docInterviewSystemPrompt("document");
-    expect(prompt).toMatch(/Use the ask_question tool when 2-4 useful/);
+    expect(prompt).toMatch(/batch of 1-5 focused questions/);
+    expect(prompt).toMatch(/2-4 useful, distinct suggested answers per question/);
     expect(prompt).toMatch(/tool is optional/);
     expect(prompt).toMatch(/Stop asking when.*no material assumptions/i);
     expect(prompt).toMatch(/unresolved assumption.*TODO/i);

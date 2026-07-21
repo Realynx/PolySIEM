@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compactInterviewMessages,
+  formatInterviewQuestionAnswers,
   interviewFailureMessage,
   interviewKickoff,
   interviewQuestionPrompt,
@@ -29,13 +30,17 @@ describe("interviewQuestionPrompt", () => {
           kind: "ask_question",
           name: "ask_question",
           args: {
-            question: "How is this service backed up?",
-            options: [
-              { label: "Snapshots", answer: "Nightly VM snapshots." },
+            questions: [
               {
-                label: "Application backup",
-                answer: "A nightly application-level backup.",
-                description: "Database and uploaded data",
+                question: "How is this service backed up?",
+                options: [
+                  { label: "Snapshots", answer: "Nightly VM snapshots." },
+                  {
+                    label: "Application backup",
+                    answer: "A nightly application-level backup.",
+                    description: "Database and uploaded data",
+                  },
+                ],
               },
             ],
           },
@@ -46,13 +51,19 @@ describe("interviewQuestionPrompt", () => {
     });
 
     expect(prompt).toEqual({
-      question: "How is this service backed up?",
-      options: [
-        { label: "Snapshots", answer: "Nightly VM snapshots." },
+      id: "q1",
+      questions: [
         {
-          label: "Application backup",
-          answer: "A nightly application-level backup.",
-          description: "Database and uploaded data",
+          id: "q1-question-1",
+          question: "How is this service backed up?",
+          options: [
+            { label: "Snapshots", answer: "Nightly VM snapshots." },
+            {
+              label: "Application backup",
+              answer: "A nightly application-level backup.",
+              description: "Database and uploaded data",
+            },
+          ],
         },
       ],
     });
@@ -101,8 +112,49 @@ describe("interviewQuestionPrompt", () => {
       ],
     });
 
-    expect(prompt?.question).toBe("Who owns this service?");
-    expect(prompt?.options).toHaveLength(2);
+    expect(prompt?.questions[0]?.question).toBe("Who owns this service?");
+    expect(prompt?.questions[0]?.options).toHaveLength(2);
+  });
+
+  it("extracts a batch of up to five questions", () => {
+    const prompt = interviewQuestionPrompt({
+      role: "assistant",
+      content: "",
+      toolCalls: [
+        {
+          id: "batch",
+          kind: "ask_question",
+          name: "ask_question",
+          args: {
+            questions: ["Owner", "Backup", "Recovery"].map((question) => ({
+              question,
+              options: [
+                { label: "Known", answer: `${question} is documented.` },
+                { label: "Unknown", answer: `${question} is not known yet.` },
+              ],
+            })),
+          },
+          label: "Ask questions",
+          status: "success",
+        },
+      ],
+    });
+
+    expect(prompt?.questions).toHaveLength(3);
+  });
+
+  it("sends custom answers with the question they answer", () => {
+    const message = formatInterviewQuestionAnswers([
+      {
+        questionId: "q1-question-1",
+        question: "Where are backups stored?",
+        answer: "In an encrypted off-site bucket.",
+      },
+    ]);
+
+    expect(message).toContain("Where are backups stored?");
+    expect(message).toContain("In an encrypted off-site bucket.");
+    expect(message).toContain("q1-question-1");
   });
 });
 

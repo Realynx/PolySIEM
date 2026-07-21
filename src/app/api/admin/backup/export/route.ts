@@ -1,4 +1,5 @@
-import { handleApi } from "@/lib/api";
+import type { NextRequest } from "next/server";
+import { ApiError, handleApi } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guards";
 import { audit } from "@/lib/audit";
 import { buildBackupFile } from "@/lib/backup/export";
@@ -21,6 +22,35 @@ export const GET = handleApi(async () => {
   return new Response(new Uint8Array(buffer), {
     headers: {
       "Content-Type": "application/gzip",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Length": String(sizeBytes),
+      "Cache-Control": "no-store",
+    },
+  });
+});
+
+/** POST with `{ password }` creates a portable, password-encrypted backup. */
+export const POST = handleApi(async (req: NextRequest) => {
+  const { user } = await requireAdmin();
+  let body: { password?: unknown };
+  try {
+    body = (await req.json()) as { password?: unknown };
+  } catch {
+    throw new ApiError(400, "invalid_request", "Expected a JSON body containing a backup password.");
+  }
+  if (typeof body.password !== "string" || body.password.length < 8 || body.password.length > 1024) {
+    throw new ApiError(400, "invalid_password", "Backup password must be between 8 and 1024 characters.");
+  }
+
+  const { buffer, filename, sizeBytes } = await buildBackupFile(body.password);
+  await audit({ type: "user", userId: user.id }, "backup.export", undefined, {
+    filename,
+    sizeBytes,
+    passwordProtected: true,
+  });
+  return new Response(new Uint8Array(buffer), {
+    headers: {
+      "Content-Type": "application/vnd.polysiem.backup",
       "Content-Disposition": `attachment; filename="${filename}"`,
       "Content-Length": String(sizeBytes),
       "Cache-Control": "no-store",

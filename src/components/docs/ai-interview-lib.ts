@@ -24,7 +24,7 @@ export function interviewKickoff(goal: DocInterviewGoal): ChatMessage {
         : "continuously build a useful set of focused documentation pages and propose service inventory entries attached to the exact synced hardware they run on";
   return {
     role: "user",
-    content: `Interview me so we can ${outcome}. Inspect my real synced infrastructure with read-only tools first, then ask your first focused question about a specific host, VM, container, network, or service you actually find. Ask one question at a time. Do not assume you can SSH into machines; distinguish synced facts from services I confirm.`,
+    content: `Interview me so we can ${outcome}. Inspect my real synced infrastructure with read-only tools first, then ask 1-5 focused questions about specific hosts, VMs, containers, networks, or services you actually find. Do not assume you can SSH into machines; distinguish synced facts from services I confirm.`,
   };
 }
 
@@ -34,9 +34,21 @@ export interface InterviewQuestionOption {
   description?: string;
 }
 
-export interface InterviewQuestionPrompt {
+export interface InterviewQuestion {
+  id: string;
   question: string;
   options: InterviewQuestionOption[];
+}
+
+export interface InterviewQuestionPrompt {
+  id: string;
+  questions: InterviewQuestion[];
+}
+
+export interface InterviewQuestionAnswer {
+  questionId: string;
+  question: string;
+  answer: string;
 }
 
 function questionArgs(args: Record<string, unknown>): Record<string, unknown> {
@@ -70,37 +82,83 @@ export function interviewQuestionPrompt(
     const call = calls[index];
     if (call.name !== "ask_question" || call.status === "error") continue;
     const args = questionArgs(call.args);
-    const question =
-      typeof args.question === "string" ? args.question.trim() : "";
-    const rawOptions = args.options;
-    if (!question || !Array.isArray(rawOptions)) return null;
-    const options = rawOptions
-      .map((value): InterviewQuestionOption | null => {
-        if (!value || typeof value !== "object" || Array.isArray(value)) {
-          return null;
-        }
-        const option = value as Record<string, unknown>;
-        const label =
-          typeof option.label === "string" ? option.label.trim() : "";
-        const answer =
-          typeof option.answer === "string" ? option.answer.trim() : "";
-        const description =
-          typeof option.description === "string"
-            ? option.description.trim()
-            : "";
-        if (!label || !answer) return null;
-        return {
-          label,
-          answer,
-          ...(description ? { description } : {}),
-        };
-      })
-      .filter((value): value is InterviewQuestionOption => value !== null);
-    return options.length >= 2 && options.length <= 4
-      ? { question, options }
-      : null;
+    // Accept the former single-question shape so an in-flight response from an
+    // older server can still be answered after an upgrade.
+    const rawQuestions = Array.isArray(args.questions)
+      ? args.questions
+      : typeof args.question === "string"
+        ? [args]
+        : [];
+    if (rawQuestions.length < 1 || rawQuestions.length > 5) return null;
+
+    const questions = rawQuestions.map((value, questionIndex) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+      }
+      const rawQuestion = value as Record<string, unknown>;
+      const question =
+        typeof rawQuestion.question === "string"
+          ? rawQuestion.question.trim()
+          : "";
+      if (!question || !Array.isArray(rawQuestion.options)) return null;
+      const options = rawQuestion.options
+        .map((optionValue): InterviewQuestionOption | null => {
+          if (
+            !optionValue ||
+            typeof optionValue !== "object" ||
+            Array.isArray(optionValue)
+          ) {
+            return null;
+          }
+          const option = optionValue as Record<string, unknown>;
+          const label =
+            typeof option.label === "string" ? option.label.trim() : "";
+          const answer =
+            typeof option.answer === "string" ? option.answer.trim() : "";
+          const description =
+            typeof option.description === "string"
+              ? option.description.trim()
+              : "";
+          if (!label || !answer) return null;
+          return {
+            label,
+            answer,
+            ...(description ? { description } : {}),
+          };
+        })
+        .filter((option): option is InterviewQuestionOption => option !== null);
+      if (options.length < 2 || options.length > 4) return null;
+      return {
+        id: `${call.id}-question-${questionIndex + 1}`,
+        question,
+        options,
+      };
+    });
+    if (questions.some((question) => question === null)) return null;
+    return {
+      id: call.id,
+      questions: questions as InterviewQuestion[],
+    };
   }
   return null;
+}
+
+/**
+ * Keep every submitted answer attached to the exact question the model asked.
+ * Tool calls are presentation metadata and are not replayed into the next model
+ * request, so the question text must travel with the operator's answer.
+ */
+export function formatInterviewQuestionAnswers(
+  answers: InterviewQuestionAnswer[],
+): string {
+  return [
+    "Answers to the structured interview questions:",
+    ...answers.flatMap((item, index) => [
+      "",
+      `Question ${index + 1} (${item.questionId}): ${item.question}`,
+      `Answer: ${item.answer.trim()}`,
+    ]),
+  ].join("\n");
 }
 
 const COMPACTED_INTERVIEW_NOTICE: ChatMessage = {

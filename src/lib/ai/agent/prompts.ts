@@ -84,12 +84,13 @@ export const DOC_INTERVIEW_SYSTEM_PROMPT = [
   "- Never place secrets in documentation. Record only the credential manager or vault location the operator names.",
   "",
   "Question UI:",
-  "- Use the ask_question tool when 2-4 useful, distinct suggested answers would make the next question faster to answer. The tool is optional: ask concise free-form questions in final prose when suggestions would be artificial or misleading.",
+  "- Use the ask_question tool to present a batch of 1-5 focused questions when 2-4 useful, distinct suggested answers per question would make the interview faster to complete. The tool is optional: ask a concise free-form question in final prose when suggestions would be artificial or misleading.",
   "- Each option must be a genuinely distinct, complete answer—not yes/no filler—and should reflect the inventory and interview context. The UI always adds a custom answer that the operator can type or dictate.",
+  "- Group only related questions that the operator can reasonably answer together. Use fewer questions when the next answer determines what should be asked afterward.",
   "- Complete required list_docs/get_doc/write_doc calls before ask_question. Invoke ask_question at most once in a turn.",
   "",
   "Interview method:",
-  "- Ask ONE focused question at a time. Keep it short and concrete. Wait for the answer before moving on.",
+  "- Ask 1-5 focused questions at a time. Keep each one short and concrete, and wait for the submitted batch before moving on.",
   "- Do NOT ask about things the tools already tell you (an IP, a VLAN id, a container image). Instead confirm them and ask for the knowledge only the operator has: purpose, ownership, dependencies, gotchas, recovery steps, credentials location (NOT the secret itself), maintenance cadence.",
   "- Build on prior answers. If an answer implies a new subject worth documenting, dig into it.",
   "- Continue until assumptions and operational TODOs are exhausted. Systematically cover purpose and scope; owner/users; dependencies and startup order; network paths, exposure, and access; data and storage; backup and tested restore; routine operations and updates; monitoring and alerting; failure/recovery; security and credential LOCATION (never values); known gotchas; and decommissioning or escalation where relevant.",
@@ -98,7 +99,7 @@ export const DOC_INTERVIEW_SYSTEM_PROMPT = [
   "- Never invent facts. If a tool returns nothing, say what you could not find and ask the operator to fill the gap.",
   "- PolySIEM does NOT have general SSH/process inspection access to every machine. Never imply that a service was detected by logging into a host. Distinguish synced facts from services the operator confirms during the interview.",
   "",
-  "Output for THIS turn: after completing any required doc tool calls, briefly name the root/child pages created or updated, then ask at most one next question—using ask_question when useful, otherwise in concise final prose. If coverage is complete, ask no question. Never reveal secrets, API keys, or credentials.",
+  "Output for THIS turn: after completing any required doc tool calls, briefly name the root/child pages created or updated, then make at most one ask_question call containing 1-5 questions when useful, or ask one question in concise final prose. If coverage is complete, ask no question. Never reveal secrets, API keys, or credentials.",
 ].join("\n");
 
 /** Tailor the interview toward the outcome the operator selected in the setup step. */

@@ -10,7 +10,7 @@ PolySIEM reads its server configuration from environment variables. If you used 
 | `APP_SECRET` | Secret used to encrypt integration credentials at rest. Generate one with `openssl rand -hex 32`. |
 | `APP_URL` | Public base URL of the instance, such as `https://10.0.0.5:3000`. PolySIEM uses it for canonical and social-card links, in generated MCP configuration, and to mark session cookies `Secure` when it starts with `https://`. |
 
-One thing worth repeating: keep `APP_SECRET` with every database backup. It encrypts your integration credentials, so if it's lost or changed, those credentials cannot be recovered and you'll be typing them all in again.
+One thing worth repeating: keep `APP_SECRET` with every raw database or unprotected logical backup. It encrypts your integration credentials, so if it's lost or changed, those credentials cannot be recovered and you'll be typing them all in again. A password-protected `.psbackup` made from **Settings → Backup & restore** is portable: it carries the source key inside the encrypted file and re-keys credentials during restore.
 
 ## Deployment settings
 

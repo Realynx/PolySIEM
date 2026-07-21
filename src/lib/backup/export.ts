@@ -5,6 +5,7 @@ import { getInstanceName } from "@/lib/settings";
 import { toJsonSafe } from "@/lib/serialize";
 import { BACKUP_FORMAT_VERSION, BACKUP_MODELS, type BackupArchive, type BackupManifest, type BackupModel } from "./types";
 import { currentSecretFingerprint } from "./revive";
+import { encodeEncryptedBackup } from "./archive-crypto";
 
 /**
  * Backup export engine. A backup is a complete logical dump of every PolySIEM
@@ -86,13 +87,18 @@ function fileTimestamp(iso: string): string {
 }
 
 /**
- * Convenience: create + encode + name in one call. Both the download route and
- * the cloud-upload path use this so the archive format and naming stay
- * identical. filename example: "polysiem-backup-2026-07-17T2312Z.json.gz".
+ * Convenience: create + encode + name in one call. Cloud uploads and downloads
+ * without a password use gzip. A password produces a portable `.psbackup`
+ * envelope that can safely carry the source APP_SECRET for credential re-keying.
  */
-export async function buildBackupFile(): Promise<{ buffer: Buffer; filename: string; sizeBytes: number }> {
+export async function buildBackupFile(password?: string): Promise<{ buffer: Buffer; filename: string; sizeBytes: number }> {
   const archive = await createBackupArchive();
-  const buffer = encodeArchive(archive);
-  const filename = `polysiem-backup-${fileTimestamp(archive.manifest.createdAt)}.json.gz`;
+  const appSecret = process.env.APP_SECRET ?? "";
+  const protectedFile = Boolean(password);
+  const buffer = protectedFile
+    ? encodeEncryptedBackup(archive, password as string, appSecret)
+    : encodeArchive(archive);
+  const extension = protectedFile ? "psbackup" : "json.gz";
+  const filename = `polysiem-backup-${fileTimestamp(archive.manifest.createdAt)}.${extension}`;
   return { buffer, filename, sizeBytes: buffer.byteLength };
 }

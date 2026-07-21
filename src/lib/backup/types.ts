@@ -6,8 +6,9 @@
  * A backup is a single portable archive: a logical dump of every PolySIEM
  * Prisma model plus a manifest. Encrypted secret columns (integration creds,
  * SSH deployment notes, AI credentials, personal OTX keys, API-token hashes)
- * are exported AS STORED — they only decrypt on an instance running the same
- * APP_SECRET, which `appSecretFingerprint` lets a restore detect up front.
+ * are exported AS STORED. Plain gzip exports require the same APP_SECRET;
+ * password-protected exports carry the source key inside an authenticated
+ * encrypted envelope so restore can re-key them for another instance.
  */
 
 export const BACKUP_FORMAT_VERSION = 1;
@@ -102,6 +103,10 @@ export interface RestoreSummary {
   instanceName: string;
   /** True when the archive's APP_SECRET fingerprint matches this instance. */
   secretMatches: boolean;
+  /** The file itself was encrypted with a user-supplied backup password. */
+  passwordProtected: boolean;
+  /** Credentials can be decrypted after this restore (matched or portably re-keyed). */
+  secretsRestorable: boolean;
   counts: Partial<Record<BackupModel, number>>;
   totalRows: number;
 }
