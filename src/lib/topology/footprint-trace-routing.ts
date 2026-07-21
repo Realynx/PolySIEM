@@ -22,8 +22,8 @@ export interface FootprintTraceCorridor {
 }
 
 export interface FootprintCircuitBox extends FootprintLayoutBox {
-  /** Number of rendered traces incident to this group. */
-  traceWeight: number;
+  /** Legacy metadata; component placement no longer depends on routed load. */
+  traceWeight?: number;
 }
 
 export interface FootprintCircuitLayout extends FootprintPackedLayout {
@@ -31,9 +31,10 @@ export interface FootprintCircuitLayout extends FootprintPackedLayout {
   corridor: FootprintTraceCorridor;
 }
 
-/** Routing-channel width grows with rendered load, then caps for sane zoom. */
-export function footprintTraceCorridorWidth(traceCount: number): number {
-  return Math.min(260, Math.max(112, 88 + Math.max(0, traceCount) * 8));
+/** Stable board gutter; trace density is handled by obstacle-aware routing. */
+export function footprintTraceCorridorWidth(_traceCount = 0): number {
+  void _traceCount;
+  return 260;
 }
 
 /**
@@ -98,6 +99,10 @@ export interface FootprintRouteOptions extends FootprintTraceRails {
   preferredApproachTrackX?: number;
   /** Split/fan-in rail where a family joins or leaves its shared track. */
   preferredJunctionY?: number;
+  /** Required axis for the final segment into an explicit connection port. */
+  targetApproachAxis?: "horizontal" | "vertical";
+  /** Hard ceiling for the sparse fallback search. */
+  maxMazeStates?: number;
   obstacles?: readonly FootprintRouteObstacle[];
   occupied?: readonly FootprintRouteSegment[];
   owner?: string;
@@ -358,30 +363,43 @@ export function routeFootprintTrace(
   const occupied = options.occupied ?? [];
   const owner = options.owner ?? "";
   const group = options.group;
-  const start = traceEscapePoint(
+  // Callers remove the actual endpoint cards explicitly. Never discard an
+  // unrelated obstacle merely because an overlong lead landed inside it;
+  // doing so makes the selected route disappear behind that card.
+  const obstacles = rawObstacles;
+  const pointInsideObstacle = (point: TracePoint) =>
+    obstacles.some(
+      (obstacle) =>
+        point.x > obstacle.x - clearance &&
+        point.x < obstacle.x + obstacle.width + clearance &&
+        point.y > obstacle.y - clearance &&
+        point.y < obstacle.y + obstacle.height + clearance,
+    );
+  const safeEscapePoint = (
+    endpoint: FootprintTraceEndpoint,
+    side: FootprintTraceSide,
+    requestedLead: number,
+    lateral: number | undefined,
+  ): TracePoint | null => {
+    for (let lead = requestedLead; lead >= 0; lead -= 1) {
+      const point = traceEscapePoint(endpoint, side, lead, lateral);
+      if (!pointInsideObstacle(point)) return point;
+    }
+    return null;
+  };
+  const start = safeEscapePoint(
     source,
     sourceSide,
     sourceLead,
     options.sourceLateral,
   );
-  const end = traceEscapePoint(
+  const end = safeEscapePoint(
     target,
     targetSide,
     targetLead,
     options.targetLateral,
   );
-  const pointInside = (point: TracePoint, obstacle: FootprintRouteObstacle) =>
-    point.x > obstacle.x - clearance &&
-    point.x < obstacle.x + obstacle.width + clearance &&
-    point.y > obstacle.y - clearance &&
-    point.y < obstacle.y + obstacle.height + clearance;
-  // Dense card grids can leave less room than the requested endpoint lead. A
-  // neighboring card that already contains that lead cannot be treated as a
-  // closed wall or the route has no legal first move; let the trace escape it,
-  // while every other component remains a hard obstacle.
-  const obstacles = rawObstacles.filter(
-    (obstacle) => !pointInside(start, obstacle) && !pointInside(end, obstacle),
-  );
+  if (!start || !end) return null;
   const xs = new Set<number>([
     start.x,
     end.x,
@@ -400,15 +418,36 @@ export function routeFootprintTrace(
     ys.add(obstacle.y - clearance);
     ys.add(obstacle.y + obstacle.height + clearance);
   }
-  for (const segment of occupied) {
-    if (Math.abs(segment.a.x - segment.b.x) < 0.01) {
-      xs.add(segment.a.x - 6);
-      xs.add(segment.a.x + 6);
-    } else if (Math.abs(segment.a.y - segment.b.y) < 0.01) {
-      ys.add(segment.a.y - 6);
-      ys.add(segment.a.y + 6);
-    }
-  }
+  // Previously every routed segment contributed two new grid axes. Because
+  // each candidate is checked against every occupied segment, that made a
+  // late trace dramatically more expensive than an early one and could turn
+  // a large dashboard into a million-cell maze. Family tracks already carry
+  // the required spacing; retain only the closest few occupied gutters so a
+  // local collision still has somewhere deterministic to move.
+  const midpointX = (start.x + end.x) / 2;
+  const midpointY = (start.y + end.y) / 2;
+  occupied
+    .filter((segment) => Math.abs(segment.a.x - segment.b.x) < 0.01)
+    .sort(
+      (a, b) =>
+        Math.abs(a.a.x - midpointX) - Math.abs(b.a.x - midpointX),
+    )
+    .slice(0, 32)
+    .forEach((segment) => {
+      xs.add(segment.a.x - minimumTraceSpacing);
+      xs.add(segment.a.x + minimumTraceSpacing);
+    });
+  occupied
+    .filter((segment) => Math.abs(segment.a.y - segment.b.y) < 0.01)
+    .sort(
+      (a, b) =>
+        Math.abs(a.a.y - midpointY) - Math.abs(b.a.y - midpointY),
+    )
+    .slice(0, 32)
+    .forEach((segment) => {
+      ys.add(segment.a.y - minimumTraceSpacing);
+      ys.add(segment.a.y + minimumTraceSpacing);
+    });
   if (obstacles.length > 0) {
     const outerMargin = 18 + Math.min(120, occupied.length * 3);
     xs.add(Math.min(...obstacles.map((obstacle) => obstacle.x)) - clearance - outerMargin);
@@ -447,6 +486,25 @@ export function routeFootprintTrace(
       { x: end.x, y },
       end,
     ]);
+    if (options.preferredTrackX !== undefined) {
+      const trackX = options.preferredTrackX;
+      candidates.push(
+        [
+          start,
+          { x: start.x, y },
+          { x: trackX, y },
+          { x: trackX, y: end.y },
+          end,
+        ],
+        [
+          start,
+          { x: trackX, y: start.y },
+          { x: trackX, y },
+          { x: end.x, y },
+          end,
+        ],
+      );
+    }
   }
   if (
     options.preferredTrackX !== undefined &&
@@ -496,6 +554,13 @@ export function routeFootprintTrace(
       a: points[index],
       b: point,
     }));
+    const finalSegment = segments.at(-1)!;
+    if (
+      (options.targetApproachAxis === "horizontal" &&
+        Math.abs(finalSegment.a.y - finalSegment.b.y) >= 0.01) ||
+      (options.targetApproachAxis === "vertical" &&
+        Math.abs(finalSegment.a.x - finalSegment.b.x) >= 0.01)
+    ) continue;
     if (
       segments.some(
         ({ a, b }) =>
@@ -633,13 +698,24 @@ export function routeFootprintTrace(
     key: startKey,
   });
   let goal: SearchState | null = null;
-  while (heap.length > 0) {
+  const maxMazeStates = Math.max(0, options.maxMazeStates ?? 2_500);
+  let visitedStates = 0;
+  while (heap.length > 0 && visitedStates < maxMazeStates) {
     const current = pop()!;
     if (current.cost > (costs.get(current.key) ?? Number.POSITIVE_INFINITY))
       continue;
+    visitedStates += 1;
     if (current.x === endX && current.y === endY) {
-      goal = current;
-      break;
+      const requiredDirection =
+        options.targetApproachAxis === "horizontal"
+          ? "h"
+          : options.targetApproachAxis === "vertical"
+            ? "v"
+            : undefined;
+      if (!requiredDirection || current.direction === requiredDirection) {
+        goal = current;
+        break;
+      }
     }
     const neighbors = [
       [current.x - 1, current.y, "h"],

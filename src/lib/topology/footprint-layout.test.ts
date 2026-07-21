@@ -71,9 +71,9 @@ describe("footprint PCB bank packing", () => {
     }
   });
 
-  it("widens the routing channel with trace density and caps its footprint", () => {
-    expect(footprintTraceCorridorWidth(0)).toBe(112);
-    expect(footprintTraceCorridorWidth(10)).toBe(168);
+  it("keeps node placement independent of trace density", () => {
+    expect(footprintTraceCorridorWidth(0)).toBe(260);
+    expect(footprintTraceCorridorWidth(10)).toBe(260);
     expect(footprintTraceCorridorWidth(100)).toBe(260);
   });
 
@@ -145,7 +145,7 @@ describe("footprint PCB bank packing", () => {
     ).toBeNull();
   });
 
-  it("places the two highest-load groups at the top of opposing banks", () => {
+  it("preserves input order instead of sorting groups by trace load", () => {
     const packed = packFootprintCircuitBanks(circuitBoxes, {
       centerX: 500,
       startY: 200,
@@ -156,6 +156,17 @@ describe("footprint PCB bank packing", () => {
     expect(packed.bankById.get("lane-0")).not.toBe(
       packed.bankById.get("lane-1"),
     );
+    const changedWeights = circuitBoxes.map((box, index) => ({
+      ...box,
+      traceWeight: index * 100,
+    }));
+    const repacked = packFootprintCircuitBanks(changedWeights, {
+      centerX: 500,
+      startY: 200,
+      corridorWidth: 140,
+    });
+    expect(repacked.positions).toEqual(packed.positions);
+    expect(repacked.bankById).toEqual(packed.bankById);
   });
 
   it("keeps variable-size cards separated within each bank", () => {
@@ -205,6 +216,19 @@ describe("cost-based PCB routing", () => {
       ).toBe(true);
     }
     expect(Math.max(...route.map((point) => point.x))).toBeLessThanOrEqual(218);
+  });
+
+  it("never makes an unrelated card transparent to rescue a bad lead", () => {
+    const route = routeFootprintTrace(source, target, {
+      sourceLead: 30,
+      obstacles: [
+        { id: "neighbor", x: 90, y: 118, width: 40, height: 40 },
+      ],
+    });
+
+    // The requested lead starts inside the neighboring card. The caller must
+    // shorten or redirect that lead; routing through the card is never valid.
+    expect(route).toBeNull();
   });
 
   it("moves to an adjacent copper lane instead of overlapping a used run", () => {

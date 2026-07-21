@@ -34,6 +34,28 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     sizes.set(id, { width, height });
     g.setNode(id, { width, height });
   };
+  const publishedRoutesByTarget = new Map<string, number>();
+  for (const route of graph.routes)
+    publishedRoutesByTarget.set(
+      route.targetId,
+      (publishedRoutesByTarget.get(route.targetId) ?? 0) + 1,
+    );
+  const matrixChannelHeightByLane = new Map(
+    graph.lanes.map((lane) => {
+      const busiestTarget = Math.max(
+        0,
+        ...lane.machines.map(
+          (machine) => publishedRoutesByTarget.get(machine.id) ?? 0,
+        ),
+      );
+      return [
+        laneNodeId(lane.id),
+        busiestTarget > 1
+          ? Math.min(120, 20 + (busiestTarget - 1) * 6)
+          : 0,
+      ] as const;
+    }),
+  );
 
   if (!hasGatewayRoots) {
     addNode(
@@ -53,6 +75,7 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       lane.clients.length,
       expandedLanes.has(lane.id),
       lane.workloadPolicy?.peerGroups.length ?? 0,
+      matrixChannelHeightByLane.get(laneNodeId(lane.id)) ?? 0,
     );
     addNode(laneNodeId(lane.id), width, height);
   }
@@ -178,7 +201,11 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       type: "lane",
       position: place(id),
       ...sizes.get(id)!,
-      data: { lane, expanded: expandedLanes.has(lane.id) },
+      data: {
+        lane,
+        expanded: expandedLanes.has(lane.id),
+        matrixChannelHeight: matrixChannelHeightByLane.get(id) ?? 0,
+      },
       zIndex: 0,
     });
     nodes.push({
@@ -203,7 +230,9 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
         type: "machine",
         parentId: id,
         extent: "parent",
-        zIndex: 1,
+        // Group-bound traces render above the lane background as an internal
+        // matrix, while device cards remain above that copper.
+        zIndex: 2,
         position: {
           x: LANE_PAD + col * (CHIP_WIDTH + CHIP_GAP),
           y: LANE_HEADER + LANE_PAD + row * (CHIP_HEIGHT + CHIP_GAP),
@@ -223,6 +252,7 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
         LANE_HEADER +
         LANE_PAD +
         machineHeight +
+        (matrixChannelHeightByLane.get(id) ?? 0) +
         (lane.machines.length > 0 ? POLICY_SECTION_GAP : 0) +
         POLICY_CAPTION;
       const { cols: policyCols } = policyGrid(peerGroups.length);
@@ -271,48 +301,9 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     .map((target) => topLevelById.get(target.id))
     .filter((node): node is FootprintFlowNode => node !== undefined);
   const laneBankById = new Map<string, FootprintCircuitBank>();
-  const laneTraceWeight = new Map(
-    laneNodes.map(({ node }) => [node.id, 0]),
-  );
-  const addLaneTraceWeight = (id: string | undefined, weight = 1) => {
-    if (!id || !laneTraceWeight.has(id)) return;
-    laneTraceWeight.set(id, (laneTraceWeight.get(id) ?? 0) + weight);
-  };
-  for (const lane of graph.lanes) {
-    if (lane.category !== "wan") addLaneTraceWeight(laneNodeId(lane.id), 1);
-    addLaneTraceWeight(
-      laneNodeId(lane.id),
-      lane.workloadPolicy?.peerGroups.reduce(
-        (sum, group) => sum + group.memberIds.length,
-        0,
-      ) ?? 0,
-    );
-  }
-  for (const edge of graph.reachability) {
-    if (edge.source !== INTERNET_NODE_ID)
-      addLaneTraceWeight(laneNodeId(edge.source), Math.max(1, edge.rules.length));
-    if (edge.target !== INTERNET_NODE_ID)
-      addLaneTraceWeight(laneNodeId(edge.target), Math.max(1, edge.rules.length));
-  }
-  for (const edge of graph.inbound)
-    addLaneTraceWeight(laneOfMachine.get(edge.targetId), 2);
-  for (const route of graph.routes)
-    addLaneTraceWeight(laneOfMachine.get(route.targetId), 2);
-  for (const link of graph.switchLinks) {
-    addLaneTraceWeight(
-      link.kind === "carriage"
-        ? laneNodeId(link.targetId)
-        : laneOfMachine.get(link.targetId),
-      1,
-    );
-  }
-  const centralTraceCount =
-    graph.lanes.filter((lane) => lane.category !== "wan").length +
-    graph.reachability.length +
-    graph.routes.length +
-    graph.switchLinks.length +
-    graph.inbound.length;
-  const traceCorridorWidth = footprintTraceCorridorWidth(centralTraceCount);
+  // Component placement is independent of the number of rendered edges.
+  // Routing density belongs to the router, not the node layout.
+  const traceCorridorWidth = footprintTraceCorridorWidth();
   const traceCorridor = {
     left: boardCenterX - traceCorridorWidth / 2,
     right: boardCenterX + traceCorridorWidth / 2,
@@ -370,7 +361,6 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
         width: node.width ?? 0,
         height: node.height ?? 0,
         category: lane.category,
-        traceWeight: laneTraceWeight.get(node.id) ?? 0,
       })),
       {
         centerX: boardCenterX,
@@ -577,6 +567,8 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     const groupColumns = routeGroups.map((group) =>
       Math.min(4, Math.max(1, Math.ceil(Math.sqrt(group.routes.length * 1.25)))),
     );
+    // Fixed-pitch copper needs a real channel between hostname-card columns;
+    // this is routing space, not a trace-density heuristic that reorders nodes.
     const groupBusGaps = routeGroups.map((group, index) =>
       groupColumns[index] > 1
         ? Math.min(120, 18 + Math.max(0, group.routes.length - 1) * 6)
@@ -618,8 +610,6 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       ),
     );
     const margin = 30;
-    // The gap is a routing field, not empty decoration. Reserve one horizontal
-    // rail per hostname so tunnel branches never stack on top of one another.
     const junctionGap = Math.max(
       24,
       ...routeGroups.map((group) => 24 + (group.routes.length - 1) * 6),

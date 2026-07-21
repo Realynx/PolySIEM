@@ -94,9 +94,9 @@ export function packFootprintLanes(
 
 /**
  * Place network groups into two component banks around a reserved trace
- * corridor. High-traffic groups are assigned first and therefore stay nearest
- * the controller/top of the board. Greedy height balancing keeps either bank
- * from becoming an unnecessarily tall strip.
+ * corridor. Input order is preserved; rendered trace demand must not reshuffle
+ * components. Greedy height balancing keeps either bank from becoming an
+ * unnecessarily tall strip.
  */
 export function packFootprintCircuitBanks(
   boxes: readonly FootprintCircuitBox[],
@@ -128,13 +128,7 @@ export function packFootprintCircuitBanks(
 
   const bankGapY = options.bankGapY ?? 42;
   const categoryGap = options.categoryGap ?? 16;
-  const ordered = [...boxes].sort(
-    (a, b) =>
-      b.traceWeight - a.traceWeight ||
-      b.height - a.height ||
-      a.category.localeCompare(b.category) ||
-      a.id.localeCompare(b.id),
-  );
+  const ordered = [...boxes];
   const banks: Record<
     FootprintCircuitBank,
     { boxes: FootprintCircuitBox[]; height: number; width: number; category: string | null }

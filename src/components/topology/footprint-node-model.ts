@@ -133,6 +133,7 @@ export function laneSize(
   clientCount: number,
   expanded: boolean,
   policyGroupCount = 0,
+  matrixChannelHeight = 0,
 ): { width: number; height: number } {
   const machines = machineGridSize(machineCount);
   const policy = policyBlockSize(policyGroupCount);
@@ -153,6 +154,7 @@ export function laneSize(
       LANE_HEADER +
       LANE_PAD +
       machines.height +
+      matrixChannelHeight +
       policyGap +
       policy.height +
       clientGap +
@@ -190,7 +192,12 @@ export type FirewallNodeType = Node<
 >;
 export type GatewayNodeType = Node<{ gateway: FpGateway }, "gateway">;
 export type LaneNodeType = Node<
-  { lane: FootprintLane; expanded: boolean; bw?: NodeBandwidth },
+  {
+    lane: FootprintLane;
+    expanded: boolean;
+    matrixChannelHeight: number;
+    bw?: NodeBandwidth;
+  },
   "lane"
 >;
 export type LaneLabelNodeType = Node<

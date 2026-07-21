@@ -18,7 +18,10 @@ import type { FootprintGraph, FootprintLane, FootprintMachine } from "@/lib/topo
 import { FirewallNode, GatewayNode, InternetNode, LaneLabelNode, LaneNode, MachineNode, PolicyGroupNode } from "@/components/topology/footprint-lane-nodes";
 import { FpSwitchNode, RouteNode, TunnelNode, UnknownNode } from "@/components/topology/footprint-route-nodes";
 import { CLIENT_COLLAPSED_MAX, type FirewallNodeType, type FootprintFlowNode, type LaneLabelNodeType, type LaneNodeType } from "@/components/topology/footprint-node-model";
-import { buildFlow } from "@/components/topology/footprint-flow-builder";
+import {
+  applyFootprintTraffic,
+  buildFlow,
+} from "@/components/topology/footprint-flow-builder";
 import { applyFocus, applyNodeFocus } from "@/components/topology/footprint-flow-focus";
 import {
   hostnameRow,
@@ -147,12 +150,15 @@ export function FootprintMap({
     [graph.tunnels, trafficPayload],
   );
 
-  // Expensive pass (dagre + node/edge construction). Depends on graph/traffic
-  // and the deliberate lane-expand toggle (which changes lane heights → layout)
-  // — never on hover/selection, which stay in the cheap applyFocus pass.
+  // Expensive structural pass (dagre + trace routing). Live counters are
+  // applied below without touching geometry, so refreshes stay cheap.
+  const geometry = useMemo(
+    () => buildFlow(graph, null, expandedLanes, positions),
+    [graph, expandedLanes, positions],
+  );
   const built = useMemo(
-    () => buildFlow(graph, traffic, expandedLanes, positions),
-    [graph, traffic, expandedLanes, positions],
+    () => applyFootprintTraffic(geometry, graph, traffic),
+    [geometry, graph, traffic],
   );
   // Cheap pass — hover/selection only restyles edges over the cached layout.
   const edges = useMemo(

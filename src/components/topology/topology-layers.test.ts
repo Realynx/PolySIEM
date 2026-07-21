@@ -4,6 +4,7 @@ import {
   TOPOLOGY_DENSE_EDGE_HIT_WIDTH,
   TOPOLOGY_EDGE_HIT_WIDTH,
   TOPOLOGY_EDGE_Z,
+  TOPOLOGY_FOCUSED_EDGE_Z,
   TOPOLOGY_NODE_Z,
   layerTopologyEdges,
   layerTopologyNodes,
@@ -18,6 +19,15 @@ describe("topology interaction layers", () => {
 
     expect(nodes[0].zIndex).toBe(TOPOLOGY_NODE_Z);
     expect(nodes[1].zIndex).toBe(10);
+  });
+
+  it("keeps explicit group backgrounds below internal copper", () => {
+    const [group] = layerTopologyNodes([
+      { id: "vlan", position: { x: 0, y: 0 }, data: {}, zIndex: 0 },
+    ] satisfies Node[]);
+
+    expect(group.zIndex).toBe(0);
+    expect(group.zIndex).toBeLessThan(TOPOLOGY_EDGE_Z);
   });
 
   it("prevents an elevated or oversized trace from blocking a card", () => {
@@ -47,5 +57,18 @@ describe("topology interaction layers", () => {
     ] satisfies Edge[]);
 
     expect(edge.interactionWidth).toBe(TOPOLOGY_DENSE_EDGE_HIT_WIDTH);
+  });
+
+  it("raises only the focused trace above ordinary cards", () => {
+    const [edge] = layerTopologyEdges([
+      {
+        id: "selected",
+        source: "a",
+        target: "b",
+        data: { topologyFocused: true },
+      },
+    ] satisfies Edge[]);
+
+    expect(edge.zIndex).toBe(TOPOLOGY_FOCUSED_EDGE_Z);
   });
 });

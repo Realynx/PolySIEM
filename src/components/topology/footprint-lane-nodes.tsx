@@ -359,7 +359,7 @@ function ClientChip({ client }: { client: FpClient }) {
 export const LaneNode = memo(function LaneNode({
   data,
 }: NodeProps<LaneNodeType>) {
-  const { lane, expanded, bw } = data;
+  const { lane, expanded, matrixChannelHeight, bw } = data;
   const traffic = bw ? networkTrafficRates(bw, lane.category === "wan") : null;
   const clients = lane.clients;
   const hasClients = clients.length > 0;
@@ -370,6 +370,7 @@ export const LaneNode = memo(function LaneNode({
     LANE_HEADER +
     LANE_PAD +
     machineArea.height +
+    matrixChannelHeight +
     (lane.machines.length > 0 && peerGroups.length > 0 ? POLICY_SECTION_GAP : 0);
   // Client block sits below the (overlaid) machine chip grid inside the lane box.
   const clientsTop =
@@ -593,6 +594,12 @@ export const MachineNode = memo(function MachineNode({
       title={[machine.name, ...machine.ips, ...policyTitle].join("\n")}
     >
       <Handle type="target" position={Position.Top} className={hiddenHandle} />
+      <Handle
+        type="target"
+        position={Position.Bottom}
+        id="matrix-bottom-in"
+        className={hiddenHandle}
+      />
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate text-xs font-medium text-card-foreground">
         {machine.name}

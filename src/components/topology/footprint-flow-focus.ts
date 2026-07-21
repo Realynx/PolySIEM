@@ -21,7 +21,12 @@ export function applyFocus(
   const selectedCircuit = focusForId(built, selectedEdgeId);
 
   return edges.map((edge) => {
-    const data = edge.data as { baseOpacity: number; hoverOnly?: boolean };
+    const data = edge.data as {
+      baseOpacity: number;
+      hoverOnly?: boolean;
+      topologyFocused?: boolean;
+      routingFailed?: boolean;
+    };
     const touched =
       hoveredCircuit !== null && hoveredCircuit.edgeIds.has(edge.id);
     // A tunnel selection focuses its parallel ingress traces and only its own
@@ -41,11 +46,16 @@ export function applyFocus(
       opacity = data.baseOpacity;
     }
     const atRest = data.hoverOnly ? 0 : data.baseOpacity;
-    if (opacity === atRest && !selected) return edge;
+    if (opacity === atRest && !selected && !data.topologyFocused) return edge;
     const style = { ...edge.style, opacity };
     if (selected && style.strokeWidth)
       style.strokeWidth = Number(style.strokeWidth) + 1;
-    return { ...edge, style, hidden: data.hoverOnly ? opacity === 0 : false };
+    return {
+      ...edge,
+      data: { ...data, topologyFocused: selected || touched },
+      style,
+      hidden: data.routingFailed || (data.hoverOnly ? opacity === 0 : false),
+    };
   });
 }
 
@@ -200,7 +210,12 @@ export function applyNodeFocus(
         focused.has(node.parentId));
     return {
       ...node,
-      zIndex: active ? Math.max(node.zIndex ?? 0, 10) : node.zIndex,
+      zIndex:
+        node.type === "lane"
+          ? 0
+          : active
+            ? Math.max(node.zIndex ?? 0, 10)
+            : node.zIndex,
       style: {
         ...node.style,
         opacity: active ? 1 : 0.14,

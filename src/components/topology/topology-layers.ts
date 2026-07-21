@@ -8,6 +8,7 @@ import type { Edge, Node } from "@xyflow/react";
  */
 export const TOPOLOGY_EDGE_Z = 1;
 export const TOPOLOGY_NODE_Z = 2;
+export const TOPOLOGY_FOCUSED_EDGE_Z = 9;
 export const TOPOLOGY_EDGE_HIT_WIDTH = 10;
 export const TOPOLOGY_DENSE_EDGE_HIT_WIDTH = 6;
 
@@ -16,6 +17,10 @@ export function layerTopologyNodes<NodeType extends Node>(
 ): NodeType[] {
   let changed = false;
   const layered = nodes.map((node) => {
+    // Explicit background nodes (currently VLAN/group containers) remain
+    // below their internal copper. Ordinary nodes still receive the shared
+    // draggable-card layer.
+    if (node.zIndex === 0) return node;
     if ((node.zIndex ?? 0) >= TOPOLOGY_NODE_Z) return node;
     changed = true;
     return { ...node, zIndex: TOPOLOGY_NODE_Z };
@@ -32,8 +37,12 @@ export function layerTopologyEdges(edges: Edge[]): Edge[] {
     const interactionWidth = dense
       ? TOPOLOGY_DENSE_EDGE_HIT_WIDTH
       : TOPOLOGY_EDGE_HIT_WIDTH;
+    const focused = (
+      edge.data as { topologyFocused?: boolean } | undefined
+    )?.topologyFocused === true;
+    const zIndex = focused ? TOPOLOGY_FOCUSED_EDGE_Z : TOPOLOGY_EDGE_Z;
     if (
-      edge.zIndex === TOPOLOGY_EDGE_Z &&
+      edge.zIndex === zIndex &&
       edge.interactionWidth === interactionWidth
     ) {
       return edge;
@@ -43,7 +52,7 @@ export function layerTopologyEdges(edges: Edge[]): Edge[] {
       ...edge,
       // This is deliberately enforced, rather than merely used as a default:
       // no map-specific edge may strand a draggable card beneath its hit area.
-      zIndex: TOPOLOGY_EDGE_Z,
+      zIndex,
       interactionWidth,
     };
   });

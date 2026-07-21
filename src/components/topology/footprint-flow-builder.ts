@@ -8,6 +8,72 @@ import { buildFootprintLayout } from "@/components/topology/footprint-flow-layou
 import { routeFootprintFlow } from "@/components/topology/footprint-flow-routing";
 import { DNS_STATUS, LABEL_DEFAULTS, laneNodeId, policyNodeId, tunnelNodeId, type TrafficState } from "@/components/topology/footprint-flow-shared";
 import type { BuiltFlow } from "@/components/topology/footprint-flow-types";
+
+/**
+ * Apply live counters without rebuilding dagre geometry or trace routing.
+ * Traffic is presentation-only; keeping it out of the structural memo avoids
+ * a synchronous routing pass on every refresh interval.
+ */
+export function applyFootprintTraffic(
+  built: BuiltFlow,
+  graph: FootprintGraph,
+  traffic: TrafficState | null,
+): BuiltFlow {
+  if (!traffic) return built;
+  const nodes = built.nodes.map((node) => {
+    if (node.type === "tunnel") {
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          count: traffic.byTunnel.get(node.data.tunnel.id),
+        },
+      };
+    }
+    if (node.type === "route") {
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          count: traffic.byHostname.get(
+            node.data.route.hostname.toLowerCase(),
+          ),
+        },
+      };
+    }
+    return node;
+  }) as BuiltFlow["nodes"];
+  const details = new Map(built.details);
+  const withTraffic = (key: string, count: number | undefined) => {
+    if (count === undefined) return;
+    const detail = details.get(key);
+    if (!detail) return;
+    details.set(key, {
+      ...detail,
+      rows: [
+        ...detail.rows.filter((row) => row.primary !== "Traffic"),
+        {
+          primary: "Traffic",
+          secondary: `${formatCount(count)} events/${traffic.window}`,
+          badge: formatCount(count),
+        },
+      ],
+    });
+  };
+  for (const tunnel of graph.tunnels)
+    withTraffic(
+      tunnelNodeId(tunnel.id),
+      traffic.byTunnel.get(tunnel.id),
+    );
+  for (const route of graph.routes) {
+    const count = traffic.byHostname.get(route.hostname.toLowerCase());
+    withTraffic(route.id, count);
+    withTraffic(`${route.id}:in`, count);
+    withTraffic(`${route.id}:svc`, count);
+  }
+  return { ...built, nodes, details };
+}
+
 export function buildFlow(
   graph: FootprintGraph,
   traffic: TrafficState | null,
