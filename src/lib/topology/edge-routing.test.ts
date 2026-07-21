@@ -6,6 +6,7 @@ import {
   dedupePoints,
   deformWaypoints,
   directedKey,
+  endpointLeadDistances,
   endpointOffsets,
   interiorWaypoints,
   orthogonalPolyline,
@@ -276,6 +277,44 @@ describe("endpoint lane alignment", () => {
       { x: 20, y: 8 },
       { x: 20, y: 32 },
     ]);
+  });
+});
+
+describe("endpoint lead distances", () => {
+  it("splits a short vertical gap instead of letting the leads cross", () => {
+    expect(
+      endpointLeadDistances(
+        { x: 100, y: 46 },
+        { x: 20, y: 62 },
+        "bottom",
+        "top",
+        18,
+      ),
+    ).toEqual({ sourceDistance: 8, targetDistance: 8 });
+  });
+
+  it("keeps the full lead when endpoints do not face one another", () => {
+    expect(
+      endpointLeadDistances(
+        { x: 0, y: 0 },
+        { x: 40, y: 40 },
+        "right",
+        "top",
+        18,
+      ),
+    ).toEqual({ sourceDistance: 18, targetDistance: 18 });
+  });
+
+  it("keeps the full lead when facing sides point away from each other", () => {
+    expect(
+      endpointLeadDistances(
+        { x: 40, y: 0 },
+        { x: 0, y: 0 },
+        "right",
+        "left",
+        18,
+      ),
+    ).toEqual({ sourceDistance: 18, targetDistance: 18 });
   });
 });
 

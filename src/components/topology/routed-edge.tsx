@@ -11,6 +11,7 @@ import {
 import {
   alignEndpointLanes,
   deformWaypoints,
+  endpointLeadDistances,
   orthogonalPolyline,
   pointAlongPolyline,
   roundedPolylinePath,
@@ -81,10 +82,37 @@ function fallbackPoints(
   targetOffset: number,
   midpointOffset: number,
 ): Pt[] {
-  const sourceLead = escapePoint(source, sourcePosition, 18, 0);
-  const targetLead = escapePoint(target, targetPosition, 18, 0);
-  const sourceTrack = escapePoint(source, sourcePosition, 18, sourceOffset);
-  const targetTrack = escapePoint(target, targetPosition, 18, targetOffset);
+  const leads = endpointLeadDistances(
+    source,
+    target,
+    sourcePosition,
+    targetPosition,
+    18,
+  );
+  const sourceLead = escapePoint(
+    source,
+    sourcePosition,
+    leads.sourceDistance,
+    0,
+  );
+  const targetLead = escapePoint(
+    target,
+    targetPosition,
+    leads.targetDistance,
+    0,
+  );
+  const sourceTrack = escapePoint(
+    source,
+    sourcePosition,
+    leads.sourceDistance,
+    sourceOffset,
+  );
+  const targetTrack = escapePoint(
+    target,
+    targetPosition,
+    leads.targetDistance,
+    targetOffset,
+  );
   const sourceHorizontal =
     sourcePosition === Position.Left || sourcePosition === Position.Right;
   const targetHorizontal =

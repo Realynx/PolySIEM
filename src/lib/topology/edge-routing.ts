@@ -32,6 +32,13 @@ export interface EndpointOffsets {
   targetOffset: number;
 }
 
+export type RouteSide = "left" | "right" | "top" | "bottom";
+
+export interface EndpointLeadDistances {
+  sourceDistance: number;
+  targetDistance: number;
+}
+
 /** Compact SVG number: integers stay integers, floats clamp to 2dp. */
 function fmt(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
@@ -44,6 +51,38 @@ function dist(a: Pt, b: Pt): number {
 /** Divide, treating a zero denominator as 0 (guards coincident spline knots). */
 function safeDiv(num: number, den: number): number {
   return den === 0 ? 0 : num / den;
+}
+
+/**
+ * Size the straight leads for two endpoints that face one another.
+ *
+ * A fixed lead can be longer than the entire gap between close cards. Both
+ * leads then pass each other and the orthogonal route must reverse 180 degrees
+ * to reach its target. Split a facing gap evenly; non-facing endpoints retain
+ * the requested lead because their route needs room to turn around the cards.
+ */
+export function endpointLeadDistances(
+  source: Pt,
+  target: Pt,
+  sourceSide: RouteSide,
+  targetSide: RouteSide,
+  maximum: number,
+): EndpointLeadDistances {
+  let gap: number | null = null;
+  if (sourceSide === "right" && targetSide === "left")
+    gap = target.x - source.x;
+  else if (sourceSide === "left" && targetSide === "right")
+    gap = source.x - target.x;
+  else if (sourceSide === "bottom" && targetSide === "top")
+    gap = target.y - source.y;
+  else if (sourceSide === "top" && targetSide === "bottom")
+    gap = source.y - target.y;
+
+  if (gap === null || gap < 0) {
+    return { sourceDistance: maximum, targetDistance: maximum };
+  }
+  const distance = Math.min(maximum, gap / 2);
+  return { sourceDistance: distance, targetDistance: distance };
 }
 
 /** Drop consecutive duplicate points — zero-length segments break the spline math. */
