@@ -21,8 +21,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { IntegrationFormDialog } from "@/components/settings/integration-form-dialog";
 import { AiSettingsForm } from "@/components/settings/ai-settings-form";
 import {
@@ -31,28 +29,13 @@ import {
 } from "@/components/settings/integrations-manager";
 import { cn } from "@/lib/utils";
 import type { OllamaConfigView, SetupStage } from "@/lib/settings";
-import { THEME_COLORS, type ThemeColor } from "@/lib/types";
+import type { ThemeColor } from "@/lib/types";
 import {
   DASHBOARD_TOUR_SLIDES,
   DashboardTutorialPreview,
 } from "./dashboard-tutorial";
-
-const THEME_SWATCH: Record<ThemeColor, string> = {
-  blue: "bg-blue-600",
-  emerald: "bg-emerald-600",
-  violet: "bg-violet-600",
-  amber: "bg-amber-500",
-  rose: "bg-rose-600",
-};
-
-const STEPS = ["Welcome", "Admin", "Preferences", "AI", "Integrations", "Tour"] as const;
-
-function initialStep(stage: SetupStage): number {
-  if (stage === "tutorial") return 5;
-  if (stage === "integrations") return 4;
-  if (stage === "ai") return 3;
-  return 0;
-}
+import { AdministratorStep, PreferencesStep, WelcomeStep } from "./setup-account-steps";
+import { SETUP_STEPS, setupInitialStep, validateAdministrator } from "./setup-wizard-model";
 
 interface ApiEnvelope<T> {
   data?: T;
@@ -67,7 +50,7 @@ export function SetupWizard({
   initialAiConfig: OllamaConfigView;
 }) {
   const router = useRouter();
-  const [step, setStep] = useState(() => initialStep(initialStage));
+  const [step, setStep] = useState(() => setupInitialStep(initialStage));
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
@@ -106,16 +89,6 @@ export function SetupWizard({
   function selectTheme(color: ThemeColor) {
     setThemeColor(color);
     document.documentElement.dataset.theme = color;
-  }
-
-  function validateAccount(): string | null {
-    if (username.trim().length < 3) return "Username must be at least 3 characters";
-    if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
-      return "Username may only contain letters, numbers, dots, dashes and underscores";
-    }
-    if (password.length < 8) return "Password must be at least 8 characters";
-    if (password !== confirm) return "Passwords do not match";
-    return null;
   }
 
   async function createAdministrator() {
@@ -221,7 +194,7 @@ export function SetupWizard({
         </div>
 
         <ol className="flex flex-wrap items-center justify-center gap-2">
-          {STEPS.map((label, index) => (
+          {SETUP_STEPS.map((label, index) => (
             <li key={label} className="flex items-center gap-2">
               <span
                 className={cn(
@@ -238,7 +211,7 @@ export function SetupWizard({
               <span className={cn("text-xs sm:text-sm", index === step ? "font-medium" : "text-muted-foreground")}>
                 {label}
               </span>
-              {index < STEPS.length - 1 && <span className="mx-1 hidden h-px w-5 bg-border sm:block" />}
+              {index < SETUP_STEPS.length - 1 && <span className="mx-1 hidden h-px w-5 bg-border sm:block" />}
             </li>
           ))}
         </ol>
@@ -253,125 +226,43 @@ export function SetupWizard({
                 : "max-w-lg",
           )}
         >
-          {step === 0 && (
-            <>
-              <CardHeader>
-                <CardTitle>Document everything in your lab</CardTitle>
-                <CardDescription>
-                  This installer creates your administrator. PolySIEM never ships with a default username or password.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li className="flex gap-2"><Check className="size-4 shrink-0 text-primary" /> Inventory for hosts, VMs, containers, services, and storage</li>
-                  <li className="flex gap-2"><Check className="size-4 shrink-0 text-primary" /> Network and VLAN documentation with routes and exposure</li>
-                  <li className="flex gap-2"><Check className="size-4 shrink-0 text-primary" /> Read-only integrations for infrastructure and security logs</li>
-                  <li className="flex gap-2"><Check className="size-4 shrink-0 text-primary" /> AI-assisted investigation and documentation</li>
-                </ul>
-                <Button className="w-full" onClick={() => setStep(1)}>
-                  Begin installation <ArrowRight className="size-4" />
-                </Button>
-              </CardContent>
-            </>
-          )}
+          {step === 0 && <WelcomeStep onBegin={() => setStep(1)} />}
 
           {step === 1 && (
-            <>
-              <CardHeader>
-                <CardTitle>Create the administrator</CardTitle>
-                <CardDescription>
-                  Choose the first login credentials. They are not prefilled or generated by PolySIEM.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <form
-                  className="space-y-4"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const validationError = validateAccount();
-                    if (validationError) {
-                      setError(validationError);
-                      return;
-                    }
-                    setError(null);
-                    setStep(2);
-                  }}
-                >
-                  <div className="space-y-2">
-                    <Label htmlFor="username">Username</Label>
-                    <Input id="username" autoComplete="username" autoFocus required value={username} onChange={(event) => setUsername(event.target.value)} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="displayName">Display name <span className="text-muted-foreground">(optional)</span></Label>
-                    <Input id="displayName" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="password">Password</Label>
-                    <Input id="password" type="password" autoComplete="new-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="confirm">Confirm password</Label>
-                    <Input id="confirm" type="password" autoComplete="new-password" required value={confirm} onChange={(event) => setConfirm(event.target.value)} />
-                  </div>
-                  {error && <p role="alert" className="text-sm font-medium text-destructive">{error}</p>}
-                  <div className="flex justify-between">
-                    <Button type="button" variant="ghost" onClick={() => setStep(0)}>
-                      <ArrowLeft className="size-4" /> Back
-                    </Button>
-                    <Button type="submit">Continue <ArrowRight className="size-4" /></Button>
-                  </div>
-                </form>
-              </CardContent>
-            </>
+            <AdministratorStep
+              username={username}
+              displayName={displayName}
+              password={password}
+              confirmation={confirm}
+              error={error}
+              onUsernameChange={setUsername}
+              onDisplayNameChange={setDisplayName}
+              onPasswordChange={setPassword}
+              onConfirmationChange={setConfirm}
+              onBack={() => setStep(0)}
+              onContinue={() => {
+                const validationError = validateAdministrator(username, password, confirm);
+                if (validationError) {
+                  setError(validationError);
+                  return;
+                }
+                setError(null);
+                setStep(2);
+              }}
+            />
           )}
 
           {step === 2 && (
-            <>
-              <CardHeader>
-                <CardTitle>Name your instance and pick a theme</CardTitle>
-                <CardDescription>
-                  Continuing creates the administrator and signs you in so integrations can be configured securely.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="space-y-2">
-                  <Label htmlFor="instanceName">Instance name</Label>
-                  <Input id="instanceName" value={instanceName} onChange={(event) => setInstanceName(event.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Theme color</Label>
-                  <div className="flex gap-3">
-                    {THEME_COLORS.map((color) => (
-                      <button
-                        key={color}
-                        type="button"
-                        aria-label={`${color} theme`}
-                        aria-pressed={themeColor === color}
-                        onClick={() => selectTheme(color)}
-                        className={cn(
-                          "flex size-10 items-center justify-center rounded-full transition-transform hover:scale-110",
-                          THEME_SWATCH[color],
-                          themeColor === color && "ring-2 ring-ring ring-offset-2 ring-offset-background",
-                        )}
-                      >
-                        {themeColor === color && <Check className="size-5 text-white" />}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-xs capitalize text-muted-foreground">{themeColor}</p>
-                </div>
-                {error && <p role="alert" className="text-sm font-medium text-destructive">{error}</p>}
-                <div className="flex justify-between">
-                  <Button type="button" variant="ghost" onClick={() => setStep(1)} disabled={loading}>
-                    <ArrowLeft className="size-4" /> Back
-                  </Button>
-                  <Button onClick={createAdministrator} disabled={loading}>
-                    {loading && <Loader2 className="size-4 animate-spin" />}
-                    Create administrator
-                  </Button>
-                </div>
-              </CardContent>
-            </>
+            <PreferencesStep
+              instanceName={instanceName}
+              themeColor={themeColor}
+              error={error}
+              loading={loading}
+              onInstanceNameChange={setInstanceName}
+              onThemeChange={selectTheme}
+              onBack={() => setStep(1)}
+              onCreate={() => void createAdministrator()}
+            />
           )}
 
           {step === 3 && (

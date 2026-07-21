@@ -33,6 +33,18 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { Markdown } from "@/components/docs/markdown";
 import { ResearchEvidenceEditor } from "@/components/security/research-evidence-editor";
+import {
+  RESEARCH_QUERY_KEY,
+  buildResearchTree,
+  displayResearchDate,
+  filterResearchTree,
+  groupResearchEvidence,
+  researchAncestorChain,
+  researchDescendantIds,
+  type ResearchEvidence,
+  type ResearchPage,
+  type ResearchTreeNode,
+} from "@/components/security/research-notebook-model";
 import { expandEvidenceReferences } from "@/lib/security/research-evidence-links";
 import {
   AlertDialog,
@@ -69,41 +81,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
-type EvidenceStatus = "success" | "error" | "unavailable";
-
-type ResearchEvidence = {
-  id: string;
-  runId: string;
-  provider: string;
-  kind: string;
-  status: EvidenceStatus;
-  title: string;
-  summary: string | null;
-  query: string | null;
-  sourceUrl: string | null;
-  data: unknown;
-  capturedAt: string;
-};
-
-type ResearchPage = {
-  id: string;
-  title: string;
-  subject: string;
-  subjectType: "ip" | "domain";
-  parentId: string | null;
-  status: "open" | "archived";
-  verdict: "unknown" | "benign" | "suspicious" | "malicious";
-  notes: string | null;
-  createdAt: string;
-  updatedAt: string;
-  lastResearchedAt: string | null;
-  createdBy: { id: string; username: string; displayName: string | null } | null;
-  evidence: ResearchEvidence[];
-};
-
-type ResearchTreeNode = { page: ResearchPage; children: ResearchTreeNode[] };
-type ResearchRun = { runId: string; items: ResearchEvidence[]; capturedAt: string };
-
 type CensysEvidenceData = {
   cached?: boolean;
   estimatedProviderCredits?: number;
@@ -134,69 +111,8 @@ const verdictMeta: Record<ResearchPage["verdict"], { label: string; className: s
   malicious: { label: "Malicious", className: "border-destructive/35 bg-destructive/10 text-destructive" },
 };
 
-function displayDate(value: string | null) {
-  if (!value) return "Not researched yet";
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
 function displayShortDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
-}
-
-function groupEvidence(evidence: ResearchEvidence[]): ResearchRun[] {
-  const groups = new Map<string, ResearchEvidence[]>();
-  for (const item of evidence) groups.set(item.runId, [...(groups.get(item.runId) ?? []), item]);
-  return [...groups.entries()].map(([runId, items]) => ({ runId, items, capturedAt: items[0]?.capturedAt ?? "" }));
-}
-
-function buildTree(pages: ResearchPage[]): ResearchTreeNode[] {
-  const byId = new Map(pages.map((page) => [page.id, { page, children: [] as ResearchTreeNode[] }]));
-  const roots: ResearchTreeNode[] = [];
-  for (const node of byId.values()) {
-    const parent = node.page.parentId ? byId.get(node.page.parentId) : undefined;
-    if (parent) parent.children.push(node);
-    else roots.push(node);
-  }
-  return roots;
-}
-
-function filterTree(nodes: ResearchTreeNode[], query: string): ResearchTreeNode[] {
-  const term = query.trim().toLowerCase();
-  if (!term) return nodes;
-  return nodes.flatMap((node) => {
-    const matches = `${node.page.title} ${node.page.subject}`.toLowerCase().includes(term);
-    const children = filterTree(node.children, query);
-    return matches || children.length > 0 ? [{ ...node, children: matches ? node.children : children }] : [];
-  });
-}
-
-function ancestorChain(page: ResearchPage, pages: ResearchPage[]) {
-  const byId = new Map(pages.map((candidate) => [candidate.id, candidate]));
-  const chain: ResearchPage[] = [];
-  let cursor = page.parentId;
-  while (cursor) {
-    const parent = byId.get(cursor);
-    if (!parent) break;
-    chain.unshift(parent);
-    cursor = parent.parentId;
-  }
-  return chain;
-}
-
-function descendantIds(pageId: string, pages: ResearchPage[]) {
-  const children = new Map<string, string[]>();
-  for (const page of pages) {
-    if (page.parentId) children.set(page.parentId, [...(children.get(page.parentId) ?? []), page.id]);
-  }
-  const found = new Set<string>();
-  const visit = (id: string) => {
-    for (const child of children.get(id) ?? []) {
-      found.add(child);
-      visit(child);
-    }
-  };
-  visit(pageId);
-  return found;
 }
 
 function ResearchTree({
@@ -408,15 +324,15 @@ export function ResearchNotebook() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const draftPageId = useRef<string | null>(null);
 
-  const pagesQuery = useQuery({ queryKey: ["security-research"], queryFn: () => apiFetch<ResearchPage[]>("/api/security/research") });
+  const pagesQuery = useQuery({ queryKey: RESEARCH_QUERY_KEY, queryFn: () => apiFetch<ResearchPage[]>("/api/security/research") });
   const pages = useMemo(() => pagesQuery.data ?? [], [pagesQuery.data]);
   const activePage = pages.find((page) => page.id === activeId) ?? pages[0] ?? null;
-  const tree = useMemo(() => buildTree(pages), [pages]);
-  const visibleTree = useMemo(() => filterTree(tree, pageSearch), [pageSearch, tree]);
-  const crumbs = useMemo(() => activePage ? ancestorChain(activePage, pages) : [], [activePage, pages]);
-  const evidenceRuns = useMemo(() => groupEvidence(activePage?.evidence ?? []), [activePage?.evidence]);
+  const tree = useMemo(() => buildResearchTree(pages), [pages]);
+  const visibleTree = useMemo(() => filterResearchTree(tree, pageSearch), [pageSearch, tree]);
+  const crumbs = useMemo(() => activePage ? researchAncestorChain(activePage, pages) : [], [activePage, pages]);
+  const evidenceRuns = useMemo(() => groupResearchEvidence(activePage?.evidence ?? []), [activePage?.evidence]);
   const visibleRuns = selectedRunId ? evidenceRuns.filter((run) => run.runId === selectedRunId) : evidenceRuns;
-  const blockedParentIds = useMemo(() => activePage ? descendantIds(activePage.id, pages) : new Set<string>(), [activePage, pages]);
+  const blockedParentIds = useMemo(() => activePage ? researchDescendantIds(activePage.id, pages) : new Set<string>(), [activePage, pages]);
   const parentOptions = activePage ? pages.filter((page) => page.id !== activePage.id && !blockedParentIds.has(page.id)) : pages;
 
   useEffect(() => {
@@ -446,7 +362,7 @@ export function ResearchNotebook() {
   };
 
   const replacePage = (updated: ResearchPage) => {
-    queryClient.setQueryData<ResearchPage[]>(["security-research"], (current = []) =>
+    queryClient.setQueryData<ResearchPage[]>(RESEARCH_QUERY_KEY, (current = []) =>
       current.map((page) => page.id === updated.id ? updated : page));
   };
 
@@ -465,7 +381,7 @@ export function ResearchNotebook() {
   const createMutation = useMutation({
     mutationFn: async (input: { subject: string; title?: string; parentId: string | null }) => {
       const page = await apiFetch<ResearchPage>("/api/security/research", { method: "POST", body: JSON.stringify(input) });
-      queryClient.setQueryData<ResearchPage[]>(["security-research"], (current = []) => [page, ...current]);
+      queryClient.setQueryData<ResearchPage[]>(RESEARCH_QUERY_KEY, (current = []) => [page, ...current]);
       setActiveId(page.id);
       setNewOpen(false);
       return apiFetch<ResearchPage>(`/api/security/research/${page.id}/collect`, { method: "POST", body: JSON.stringify({ hours: 24 }) });
@@ -495,7 +411,7 @@ export function ResearchNotebook() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiFetch<{ ok: true }>(`/api/security/research/${id}`, { method: "DELETE" }),
     onSuccess: (_result, deletedId) => {
-      queryClient.setQueryData<ResearchPage[]>(["security-research"], (current = []) => current.filter((page) => page.id !== deletedId));
+      queryClient.setQueryData<ResearchPage[]>(RESEARCH_QUERY_KEY, (current = []) => current.filter((page) => page.id !== deletedId));
       setActiveId(null);
       setDeleteOpen(false);
       toast.success("Research page deleted.");
@@ -649,7 +565,7 @@ export function ResearchNotebook() {
                     </div>
                     <div className="rounded-lg border bg-muted/20 p-3">
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Last evidence run</p>
-                      <p className="mt-2 flex items-start gap-2 text-sm"><CalendarClock className="mt-0.5 size-4 shrink-0 text-muted-foreground" /> {displayDate(activePage.lastResearchedAt)}</p>
+                      <p className="mt-2 flex items-start gap-2 text-sm"><CalendarClock className="mt-0.5 size-4 shrink-0 text-muted-foreground" /> {displayResearchDate(activePage.lastResearchedAt)}</p>
                     </div>
                   </div>
                 </CardHeader>
@@ -701,7 +617,7 @@ export function ResearchNotebook() {
                 </CardContent>
 
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/15 px-5 py-3 text-xs text-muted-foreground">
-                  <span>Created by {activePage.createdBy?.displayName || activePage.createdBy?.username || "a former user"} · {displayDate(activePage.createdAt)}</span>
+                  <span>Created by {activePage.createdBy?.displayName || activePage.createdBy?.username || "a former user"} · {displayResearchDate(activePage.createdAt)}</span>
                   <div className="flex gap-1">
                     <Button variant="ghost" size="xs" onClick={() => quickUpdateMutation.mutate({ id: activePage.id, patch: { status: activePage.status === "open" ? "archived" : "open" } })}>
                       {activePage.status === "open" ? <Archive className="size-3" /> : <BookOpen className="size-3" />} {activePage.status === "open" ? "Archive" : "Reopen"}
@@ -757,7 +673,7 @@ export function ResearchNotebook() {
                         <section key={run.runId} className={cn("space-y-2", index > 0 && "border-t pt-3")}>
                           <div className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
                             <Check className="size-3 text-emerald-600" />
-                            {displayDate(run.capturedAt)} · {run.items.filter((item) => item.status === "success").length}/{run.items.length} captured
+                            {displayResearchDate(run.capturedAt)} · {run.items.filter((item) => item.status === "success").length}/{run.items.length} captured
                           </div>
                           {run.items.map((item) => <EvidenceCard key={item.id} evidence={item} onInsert={insertEvidenceReference} />)}
                         </section>

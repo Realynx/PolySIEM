@@ -27,6 +27,14 @@ import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
 import { ResearchEvidenceEditor } from "@/components/security/research-evidence-editor";
 import {
+  RESEARCH_QUERY_KEY,
+  displayResearchDate,
+  flattenResearchTree,
+  groupResearchEvidence,
+  type ResearchEvidence,
+  type ResearchPage,
+} from "@/components/security/research-notebook-model";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -55,61 +63,6 @@ import { MobilePage, MobileSection } from "@/components/mobile/ui/mobile-page";
 import { MobileEmpty, MobileList, MobileListRow } from "@/components/mobile/ui/mobile-list";
 import { MobileFab } from "@/components/mobile/ui/mobile-fab";
 
-/*
- * Plain DTO shapes of /api/security/research — mirrored from the desktop
- * ResearchNotebook (they are module-private there). Same endpoints and the
- * same ["security-research"] query key, so the two views share one cache.
- */
-type EvidenceStatus = "success" | "error" | "unavailable";
-
-interface ResearchEvidence {
-  id: string;
-  runId: string;
-  provider: string;
-  kind: string;
-  status: EvidenceStatus;
-  title: string;
-  summary: string | null;
-  query: string | null;
-  sourceUrl: string | null;
-  data: unknown;
-  capturedAt: string;
-}
-
-interface ResearchPage {
-  id: string;
-  title: string;
-  subject: string;
-  subjectType: "ip" | "domain";
-  parentId: string | null;
-  status: "open" | "archived";
-  verdict: "unknown" | "benign" | "suspicious" | "malicious";
-  notes: string | null;
-  createdAt: string;
-  updatedAt: string;
-  lastResearchedAt: string | null;
-  createdBy: { id: string; username: string; displayName: string | null } | null;
-  evidence: ResearchEvidence[];
-}
-
-function flattenResearchTree(pages: ResearchPage[]) {
-  const children = new Map<string | null, ResearchPage[]>();
-  const ids = new Set(pages.map((page) => page.id));
-  for (const page of pages) {
-    const parentId = page.parentId && ids.has(page.parentId) ? page.parentId : null;
-    children.set(parentId, [...(children.get(parentId) ?? []), page]);
-  }
-  const result: Array<{ page: ResearchPage; depth: number }> = [];
-  const visit = (parentId: string | null, depth: number) => {
-    for (const page of children.get(parentId) ?? []) {
-      result.push({ page, depth });
-      visit(page.id, depth + 1);
-    }
-  };
-  visit(null, 0);
-  return result;
-}
-
 const PROVIDER_META: Record<string, { label: string; icon: typeof Globe2; className: string }> = {
   dns: { label: "DNS", icon: Globe2, className: "bg-sky-500/10 text-sky-700 dark:text-sky-300" },
   polysiem: { label: "PolySIEM", icon: Network, className: "bg-violet-500/10 text-violet-700 dark:text-violet-300" },
@@ -124,17 +77,6 @@ const VERDICT_STYLES: Record<ResearchPage["verdict"], string> = {
   suspicious: "border-warning/40 bg-warning/10 text-warning",
   malicious: "border-destructive/40 bg-destructive/10 text-destructive",
 };
-
-function displayDate(value: string | null) {
-  if (!value) return "Not researched yet";
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
-function groupEvidence(evidence: ResearchEvidence[]) {
-  const groups = new Map<string, ResearchEvidence[]>();
-  for (const item of evidence) groups.set(item.runId, [...(groups.get(item.runId) ?? []), item]);
-  return [...groups.entries()].map(([runId, items]) => ({ runId, items, capturedAt: items[0]?.capturedAt ?? "" }));
-}
 
 /**
  * Phone research notebook: page index as touch rows, one page open at a time
@@ -154,7 +96,7 @@ export function MobileResearchNotebook() {
   const [hours, setHours] = useState("24");
 
   const pagesQuery = useQuery({
-    queryKey: ["security-research"],
+    queryKey: RESEARCH_QUERY_KEY,
     queryFn: () => apiFetch<ResearchPage[]>("/api/security/research"),
   });
   const pages = useMemo(() => pagesQuery.data ?? [], [pagesQuery.data]);
@@ -184,7 +126,7 @@ export function MobileResearchNotebook() {
   };
 
   const replacePage = (updated: ResearchPage) => {
-    queryClient.setQueryData<ResearchPage[]>(["security-research"], (current = []) =>
+    queryClient.setQueryData<ResearchPage[]>(RESEARCH_QUERY_KEY, (current = []) =>
       current.map((page) => (page.id === updated.id ? updated : page)),
     );
   };
@@ -208,7 +150,7 @@ export function MobileResearchNotebook() {
         method: "POST",
         body: JSON.stringify(input),
       });
-      queryClient.setQueryData<ResearchPage[]>(["security-research"], (current = []) => [page, ...current]);
+      queryClient.setQueryData<ResearchPage[]>(RESEARCH_QUERY_KEY, (current = []) => [page, ...current]);
       setActiveId(page.id);
       setNewOpen(false);
       return apiFetch<ResearchPage>(`/api/security/research/${page.id}/collect`, {
@@ -236,7 +178,7 @@ export function MobileResearchNotebook() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiFetch<{ ok: true }>(`/api/security/research/${id}`, { method: "DELETE" }),
     onSuccess: (_result, deletedId) => {
-      queryClient.setQueryData<ResearchPage[]>(["security-research"], (current = []) =>
+      queryClient.setQueryData<ResearchPage[]>(RESEARCH_QUERY_KEY, (current = []) =>
         current.filter((page) => page.id !== deletedId),
       );
       setActiveId(null);
@@ -246,7 +188,7 @@ export function MobileResearchNotebook() {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const evidenceRuns = useMemo(() => groupEvidence(activePage?.evidence ?? []), [activePage?.evidence]);
+  const evidenceRuns = useMemo(() => groupResearchEvidence(activePage?.evidence ?? []), [activePage?.evidence]);
   const hasUnsavedChanges = Boolean(activePage && (notes !== (activePage.notes ?? "") || title.trim() !== activePage.title));
   const saveActivePage = () => {
     if (!activePage || !title.trim() || updateMutation.isPending || !hasUnsavedChanges) return;
@@ -299,7 +241,7 @@ export function MobileResearchNotebook() {
               </div>
               <p className="font-mono text-sm break-all text-primary">{activePage.subject}</p>
               <p className="text-[11px] text-muted-foreground">
-                Last evidence run: {displayDate(activePage.lastResearchedAt)}
+                Last evidence run: {displayResearchDate(activePage.lastResearchedAt)}
               </p>
               <Button
                 variant="outline"
@@ -436,7 +378,7 @@ export function MobileResearchNotebook() {
                         >
                           {index === 0 ? <Check className="size-3" /> : evidenceRuns.length - index}
                         </span>
-                        {displayDate(run.capturedAt)} ·{" "}
+                        {displayResearchDate(run.capturedAt)} ·{" "}
                         {run.items.filter((item) => item.status === "success").length}/{run.items.length} sources
                       </div>
                       <div className="space-y-2 border-l pl-2.5">
@@ -452,7 +394,7 @@ export function MobileResearchNotebook() {
 
             <p className="px-0.5 text-[11px] text-muted-foreground">
               Opened by {activePage.createdBy?.displayName || activePage.createdBy?.username || "a former user"} on{" "}
-              {displayDate(activePage.createdAt)}.
+              {displayResearchDate(activePage.createdAt)}.
             </p>
           </>
         ) : pages.length === 0 ? (
@@ -489,7 +431,7 @@ export function MobileResearchNotebook() {
                     </>
                   }
                   subtitle={<span className="font-mono">{page.subject}</span>}
-                  trailing={<span>{page.evidence.length > 0 ? `${groupEvidence(page.evidence).length} runs` : "new"}</span>}
+                  trailing={<span>{page.evidence.length > 0 ? `${groupResearchEvidence(page.evidence).length} runs` : "new"}</span>}
                 />
               ))}
             </MobileList>

@@ -29,9 +29,17 @@ Only share policies and query helpers when their semantics are genuinely identic
 
 Focused boundary policies belong in focused modules. Elasticsearch upstream-error normalization, for example, lives in `src/lib/services/elasticsearch-upstream.ts` rather than inside one of its callers.
 
+Cross-transport orchestration belongs in a service as well. MCP and the AI agent both delegate integration synchronization to `src/lib/services/integration-sync.ts`, which owns target eligibility, lookup, execution order, and result shaping. Keep transport-specific authorization and tool descriptions in their registries; do not copy application policy into those entry points.
+
+The AI tool facade at `src/lib/ai/agent/tools/index.ts` owns only tool availability by mode, role, and demo state. Capability modules beside it own research, external-provider, application-read, write, and interview definitions. Callers should continue importing the facade rather than depending on individual capability modules.
+
+Likewise, `src/lib/mcp/server.ts` is only the stable MCP assembly facade. Domain-focused sibling modules own overview/research, inventory reads and writes, documentation, integrations, and credentials. Preserve the facade and catalog registration contract when adding or reorganizing MCP tools.
+
 ## Workflow extensions
 
 Node metadata and client-safe workflow contracts live in `src/lib/workflows/types.ts`, and the engine and builder consume the same trigger-kind and trigger-parameter rules. Add catalog fields additively, and preserve legacy re-exports when external consumers may still import them.
+
+`src/lib/workflows/engine.ts` is the stable client-safe facade. Template resolution, graph execution, graph validation, conditions, trigger input, and secret-output policy live in focused sibling modules; consumers should import the facade unless they are implementing one of those policies. Builder-only React Flow translation belongs in `src/components/workflows/builder-flow.ts`, outside the domain engine.
 
 A workflow action should be a small adapter around an existing service operation. If two actions genuinely share execution behavior, put it in a narrowly named helper, but keep caller-specific error wording with the caller.
 
@@ -42,6 +50,10 @@ Never add an arbitrary infrastructure API action. Add a reviewed action with a s
 Use `src/components/shared/api-envelope.ts` for PolySIEM API envelopes and `useDebounced` for delayed inputs. Feature wrappers can keep their own request construction and user-facing fallback copy.
 
 For stateful panels, split transport and state transitions from presentation once the controller becomes independently understandable. `useDocInterview` is the pattern to copy: the hook owns SSE and phase transitions, the panel owns rendering and the review UI.
+
+When desktop and mobile presentations share hierarchy, fallback, query-key, or payload policy, put that policy in a tested feature model and keep the presentations independent. Provider-heavy forms follow the same rule: `integration-form-fields.tsx` is the stable dispatcher, while provider-specific field groups live under `integration-fields/`.
+
+Server pages should authenticate, load a view model, and render. The access-map page follows this boundary: its server-only loader owns queries and final anonymization, while pure sibling modules assemble provider, physical-network, and Proxmox projections.
 
 Don't extract tiny one-use visual fragments just to shrink a file. Extract when you have cohesive behavior, reusable policy, or a transformation worth testing on its own.
 
@@ -57,9 +69,8 @@ Don't extract tiny one-use visual fragments just to shrink a file. Extract when 
 
 These are candidates for later bounded refactors. They are not invitations to rewrite anything wholesale.
 
-1. `components/topology/footprint-map.tsx` and `network-access-map.tsx`: separate graph construction/routing from interaction and rendering, backed by graph regression tests.
+1. `components/topology/footprint-map.tsx` and `network-access-map.tsx`: continue separating interaction state from rendering; graph construction and routing now have focused modules and regression tests.
 2. `components/settings/backup-manager.tsx`: separate destination CRUD, scheduling, history, and restore flows.
 3. `lib/ai/agent/runtime.ts`: separate mode selection, streaming, persistence, and fallback orchestration.
-4. `lib/mcp/server.ts`: split tool registration/catalog definition from authorization and dispatch.
-5. `components/workflows/builder.tsx` and `lib/workflows/engine.ts`: extract cohesive editing and validation subsystems without duplicating the canonical workflow contract.
-6. Inventory mutations and audit writes: evaluate transactions where a persisted mutation without its audit record would be unacceptable.
+4. `components/workflows/builder.tsx`: extract cohesive editing/controller state without duplicating the canonical workflow contract or builder-flow model.
+5. Inventory mutations and audit writes: evaluate transactions where a persisted mutation without its audit record would be unacceptable.

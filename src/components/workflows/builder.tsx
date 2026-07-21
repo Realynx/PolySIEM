@@ -49,7 +49,6 @@ import type {
   GraphIssue,
   NodeTypeMeta,
   WorkflowDto,
-  WorkflowGraph,
 } from "@/lib/workflows/types";
 import { isTriggerKind } from "@/lib/workflows/types";
 import { useCatalog, useEntityLabels, useWorkflow, wfKeys } from "@/components/workflows/api";
@@ -76,6 +75,11 @@ import { ConfigPanel } from "@/components/workflows/config-panel";
 import { ValidationPanel } from "@/components/workflows/validation-panel";
 import { RunWorkflowDialog } from "@/components/workflows/run-dialog";
 import { WorkflowHistorySheet } from "@/components/workflows/run-detail-sheet";
+import {
+  buildFlowEdge,
+  createBuilderId,
+  graphToFlow,
+} from "@/components/workflows/builder-flow";
 
 /** Same app-token React Flow theme the topology maps use (topology-canvas.tsx). */
 const XY_THEME = {
@@ -90,64 +94,6 @@ const XY_THEME = {
   "--xy-minimap-mask-background-color": "color-mix(in oklab, var(--color-muted) 55%, transparent)",
   "--xy-attribution-background-color": "transparent",
 } as React.CSSProperties;
-
-function shortId(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
-}
-
-/** Build a styled flow edge; branch edges are color-coded and labeled. */
-function buildFlowEdge(
-  id: string,
-  source: string,
-  target: string,
-  branch: "true" | "false" | null,
-): Edge {
-  const edge: Edge = {
-    id,
-    source,
-    target,
-    sourceHandle: branch ?? undefined,
-    data: { branch },
-    style: { strokeWidth: 1.5 },
-  };
-  if (branch) {
-    edge.label = branch;
-    edge.style = {
-      strokeWidth: 1.5,
-      stroke: branch === "true" ? "var(--color-success)" : "var(--color-destructive)",
-    };
-    edge.labelStyle = {
-      fill: "var(--color-muted-foreground)",
-      fontSize: 10,
-      fontFamily: "var(--font-geist-mono), monospace",
-    };
-    edge.labelBgStyle = { fill: "var(--color-card)" };
-    edge.labelBgPadding = [4, 2];
-    edge.labelBgBorderRadius = 4;
-  }
-  return edge;
-}
-
-function graphToFlow(
-  graph: WorkflowGraph,
-  catalogByKind: Map<string, NodeTypeMeta>,
-): { nodes: BuilderFlowNode[]; edges: Edge[] } {
-  return {
-    nodes: graph.nodes.map((spec) => ({
-      id: spec.id,
-      type: "workflow" as const,
-      position: spec.position,
-      data: {
-        kind: spec.kind,
-        label: spec.label,
-        config: spec.config,
-        meta: catalogByKind.get(spec.kind) ?? null,
-        issues: [],
-      },
-    })),
-    edges: graph.edges.map((spec) => buildFlowEdge(spec.id, spec.source, spec.target, spec.branch)),
-  };
-}
 
 function BuilderInner({ workflowId, isAdmin }: { workflowId: string; isAdmin: boolean }) {
   const router = useRouter();
@@ -293,7 +239,7 @@ function BuilderInner({ workflowId, isAdmin }: { workflowId: string; isAdmin: bo
   const addNodeFromMeta = useCallback(
     (meta: NodeTypeMeta, position?: { x: number; y: number }) => {
       if (readOnly) return;
-      const id = shortId("n");
+      const id = createBuilderId("n");
       const pos = position ?? nextNodePosition(nodes.map((n) => n.position));
       const node: BuilderFlowNode = {
         id,
@@ -340,7 +286,7 @@ function BuilderInner({ workflowId, isAdmin }: { workflowId: string; isAdmin: bo
         toast.error("That connection would create a loop — workflows must flow one way.");
         return;
       }
-      setEdges((es) => [...es, buildFlowEdge(shortId("e"), source, target, branch)]);
+      setEdges((es) => [...es, buildFlowEdge(createBuilderId("e"), source, target, branch)]);
     },
     [readOnly, edges, setEdges],
   );

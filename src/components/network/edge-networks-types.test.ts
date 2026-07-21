@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   edgeOverviewCounts,
+  edgeOverviewPresentation,
   edgeReconciliation,
   edgeServerState,
   infrastructureEdgeDetails,
@@ -25,6 +26,17 @@ const server = (overrides: Partial<EdgeNatServer> = {}): EdgeNatServer => ({
 });
 
 describe("edge network presentation helpers", () => {
+  it("normalizes legacy Cloudflare data and chooses one shared default tab", () => {
+    const cloudflare = { id: "cf-1", name: "Cloudflare", type: "CLOUDFLARE" };
+    expect(edgeOverviewPresentation({ edgeServers: [], tailscale: [], otherNetworks: [cloudflare] })).toMatchObject({
+      cloudflare: [cloudflare],
+      hasAnyNetwork: true,
+      defaultTab: "cloudflare",
+    });
+    expect(edgeOverviewPresentation({ edgeServers: [], tailscale: [{ id: "tailnet" }], otherNetworks: [] }).defaultTab).toBe("tailscale");
+    expect(edgeOverviewPresentation({ edgeServers: [server()], tailscale: [], otherNetworks: [] }).defaultTab).toBe("edge");
+  });
+
   it("only counts online servers and enabled, unique targets", () => {
     const overview = {
       tailscale: [],

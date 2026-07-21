@@ -174,3 +174,112 @@ export function buildCredentials(form: FormState): Record<string, string> {
   }
 }
 
+export function credentialsFilled(form: FormState): boolean {
+  switch (form.type) {
+    case "PROXMOX":
+      return Boolean(form.tokenId.trim() && form.tokenSecret.trim());
+    case "OPNSENSE":
+      return Boolean(form.apiKey.trim() && form.apiSecret.trim());
+    case "ELASTICSEARCH":
+      return form.esAuthMode === "apiKey"
+        ? Boolean(form.esApiKey.trim())
+        : Boolean(form.esUsername.trim() && form.esPassword);
+    case "UNIFI":
+      return form.unifiAuthMode === "apiKey"
+        ? Boolean(form.unifiApiKey.trim())
+        : Boolean(form.unifiUsername.trim() && form.unifiPassword);
+    case "OTX":
+      return Boolean(form.otxApiKey.trim());
+    case "CLOUDFLARE":
+      return Boolean(form.cloudflareApiToken.trim() && form.cloudflareAccountId.trim());
+    case "TAILSCALE":
+      return Boolean(form.tailscaleAccessToken.trim() && form.tailscaleTailnet.trim());
+    case "CENSYS":
+      return Boolean(form.censysAccessToken.trim());
+    case "SECURITYTRAILS":
+      return Boolean(form.securityTrailsApiKey.trim());
+    case "EDGE_NAT_SERVER":
+      return true;
+  }
+}
+
+export interface IntegrationPayloadOptions {
+  isEdit: boolean;
+  includeCredentials: boolean;
+  usingMock: boolean;
+}
+
+export function buildIntegrationPayload(
+  form: FormState,
+  { isEdit, includeCredentials, usingMock }: IntegrationPayloadOptions,
+): Record<string, unknown> {
+  const interval = Number.parseInt(form.syncIntervalMinutes, 10);
+  const body: Record<string, unknown> = {
+    ...(!isEdit ? { type: form.type } : {}),
+    name: form.name.trim(),
+    baseUrl: form.baseUrl.trim(),
+    verifyTls: form.verifyTls,
+    syncIntervalMinutes: Number.isFinite(interval) ? interval : 15,
+  };
+  const settings = buildIntegrationSettings(form);
+  if (settings) body.settings = settings;
+
+  if (!isEdit) {
+    body.credentials = usingMock ? {} : buildCredentials(form);
+  } else if (includeCredentials && credentialsFilled(form)) {
+    body.credentials = buildCredentials(form);
+  }
+  return body;
+}
+
+function buildIntegrationSettings(form: FormState): Record<string, unknown> | null {
+  switch (form.type) {
+    case "ELASTICSEARCH":
+      return {
+        indexPattern: form.indexPattern.trim() || ES_SETTINGS_DEFAULTS.indexPattern,
+        timestampField: form.timestampField.trim() || ES_SETTINGS_DEFAULTS.timestampField,
+        levelField: form.levelField.trim(),
+        messageField: form.messageField.trim(),
+        hostField: form.hostField.trim(),
+      };
+    case "UNIFI":
+      return { site: form.unifiSite.trim() || "default" };
+    case "OPNSENSE": {
+      const pollMinutes = Number.parseInt(form.bandwidthPollMinutes, 10);
+      return {
+        bandwidthPolling: form.bandwidthPolling,
+        bandwidthPollMinutes: Number.isFinite(pollMinutes) ? Math.min(60, Math.max(1, pollMinutes)) : 2,
+      };
+    }
+    case "OTX":
+      return { feed: form.otxFeed };
+    case "CLOUDFLARE":
+      return {
+        accountId: form.cloudflareAccountId.trim(),
+        includeDnsRecords: form.cloudflareIncludeDns,
+        includeTunnelConnections: form.cloudflareIncludeConnections,
+      };
+    case "TAILSCALE":
+      return {
+        tailnet: form.tailscaleTailnet.trim() || "-",
+        includeRoutes: form.tailscaleIncludeRoutes,
+        includeDns: form.tailscaleIncludeDns,
+        includePolicy: form.tailscaleIncludePolicy,
+      };
+    case "EDGE_NAT_SERVER":
+      return {
+        publicInterface: form.edgePublicInterface.trim() || "eth0",
+        outboundInterface: form.edgeOutboundInterface.trim() || form.edgePublicInterface.trim() || "eth0",
+        enableIpForwarding: form.edgeEnableIpForwarding,
+      };
+    case "CENSYS":
+      return {
+        organizationId: form.censysOrganizationId.trim(),
+        aiDailyCallLimit: form.censysAiDailyCallLimit,
+      };
+    case "SECURITYTRAILS":
+      return { aiDailyCallLimit: form.securityTrailsAiDailyCallLimit };
+    case "PROXMOX":
+      return null;
+  }
+}

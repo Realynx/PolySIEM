@@ -1,7 +1,12 @@
 import "server-only";
 
 import { z } from "zod";
-import { redactValue } from "@/lib/ai/agent/redact";
+import {
+  ELASTIC_SOURCE_EXCLUDES,
+  flattenSafeDocument,
+  SENSITIVE_ELASTIC_FIELD_RE,
+} from "@/lib/ai/agent/elasticsearch-safety";
+export { flattenSafeDocument } from "@/lib/ai/agent/elasticsearch-safety";
 import { esFetch } from "@/lib/integrations/elasticsearch/client";
 import { detectSources } from "@/lib/integrations/elasticsearch/detect";
 import { isMock, type DriverConfig } from "@/lib/integrations/types";
@@ -11,8 +16,6 @@ import { elasticsearchSettingsSchema } from "@/lib/validators/integrations";
 const MAX_FIELDS = 100;
 const MAX_DOCUMENTS = 20;
 const SAMPLE_DOCUMENTS = 8;
-const MAX_DOCUMENT_FIELDS = 48;
-const MAX_VALUE_LENGTH = 400;
 const MAX_RESULT_CHARACTERS = 20_000;
 const MAX_DISCOVERY_CHARACTERS = 14_000;
 const MAX_CATALOG_CHARACTERS = 4_000;
@@ -312,66 +315,6 @@ async function resolveSearchScope(
   return { target: requested.join(","), catalog };
 }
 
-const SENSITIVE_FIELD_RE =
-  /(?:^|\.)(?:authorization|proxy-authorization|auth|bearer|cookie|set-cookie|password|passwd|secret|token|api[_-]?key|apikey|credential|credentials|private[_ -]?key|encrypted)(?:\.|$)/i;
-
-function cappedString(value: string): string {
-  return value.length > MAX_VALUE_LENGTH ? `${value.slice(0, MAX_VALUE_LENGTH)}…` : value;
-}
-
-const SOURCE_EXCLUDES = [
-  "authorization", "*.authorization", "proxy-authorization", "*.proxy-authorization",
-  "cookie", "*.cookie", "set-cookie", "*.set-cookie", "password", "*.password",
-  "passwd", "*.passwd", "secret", "*.secret", "token", "*.token", "api_key", "*.api_key",
-  "apikey", "*.apikey", "credential", "*.credential", "credentials", "*.credentials",
-  "headers", "*.headers", "body", "*.body", "payload", "*.payload",
-] as const;
-
-function safeLeaf(value: unknown, secrets: readonly string[]): unknown {
-  if (typeof value === "string") return cappedString(value);
-  if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
-  if (Array.isArray(value)) return value.slice(0, 10).map((item) => safeLeaf(item, secrets));
-  try {
-    return cappedString(JSON.stringify(redactValue(value, secrets)));
-  } catch {
-    return "[unserializable]";
-  }
-}
-
-/** Flatten nested ECS/custom documents so an AI can reason about unknown schemas without huge raw JSON. */
-export function flattenSafeDocument(
-  source: Record<string, unknown>,
-  secrets: readonly string[] = [],
-): { fields: Record<string, unknown>; truncated: boolean } {
-  const flattened: Record<string, unknown> = {};
-  let seen = 0;
-  let truncated = false;
-
-  const visit = (value: unknown, path: string, depth: number) => {
-    if (seen >= MAX_DOCUMENT_FIELDS) {
-      truncated = true;
-      return;
-    }
-    if (SENSITIVE_FIELD_RE.test(path)) {
-      flattened[path] = "[REDACTED]";
-      seen += 1;
-      return;
-    }
-    if (value && typeof value === "object" && !Array.isArray(value) && depth < 6) {
-      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-        visit(child, path ? `${path}.${key}` : key, depth + 1);
-        if (seen >= MAX_DOCUMENT_FIELDS) break;
-      }
-      return;
-    }
-    if (!path) return;
-    flattened[path] = redactValue(safeLeaf(value, secrets), secrets);
-    seen += 1;
-  };
-  visit(source, "", 0);
-  return { fields: flattened, truncated };
-}
-
 function samplesFromHits(
   hits: SearchHit[],
   fields: string[],
@@ -455,7 +398,7 @@ export async function discoverElasticsearchFields(
   const allFields = Object.entries(caps.fields ?? {})
     .filter(([field, byType]) =>
       (!parsed.fieldPattern || wildcardMatch(field, parsed.fieldPattern)) &&
-      !SENSITIVE_FIELD_RE.test(field) &&
+      !SENSITIVE_ELASTIC_FIELD_RE.test(field) &&
       !Object.values(byType).every((cap) => cap.metadata_field),
     )
     .sort(([a], [b]) => a.localeCompare(b));
@@ -471,7 +414,7 @@ export async function discoverElasticsearchFields(
         size: SAMPLE_DOCUMENTS,
         _source: {
           includes: selected.map(([field]) => field),
-          excludes: SOURCE_EXCLUDES,
+          excludes: ELASTIC_SOURCE_EXCLUDES,
         },
         query: { match_all: {} },
         track_total_hits: false,
@@ -653,7 +596,7 @@ export async function searchElasticsearchDocuments(
     ? mockSearch(parsed)
     : await esFetch<SearchResponse>(cfg, `/${encodeURIComponent(scope.target)}/_search?ignore_unavailable=true&allow_no_indices=true`, {
         size: parsed.limit,
-        _source: { includes: sourceIncludes, excludes: SOURCE_EXCLUDES },
+        _source: { includes: sourceIncludes, excludes: ELASTIC_SOURCE_EXCLUDES },
         track_total_hits: 10_000,
         timeout: "8s",
         terminate_after: 20_000,

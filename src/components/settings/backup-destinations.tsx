@@ -33,6 +33,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { apiFetch } from "@/components/shared/api-client";
 import { BACKUP_KEY, BACKUP_TYPE_META } from "./backup-shared";
+import {
+  buildDestinationConfig,
+  destinationFormForEdit,
+  destinationHasStoredSecret,
+  emptyDestinationForm,
+  type DestinationForm,
+  type EditableDestination,
+} from "./backup-destination-model";
 
 /* ---------- section 2: destinations ---------- */
 
@@ -121,53 +129,6 @@ export function DestinationCard({
   );
 }
 
-interface DestForm {
-  type: DestinationType;
-  name: string;
-  // s3
-  endpoint: string;
-  region: string;
-  bucket: string;
-  s3Prefix: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-  forcePathStyle: boolean;
-  // azure
-  azureMode: "sas" | "sharedKey";
-  sasUrl: string;
-  accountName: string;
-  accountKey: string;
-  container: string;
-  azurePrefix: string;
-}
-
-function emptyForm(type: DestinationType = "s3"): DestForm {
-  return {
-    type,
-    name: "",
-    endpoint: "",
-    region: "us-east-1",
-    bucket: "",
-    s3Prefix: "polysiem/backups/",
-    accessKeyId: "",
-    secretAccessKey: "",
-    forcePathStyle: false,
-    azureMode: "sas",
-    sasUrl: "",
-    accountName: "",
-    accountKey: "",
-    container: "",
-    azurePrefix: "polysiem/backups/",
-  };
-}
-
-interface EditableDestination {
-  id: string;
-  name: string;
-  type: DestinationType;
-  config: Record<string, unknown>;
-}
-
 export function DestinationDialog({
   open,
   onOpenChange,
@@ -179,7 +140,7 @@ export function DestinationDialog({
 }) {
   const queryClient = useQueryClient();
   const isEdit = target !== null;
-  const [form, setForm] = useState<DestForm>(() => emptyForm());
+  const [form, setForm] = useState<DestinationForm>(() => emptyDestinationForm());
 
   // On edit, pull the non-secret config so the form can be pre-filled.
   const { data: editable } = useQuery({
@@ -191,36 +152,21 @@ export function DestinationDialog({
   useEffect(() => {
     if (!open) return;
     if (!isEdit) {
-      setForm(emptyForm());
+      setForm(emptyDestinationForm());
       return;
     }
     if (editable) {
-      const c = editable.config;
-      setForm({
-        ...emptyForm(editable.type),
-        type: editable.type,
-        name: editable.name,
-        endpoint: (c.endpoint as string) ?? "",
-        region: (c.region as string) ?? "us-east-1",
-        bucket: (c.bucket as string) ?? "",
-        s3Prefix: (c.prefix as string) ?? "",
-        accessKeyId: (c.accessKeyId as string) ?? "",
-        forcePathStyle: Boolean(c.forcePathStyle),
-        azureMode: (c.mode as "sas" | "sharedKey") ?? "sas",
-        accountName: (c.accountName as string) ?? "",
-        container: (c.container as string) ?? "",
-        azurePrefix: (c.prefix as string) ?? "",
-      });
+      setForm(destinationFormForEdit(editable));
     }
   }, [open, isEdit, editable]);
 
-  function set<K extends keyof DestForm>(key: K, value: DestForm[K]) {
+  function set<K extends keyof DestinationForm>(key: K, value: DestinationForm[K]) {
     setForm((f) => ({ ...f, [key]: value }));
   }
 
   const save = useMutation({
     mutationFn: () => {
-      const config = buildConfig(form, isEdit);
+      const config = buildDestinationConfig(form, isEdit);
       if (isEdit) {
         return apiFetch(`/api/admin/backup/destinations/${target!.id}`, {
           method: "PATCH",
@@ -241,12 +187,7 @@ export function DestinationDialog({
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const hasSecret =
-    form.type === "s3"
-      ? Boolean(editable?.config.hasSecretAccessKey)
-      : form.azureMode === "sas"
-        ? Boolean(editable?.config.hasSasUrl)
-        : Boolean(editable?.config.hasAccountKey);
+  const hasSecret = destinationHasStoredSecret(form, editable);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -313,43 +254,14 @@ export function DestinationDialog({
   );
 }
 
-function buildConfig(form: DestForm, isEdit: boolean): Record<string, unknown> {
-  if (form.type === "s3") {
-    const config: Record<string, unknown> = {
-      endpoint: form.endpoint.trim(),
-      region: form.region.trim(),
-      bucket: form.bucket.trim(),
-      prefix: form.s3Prefix.trim(),
-      accessKeyId: form.accessKeyId.trim(),
-      forcePathStyle: form.forcePathStyle,
-    };
-    // Write-only secret: only send it when the user typed one (blank = keep).
-    if (!isEdit || form.secretAccessKey.trim()) config.secretAccessKey = form.secretAccessKey.trim();
-    return config;
-  }
-  if (form.azureMode === "sas") {
-    const config: Record<string, unknown> = { mode: "sas" };
-    if (!isEdit || form.sasUrl.trim()) config.sasUrl = form.sasUrl.trim();
-    return config;
-  }
-  const config: Record<string, unknown> = {
-    mode: "sharedKey",
-    accountName: form.accountName.trim(),
-    container: form.container.trim(),
-    prefix: form.azurePrefix.trim(),
-  };
-  if (!isEdit || form.accountKey.trim()) config.accountKey = form.accountKey.trim();
-  return config;
-}
-
 function S3Fields({
   form,
   set,
   isEdit,
   hasSecret,
 }: {
-  form: DestForm;
-  set: <K extends keyof DestForm>(key: K, value: DestForm[K]) => void;
+  form: DestinationForm;
+  set: <K extends keyof DestinationForm>(key: K, value: DestinationForm[K]) => void;
   isEdit: boolean;
   hasSecret: boolean;
 }) {
@@ -441,8 +353,8 @@ function AzureFields({
   isEdit,
   hasSecret,
 }: {
-  form: DestForm;
-  set: <K extends keyof DestForm>(key: K, value: DestForm[K]) => void;
+  form: DestinationForm;
+  set: <K extends keyof DestinationForm>(key: K, value: DestinationForm[K]) => void;
   isEdit: boolean;
   hasSecret: boolean;
 }) {
@@ -582,4 +494,3 @@ export function DeleteDestinationDialog({
     </AlertDialog>
   );
 }
-

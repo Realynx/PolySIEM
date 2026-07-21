@@ -157,6 +157,17 @@ export interface EdgeNetworksOverview {
   otherNetworks: OtherEdgeNetwork[];
 }
 
+export type EdgeNetworkTab = "edge" | "tailscale" | "cloudflare";
+
+export const EDGE_NETWORKS_QUERY_KEY = ["edge-networks"] as const;
+
+export const EMPTY_EDGE_NETWORKS_OVERVIEW: EdgeNetworksOverview = {
+  edgeServers: [],
+  tailscale: [],
+  cloudflare: [],
+  otherNetworks: [],
+};
+
 export interface NatRuleInput {
   name: string;
   protocol: NatProtocol;
@@ -183,6 +194,21 @@ export function edgeOverviewCounts(data: EdgeNetworksOverview) {
     enabledRules: enabledRules.length,
     protectedTargets: new Set(enabledRules.map((rule) => `${rule.targetAddress}:${rule.targetPort}`)).size,
     needsReconcile: data.edgeServers.filter((server) => edgeReconciliation(server).drift !== "in_sync").length,
+  };
+}
+
+export function edgeOverviewPresentation(overview: EdgeNetworksOverview) {
+  const cloudflare = overview.cloudflare ?? overview.otherNetworks.filter((network) => network.type === "CLOUDFLARE");
+  const defaultTab: EdgeNetworkTab = overview.edgeServers.length > 0
+    ? "edge"
+    : overview.tailscale.length > 0
+      ? "tailscale"
+      : "cloudflare";
+  return {
+    cloudflare,
+    counts: edgeOverviewCounts(overview),
+    hasAnyNetwork: overview.edgeServers.length > 0 || overview.tailscale.length > 0 || cloudflare.length > 0,
+    defaultTab,
   };
 }
 

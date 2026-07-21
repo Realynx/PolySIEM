@@ -44,8 +44,8 @@ import { apiFetch } from "@/components/shared/api-client";
 import { getElasticsearchEndpointIssue } from "@/lib/integrations/elasticsearch/endpoint";
 import type { IntegrationView } from "./integrations-manager";
 import {
-  ES_SETTINGS_DEFAULTS,
-  buildCredentials,
+  buildIntegrationPayload,
+  credentialsFilled,
   emptyForm,
   formForType,
   type FormState,
@@ -56,35 +56,6 @@ import {
   IntegrationPicker,
 } from "./integration-form-presentation";
 import { IntegrationSpecificFields } from "./integration-form-fields";
-
-function credentialsFilled(form: FormState): boolean {
-  switch (form.type) {
-    case "PROXMOX":
-      return Boolean(form.tokenId.trim() && form.tokenSecret.trim());
-    case "OPNSENSE":
-      return Boolean(form.apiKey.trim() && form.apiSecret.trim());
-    case "ELASTICSEARCH":
-      return form.esAuthMode === "apiKey"
-        ? Boolean(form.esApiKey.trim())
-        : Boolean(form.esUsername.trim() && form.esPassword);
-    case "UNIFI":
-      return form.unifiAuthMode === "apiKey"
-        ? Boolean(form.unifiApiKey.trim())
-        : Boolean(form.unifiUsername.trim() && form.unifiPassword);
-    case "OTX":
-      return Boolean(form.otxApiKey.trim());
-    case "CLOUDFLARE":
-      return Boolean(form.cloudflareApiToken.trim() && form.cloudflareAccountId.trim());
-    case "TAILSCALE":
-      return Boolean(form.tailscaleAccessToken.trim() && form.tailscaleTailnet.trim());
-    case "CENSYS":
-      return Boolean(form.censysAccessToken.trim());
-    case "SECURITYTRAILS":
-      return Boolean(form.securityTrailsApiKey.trim());
-    case "EDGE_NAT_SERVER":
-      return true;
-  }
-}
 
 export function IntegrationFormDialog({
   open,
@@ -140,88 +111,17 @@ export function IntegrationFormDialog({
 
   const save = useMutation({
     mutationFn: () => {
-      const interval = Number.parseInt(form.syncIntervalMinutes, 10);
-      const common = {
-        name: form.name.trim(),
-        baseUrl: form.baseUrl.trim(),
-        verifyTls: form.verifyTls,
-        syncIntervalMinutes: Number.isFinite(interval) ? interval : 15,
-      };
-      const esSettings = {
-        indexPattern: form.indexPattern.trim() || ES_SETTINGS_DEFAULTS.indexPattern,
-        timestampField: form.timestampField.trim() || ES_SETTINGS_DEFAULTS.timestampField,
-        levelField: form.levelField.trim(),
-        messageField: form.messageField.trim(),
-        hostField: form.hostField.trim(),
-      };
-
-      const unifiSettings = { site: form.unifiSite.trim() || "default" };
-
-      const pollMinutes = Number.parseInt(form.bandwidthPollMinutes, 10);
-      const opnSettings = {
-        bandwidthPolling: form.bandwidthPolling,
-        bandwidthPollMinutes: Number.isFinite(pollMinutes) ? Math.min(60, Math.max(1, pollMinutes)) : 2,
-      };
-
-      const otxSettings = { feed: form.otxFeed };
-      const cloudflareSettings = {
-        accountId: form.cloudflareAccountId.trim(),
-        includeDnsRecords: form.cloudflareIncludeDns,
-        includeTunnelConnections: form.cloudflareIncludeConnections,
-      };
-      const tailscaleSettings = {
-        tailnet: form.tailscaleTailnet.trim() || "-",
-        includeRoutes: form.tailscaleIncludeRoutes,
-        includeDns: form.tailscaleIncludeDns,
-        includePolicy: form.tailscaleIncludePolicy,
-      };
-      const edgeNatSettings = {
-        publicInterface: form.edgePublicInterface.trim() || "eth0",
-        outboundInterface: form.edgeOutboundInterface.trim() || form.edgePublicInterface.trim() || "eth0",
-        enableIpForwarding: form.edgeEnableIpForwarding,
-      };
-      const censysSettings = {
-        organizationId: form.censysOrganizationId.trim(),
-        aiDailyCallLimit: form.censysAiDailyCallLimit,
-      };
-      const securityTrailsSettings = {
-        aiDailyCallLimit: form.securityTrailsAiDailyCallLimit,
-      };
-
+      const body = buildIntegrationPayload(form, {
+        isEdit,
+        includeCredentials: replaceCredentials || changingMockToLive,
+        usingMock,
+      });
       if (isEdit) {
-        const body: Record<string, unknown> = { ...common };
-        if (form.type === "ELASTICSEARCH") body.settings = esSettings;
-        if (form.type === "UNIFI") body.settings = unifiSettings;
-        if (form.type === "OPNSENSE") body.settings = opnSettings;
-        if (form.type === "OTX") body.settings = otxSettings;
-        if (form.type === "CLOUDFLARE") body.settings = cloudflareSettings;
-        if (form.type === "TAILSCALE") body.settings = tailscaleSettings;
-        if (form.type === "EDGE_NAT_SERVER") body.settings = edgeNatSettings;
-        if (form.type === "CENSYS") body.settings = censysSettings;
-        if (form.type === "SECURITYTRAILS") body.settings = securityTrailsSettings;
-        if ((replaceCredentials || changingMockToLive) && credentialsFilled(form)) {
-          body.credentials = buildCredentials(form);
-        }
         return apiFetch(`/api/admin/integrations/${integration.id}`, {
           method: "PATCH",
           body: JSON.stringify(body),
         });
       }
-
-      const body: Record<string, unknown> = {
-        type: form.type,
-        ...common,
-        credentials: usingMock ? {} : buildCredentials(form),
-      };
-      if (form.type === "ELASTICSEARCH") body.settings = esSettings;
-      if (form.type === "UNIFI") body.settings = unifiSettings;
-      if (form.type === "OPNSENSE") body.settings = opnSettings;
-      if (form.type === "OTX") body.settings = otxSettings;
-      if (form.type === "CLOUDFLARE") body.settings = cloudflareSettings;
-      if (form.type === "TAILSCALE") body.settings = tailscaleSettings;
-      if (form.type === "EDGE_NAT_SERVER") body.settings = edgeNatSettings;
-      if (form.type === "CENSYS") body.settings = censysSettings;
-      if (form.type === "SECURITYTRAILS") body.settings = securityTrailsSettings;
       return apiFetch("/api/admin/integrations", { method: "POST", body: JSON.stringify(body) });
     },
     onSuccess: () => {

@@ -45,7 +45,9 @@ import { MobileStat, MobileStatStrip } from "@/components/mobile/ui/mobile-stats
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import { MobileFab } from "@/components/mobile/ui/mobile-fab";
 import {
-  edgeOverviewCounts,
+  EDGE_NETWORKS_QUERY_KEY,
+  EMPTY_EDGE_NETWORKS_OVERVIEW,
+  edgeOverviewPresentation,
   edgeReconciliation,
   edgeServerState,
   isRuleApplied,
@@ -53,17 +55,14 @@ import {
   tailscaleDetails,
   type EdgeNatRule,
   type EdgeNatServer,
+  type EdgeNetworkTab,
   type EdgeNetworksOverview,
   type OtherEdgeNetwork,
 } from "@/components/network/edge-networks-types";
 import { MobileNatRuleSheet } from "./mobile-nat-rule-sheet";
 import { cloudflareZoneForHostname } from "@/components/network/edge-network-utils";
 
-const EMPTY_OVERVIEW: EdgeNetworksOverview = { edgeServers: [], tailscale: [], cloudflare: [], otherNetworks: [] };
-
-type EdgeTab = "edge" | "tailscale" | "cloudflare";
-
-const ADD_HREFS: Record<EdgeTab, string> = {
+const ADD_HREFS: Record<EdgeNetworkTab, string> = {
   edge: "/settings/integrations?add=EDGE_NAT_SERVER",
   tailscale: "/settings/integrations?add=TAILSCALE",
   cloudflare: "/settings/integrations?add=CLOUDFLARE",
@@ -74,18 +73,14 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const overviewQuery = useQuery({
-    queryKey: ["edge-networks"],
+    queryKey: EDGE_NETWORKS_QUERY_KEY,
     queryFn: () => apiFetch<EdgeNetworksOverview>("/api/network/edge-networks"),
     refetchInterval: 30_000,
   });
-  const overview = overviewQuery.data ?? EMPTY_OVERVIEW;
-  const cloudflare = overview.cloudflare ?? overview.otherNetworks.filter((network) => network.type === "CLOUDFLARE");
-  const counts = edgeOverviewCounts(overview);
-  const hasAnyNetwork = overview.edgeServers.length > 0 || overview.tailscale.length > 0 || cloudflare.length > 0;
-  const defaultTab: EdgeTab =
-    overview.edgeServers.length > 0 ? "edge" : overview.tailscale.length > 0 ? "tailscale" : "cloudflare";
+  const overview = overviewQuery.data ?? EMPTY_EDGE_NETWORKS_OVERVIEW;
+  const { cloudflare, counts, hasAnyNetwork, defaultTab } = edgeOverviewPresentation(overview);
   const tabParam = searchParams.get("tab");
-  const tab: EdgeTab = tabParam === "edge" || tabParam === "tailscale" || tabParam === "cloudflare" ? tabParam : defaultTab;
+  const tab: EdgeNetworkTab = tabParam === "edge" || tabParam === "tailscale" || tabParam === "cloudflare" ? tabParam : defaultTab;
 
   return (
     <>
@@ -237,7 +232,7 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
     drifted: "Drift detected",
     unknown: "Remote unknown",
   }[reconciliation.drift];
-  const invalidate = () => void queryClient.invalidateQueries({ queryKey: ["edge-networks"] });
+  const invalidate = () => void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
 
   const applyMutation = useMutation({
     mutationFn: () => apiFetch(`/api/network/edge-networks/servers/${server.id}/apply`, { method: "POST" }),
@@ -619,11 +614,11 @@ function MobileCloudflareSection({ network, isAdmin }: { network: OtherEdgeNetwo
       if (result.warning) toast.warning(result.warning);
       setConfirmRemove(null);
       setSelected(null);
-      void queryClient.invalidateQueries({ queryKey: ["edge-networks"] });
+      void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
     onError: (error: Error) => {
       toast.error(error.message);
-      void queryClient.invalidateQueries({ queryKey: ["edge-networks"] });
+      void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
   });
 

@@ -63,7 +63,9 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  edgeOverviewCounts,
+  EDGE_NETWORKS_QUERY_KEY,
+  EMPTY_EDGE_NETWORKS_OVERVIEW,
+  edgeOverviewPresentation,
   edgeReconciliation,
   edgeServerState,
   isRuleApplied,
@@ -78,20 +80,15 @@ import {
 import { CloudflarePublishedRoutes } from "./edge-cloudflare-routes";
 import { isValidNetworkPort } from "./edge-network-utils";
 
-const EMPTY_OVERVIEW: EdgeNetworksOverview = { edgeServers: [], tailscale: [], cloudflare: [], otherNetworks: [] };
-
 export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
   const overviewQuery = useQuery({
-    queryKey: ["edge-networks"],
+    queryKey: EDGE_NETWORKS_QUERY_KEY,
     queryFn: () => apiFetch<EdgeNetworksOverview>("/api/network/edge-networks"),
     refetchInterval: 30_000,
   });
-  const overview = overviewQuery.data ?? EMPTY_OVERVIEW;
-  const cloudflare = overview.cloudflare ?? overview.otherNetworks.filter((network) => network.type === "CLOUDFLARE");
-  const counts = edgeOverviewCounts(overview);
+  const overview = overviewQuery.data ?? EMPTY_EDGE_NETWORKS_OVERVIEW;
+  const { cloudflare, counts, hasAnyNetwork, defaultTab } = edgeOverviewPresentation(overview);
   const hasEdgeServers = overview.edgeServers.length > 0;
-  const hasAnyNetwork = overview.edgeServers.length > 0 || overview.tailscale.length > 0 || cloudflare.length > 0;
-  const defaultTab = hasEdgeServers ? "edge" : overview.tailscale.length > 0 ? "tailscale" : "cloudflare";
 
   return (
     <div>
@@ -352,12 +349,12 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
   const pending = settings.pendingChanges || server.rules.some((rule) => rule.enabled && !isRuleApplied(rule, settings.lastAppliedAt));
   const applyMutation = useMutation({
     mutationFn: () => apiFetch(`/api/network/edge-networks/servers/${server.id}/apply`, { method: "POST" }),
-    onSuccess: () => { toast.success(`Applied NAT rules on ${server.name}`); void queryClient.invalidateQueries({ queryKey: ["edge-networks"] }); },
+    onSuccess: () => { toast.success(`Applied NAT rules on ${server.name}`); void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY }); },
     onError: (error: Error) => toast.error(`Could not apply rules: ${error.message}`),
   });
   const deleteMutation = useMutation({
     mutationFn: (ruleId: string) => apiFetch(`/api/network/edge-networks/servers/${server.id}/rules/${ruleId}`, { method: "DELETE" }),
-    onSuccess: () => { toast.success("NAT rule removed. Apply changes to update the server."); setDeleteRule(null); void queryClient.invalidateQueries({ queryKey: ["edge-networks"] }); },
+    onSuccess: () => { toast.success("NAT rule removed. Apply changes to update the server."); setDeleteRule(null); void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY }); },
     onError: (error: Error) => toast.error(error.message),
   });
   const verifyMutation = useMutation({
@@ -370,7 +367,7 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
     onSuccess: () => {
       toast.success(`Remote NAT rules cleared on ${server.name}`);
       setClearOpen(false);
-      void queryClient.invalidateQueries({ queryKey: ["edge-networks"] });
+      void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
     onError: (error: Error) => toast.error(`Remote cleanup failed: ${error.message}`),
   });
@@ -524,7 +521,7 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
       }),
     onSuccess: (result) => {
       toast.success(result.detail || "Edge service installed and SSH verified");
-      void queryClient.invalidateQueries({ queryKey: ["edge-networks"] });
+      void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
       onOpenChange(false);
     },
     onError: (error: Error) => toast.error(`Could not install the Edge service: ${error.message}`),
@@ -678,7 +675,7 @@ function NatRuleDialog({ server, rule, open, onOpenChange }: { server: EdgeNatSe
       rule ? `/api/network/edge-networks/servers/${server.id}/rules/${rule.id}` : `/api/network/edge-networks/servers/${server.id}/rules`,
       { method: rule ? "PATCH" : "POST", body: JSON.stringify(input) },
     ),
-    onSuccess: () => { toast.success(`${rule ? "Updated" : "Added"} NAT rule. Apply changes when ready.`); onOpenChange(false); void queryClient.invalidateQueries({ queryKey: ["edge-networks"] }); },
+    onSuccess: () => { toast.success(`${rule ? "Updated" : "Added"} NAT rule. Apply changes when ready.`); onOpenChange(false); void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY }); },
     onError: (error: Error) => toast.error(error.message),
   });
   const submit = (event: FormEvent) => {
