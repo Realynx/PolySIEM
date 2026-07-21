@@ -118,7 +118,7 @@ export function AiInterviewQuestion({
     <Dialog open>
       <DialogContent
         showCloseButton={false}
-        className="max-h-[90svh] gap-0 overflow-hidden p-0 sm:max-w-2xl"
+        className="max-h-[90svh] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 max-sm:overflow-hidden sm:max-w-2xl"
         onEscapeKeyDown={(event) => event.preventDefault()}
         onInteractOutside={(event) => event.preventDefault()}
       >
@@ -138,7 +138,7 @@ export function AiInterviewQuestion({
           </div>
         </DialogHeader>
 
-        <div className="space-y-5 overflow-y-auto overscroll-contain px-5 py-4">
+        <div className="min-h-0 space-y-5 overflow-y-auto overscroll-contain px-5 py-4">
           {prompt.questions.map((question, questionIndex) => (
             <fieldset key={question.id} className="space-y-3">
               <legend className="w-full text-sm leading-5 font-medium">

@@ -81,6 +81,7 @@ interface ResearchPage {
   title: string;
   subject: string;
   subjectType: "ip" | "domain";
+  parentId: string | null;
   status: "open" | "archived";
   verdict: "unknown" | "benign" | "suspicious" | "malicious";
   notes: string | null;
@@ -89,6 +90,24 @@ interface ResearchPage {
   lastResearchedAt: string | null;
   createdBy: { id: string; username: string; displayName: string | null } | null;
   evidence: ResearchEvidence[];
+}
+
+function flattenResearchTree(pages: ResearchPage[]) {
+  const children = new Map<string | null, ResearchPage[]>();
+  const ids = new Set(pages.map((page) => page.id));
+  for (const page of pages) {
+    const parentId = page.parentId && ids.has(page.parentId) ? page.parentId : null;
+    children.set(parentId, [...(children.get(parentId) ?? []), page]);
+  }
+  const result: Array<{ page: ResearchPage; depth: number }> = [];
+  const visit = (parentId: string | null, depth: number) => {
+    for (const page of children.get(parentId) ?? []) {
+      result.push({ page, depth });
+      visit(page.id, depth + 1);
+    }
+  };
+  visit(null, 0);
+  return result;
 }
 
 const PROVIDER_META: Record<string, { label: string; icon: typeof Globe2; className: string }> = {
@@ -129,6 +148,7 @@ export function MobileResearchNotebook() {
   const [censysOpen, setCensysOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [initialSubject, setInitialSubject] = useState("");
+  const [newParentId, setNewParentId] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [title, setTitle] = useState("");
   const [hours, setHours] = useState("24");
@@ -137,7 +157,8 @@ export function MobileResearchNotebook() {
     queryKey: ["security-research"],
     queryFn: () => apiFetch<ResearchPage[]>("/api/security/research"),
   });
-  const pages = pagesQuery.data ?? [];
+  const pages = useMemo(() => pagesQuery.data ?? [], [pagesQuery.data]);
+  const orderedPages = useMemo(() => flattenResearchTree(pages), [pages]);
   // Unlike desktop (sidebar + page), the phone shows the index until a page is picked.
   const activePage = activeId !== null ? (pages.find((page) => page.id === activeId) ?? null) : null;
 
@@ -158,6 +179,7 @@ export function MobileResearchNotebook() {
 
   const openNewPage = () => {
     setInitialSubject("");
+    setNewParentId(null);
     setNewOpen(true);
   };
 
@@ -181,7 +203,7 @@ export function MobileResearchNotebook() {
   });
 
   const createMutation = useMutation({
-    mutationFn: async (input: { subject: string; title?: string }) => {
+    mutationFn: async (input: { subject: string; title?: string; parentId: string | null }) => {
       const page = await apiFetch<ResearchPage>("/api/security/research", {
         method: "POST",
         body: JSON.stringify(input),
@@ -279,6 +301,17 @@ export function MobileResearchNotebook() {
               <p className="text-[11px] text-muted-foreground">
                 Last evidence run: {displayDate(activePage.lastResearchedAt)}
               </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setInitialSubject("");
+                  setNewParentId(activePage.id);
+                  setNewOpen(true);
+                }}
+              >
+                <Plus className="size-4" /> Add child page
+              </Button>
             </div>
 
             <MobileSection title="Assessment">
@@ -436,11 +469,12 @@ export function MobileResearchNotebook() {
         ) : (
           <MobileSection title={`Pages · ${pages.filter((page) => page.status === "open").length} open`}>
             <MobileList>
-              {pages.map((page) => (
+              {orderedPages.map(({ page, depth }) => (
                 <MobileListRow
                   key={page.id}
                   onClick={() => setActiveId(page.id)}
-                  className={cn(page.status === "archived" && "opacity-60")}
+                  className={cn(depth > 0 && "border-l-2 border-l-primary/20", page.status === "archived" && "opacity-60")}
+                  leading={depth > 0 ? <span className="text-[10px] font-medium text-muted-foreground">{depth}</span> : undefined}
                   title={
                     <>
                       <span className="min-w-0 truncate">{page.title}</span>
@@ -473,16 +507,18 @@ export function MobileResearchNotebook() {
       <Dialog open={newOpen} onOpenChange={setNewOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Start a research page</DialogTitle>
+            <DialogTitle>{newParentId ? "Add a child research page" : "Start a research page"}</DialogTitle>
             <DialogDescription>
               Enter the suspicious address exactly as it appeared. PolySIEM will preserve it and gather
               evidence from every available source.
             </DialogDescription>
           </DialogHeader>
           <NewResearchForm
-            key={newOpen ? initialSubject : "closed"}
+            key={newOpen ? `${initialSubject}:${newParentId ?? "root"}` : "closed"}
             busy={createMutation.isPending}
             initialSubject={initialSubject}
+            initialParentId={newParentId}
+            pages={pages}
             onCancel={() => setNewOpen(false)}
             onCreate={(input) => createMutation.mutate(input)}
           />
@@ -558,16 +594,21 @@ export function MobileResearchNotebook() {
 function NewResearchForm({
   busy,
   initialSubject,
+  initialParentId,
+  pages,
   onCancel,
   onCreate,
 }: {
   busy: boolean;
   initialSubject: string;
+  initialParentId: string | null;
+  pages: ResearchPage[];
   onCancel: () => void;
-  onCreate: (input: { subject: string; title?: string }) => void;
+  onCreate: (input: { subject: string; title?: string; parentId: string | null }) => void;
 }) {
   const [subject, setSubject] = useState(initialSubject);
   const [title, setTitle] = useState("");
+  const [parentId, setParentId] = useState(initialParentId ?? "__none__");
   return (
     <>
       <div className="space-y-4 py-1">
@@ -579,6 +620,16 @@ function NewResearchForm({
             onChange={(event) => setSubject(event.target.value)}
             placeholder="suspicious.example or 203.0.113.42"
           />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="m-research-parent">Parent page</Label>
+          <Select value={parentId} onValueChange={setParentId}>
+            <SelectTrigger id="m-research-parent" className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">No parent (top level)</SelectItem>
+              {pages.map((page) => <SelectItem key={page.id} value={page.id}>{page.title}</SelectItem>)}
+            </SelectContent>
+          </Select>
         </div>
         <div className="space-y-2">
           <Label htmlFor="m-research-title">
@@ -598,7 +649,7 @@ function NewResearchForm({
         </Button>
         <Button
           disabled={busy || !subject.trim()}
-          onClick={() => onCreate({ subject, ...(title.trim() ? { title } : {}) })}
+          onClick={() => onCreate({ subject, ...(title.trim() ? { title } : {}), parentId: parentId === "__none__" ? null : parentId })}
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
           Create &amp; research

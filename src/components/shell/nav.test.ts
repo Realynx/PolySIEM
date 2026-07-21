@@ -1,18 +1,34 @@
 import { describe, expect, it } from "vitest";
 import { NAV_GROUPS, isActive } from "./nav";
 
-describe("network navigation", () => {
+describe("navigation ordering", () => {
   const groupTitleFor = (href: string) =>
     NAV_GROUPS.find((group) => group.items.some((item) => item.href === href))?.title;
 
-  it("leads with access map, firewall, edge networks, and networks in that order", () => {
+  it("leads with firewall, access map, edge networks, and networks in that order", () => {
     const network = NAV_GROUPS.find((group) => group.title === "Network");
 
     expect(network?.items.slice(0, 4).map(({ title, href }) => ({ title, href }))).toEqual([
-      { title: "Access map", href: "/network/access-map" },
       { title: "Firewall", href: "/firewall" },
+      { title: "Access map", href: "/network/access-map" },
       { title: "Edge networks", href: "/network/edge-networks" },
       { title: "Networks", href: "/network" },
+    ]);
+  });
+
+  it("places Lab map directly under Storage in Inventory", () => {
+    const inventory = NAV_GROUPS.find((group) => group.title === "Inventory");
+    const visibleItems = inventory?.items.filter((item) => !item.paletteOnly);
+
+    expect(visibleItems?.slice(-2).map((item) => item.title)).toEqual(["Storage", "Lab map"]);
+  });
+
+  it("places Threat center directly above Security score", () => {
+    const security = NAV_GROUPS.find((group) => group.title === "Security");
+
+    expect(security?.items.slice(0, 2).map((item) => item.title)).toEqual([
+      "Threat center",
+      "Security score",
     ]);
   });
 

@@ -645,28 +645,48 @@ function interviewInteractionTools(ctx: ToolContext): AnyTool[] {
       .max(4),
   });
 
-  return [
-    makeTool(
-      ctx,
-      "ask_question",
-      "Present the operator with 1-5 focused interview questions at once. Each question has 2-4 likely single-select answers, and the UI also offers a custom typed or spoken answer.",
-      z.object({
-        questions: z
-          .array(questionSchema)
-          .min(1)
-          .max(5)
-          .describe("Related questions the operator can answer together"),
-      }),
-      async (args) => ({
-        presented: true,
-        questionCount: args.questions.length,
-        optionCount: args.questions.reduce(
-          (total, question) => total + question.options.length,
-          0,
+  const askQuestion = makeTool(
+    ctx,
+    "ask_question",
+    "Present the operator with 1-5 focused interview questions at once. Each question has 2-4 likely single-select answers, and the UI also offers a custom typed or spoken answer.",
+    z.object({
+      questions: z
+        .array(questionSchema)
+        .min(1)
+        .max(5)
+        .describe("Related questions the operator can answer together"),
+    }),
+    async (args) => ({
+      presented: true,
+      questionCount: args.questions.length,
+      optionCount: args.questions.reduce(
+        (total, question) => total + question.options.length,
+        0,
+      ),
+    }),
+  );
+
+  // Presenting a question hands control back to the operator. Without
+  // returnDirect, createAgent invokes the model again after the tool result;
+  // some models respond by calling ask_question repeatedly until LangGraph's
+  // recursion guard aborts an otherwise successful interview turn.
+  askQuestion.returnDirect = true;
+  const compactInterview = makeTool(
+    ctx,
+    "compact_interview",
+    "Compact older documentation-interview turns before the automatic 90% context threshold. Summarize confirmed facts, decisions, and unresolved questions from older turns; the recent five user/assistant pairs remain verbatim.",
+    z.object({
+      summary: z
+        .string()
+        .min(1)
+        .max(4_000)
+        .describe(
+          "Concise durable summary of older confirmed facts, decisions, and unresolved questions",
         ),
-      }),
-    ),
-  ];
+    }),
+    async (args) => ({ compacted: true, summary: args.summary }),
+  );
+  return [askQuestion, compactInterview];
 }
 
 /**

@@ -23,7 +23,8 @@ One rule worth repeating: all mutations go through the `src/lib/services/*` func
 | GET | /api/audit?entityType=&entityId= | session | C |
 | GET/POST | /api/admin/users; PATCH/DELETE /api/admin/users/[id] | admin | C |
 | GET/PATCH | /api/admin/settings | admin | C |
-| GET | /api/internal/auto-update | local update agent bearer token | C |
+| GET | /api/admin/updates; GET/POST /api/admin/updates/request | admin | C |
+| GET, POST | /api/internal/auto-update | local update agent bearer token | C |
 | GET/POST/DELETE | /api/admin/api-tokens(/[id]) | admin | C |
 | GET/POST | /api/admin/ai-credentials; PATCH/DELETE /api/admin/ai-credentials/[id] (AI credential store; secrets are write-only — REST never returns a decrypted secret) | admin | done |
 | GET/POST | /api/admin/backup/export (GET: full gzipped-JSON logical dump with ciphertext tied to this APP_SECRET; POST `{ password }`: portable AES-256-GCM encrypted `.psbackup` containing re-keyable credentials) | admin | done |

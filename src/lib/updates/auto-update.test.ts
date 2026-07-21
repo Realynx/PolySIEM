@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isUpdateAgentAuthorized,
+  isWebUpdateCapable,
   resolveAutoUpdateConfig,
 } from "./auto-update";
 
@@ -30,6 +31,14 @@ describe("auto-update configuration", () => {
         POLYSIEM_DEMO_LOCKED: "true",
       }),
     ).toEqual({ enabled: true, capable: true, enforcedByDemo: true });
+  });
+});
+
+describe("browser update capability", () => {
+  it("is limited to managed Linux Docker installs", () => {
+    expect(isWebUpdateCapable({ POLYSIEM_AUTO_UPDATE_CAPABLE: "true", POLYSIEM_INSTALL_TYPE: "docker" })).toBe(true);
+    expect(isWebUpdateCapable({ POLYSIEM_AUTO_UPDATE_CAPABLE: "true", POLYSIEM_INSTALL_TYPE: "native" })).toBe(false);
+    expect(isWebUpdateCapable({ POLYSIEM_INSTALL_TYPE: "docker" })).toBe(false);
   });
 });
 

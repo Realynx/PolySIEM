@@ -999,6 +999,9 @@ model SecurityResearchPage {
   title            String
   subject          String
   subjectType      String // "ip" | "domain"
+  parentId         String?
+  parent           SecurityResearchPage?  @relation("ResearchTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children         SecurityResearchPage[] @relation("ResearchTree")
   status           String    @default("open") // "open" | "archived"
   verdict          String    @default("unknown") // unknown|benign|suspicious|malicious
   notes            String?   @db.Text
@@ -1013,6 +1016,7 @@ model SecurityResearchPage {
   @@index([status, updatedAt])
   @@index([subject])
   @@index([createdById])
+  @@index([parentId])
 }
 
 /// An immutable provider result captured during a research run. `runId`

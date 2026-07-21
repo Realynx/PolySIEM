@@ -7,6 +7,10 @@ describe("documentation interview prompt", () => {
     expect(prompt).toMatch(/batch of 1-5 focused questions/);
     expect(prompt).toMatch(/2-4 useful, distinct suggested answers per question/);
     expect(prompt).toMatch(/tool is optional/);
+    expect(prompt).toMatch(/ask_question ends this turn/i);
+    expect(prompt).toMatch(/at most once per turn/i);
+    expect(prompt).toMatch(/compact_interview once/i);
+    expect(prompt).toMatch(/automatic 90% context compaction/i);
     expect(prompt).toMatch(/Stop asking when.*no material assumptions/i);
     expect(prompt).toMatch(/unresolved assumption.*TODO/i);
   });

@@ -16,6 +16,7 @@ import { EvidenceRow } from "@/components/logs/threats/evidence-row";
 import { InvestigationBadge } from "@/components/logs/threats/investigation-badge";
 import { InvestigationPanel } from "@/components/logs/threats/investigation-panel";
 import { SeverityBadge, TicketStatusBadge } from "@/components/logs/threats/severity-badge";
+import { TicketIpIndicator } from "@/components/logs/threats/ticket-ip-indicator";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 
 /**
@@ -60,10 +61,10 @@ export function MobileTicketSheet({
   if (!ticket) return null;
   const isClosed = ticket.status === "CLOSED";
   const refGroups = [
-    { label: "Source IPs", values: ticket.refs?.srcIps ?? [] },
-    { label: "Destination IPs", values: ticket.refs?.destIps ?? [] },
-    { label: "Signatures", values: ticket.refs?.signatures ?? [] },
-    { label: "Hosts", values: ticket.refs?.hosts ?? [] },
+    { label: "Source IPs", kind: "ip", values: ticket.refs?.srcIps ?? [] },
+    { label: "Destination IPs", kind: "ip", values: ticket.refs?.destIps ?? [] },
+    { label: "Signatures", kind: "signature", values: ticket.refs?.signatures ?? [] },
+    { label: "Hosts", kind: "host", values: ticket.refs?.hosts ?? [] },
   ].filter((g) => g.values.length > 0);
 
   const close = () =>
@@ -148,8 +149,8 @@ export function MobileTicketSheet({
                 <div key={group.label} className="flex flex-wrap items-baseline gap-1.5">
                   <span className="w-full shrink-0 text-[11px] text-muted-foreground">{group.label}</span>
                   {group.values.map((value) => {
-                    const researchable = group.label !== "Signatures";
-                    return researchable ? (
+                    if (group.kind === "ip") return <TicketIpIndicator key={value} value={value} compact />;
+                    return group.kind === "host" ? (
                       <Badge key={value} variant="secondary" className="max-w-full font-mono text-xs" asChild>
                         <Link
                           href={`/security/research?subject=${encodeURIComponent(value)}`}

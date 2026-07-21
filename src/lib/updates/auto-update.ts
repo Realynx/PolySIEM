@@ -16,6 +16,13 @@ function enabled(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === "true";
 }
 
+/** Browser-triggered updates currently use the managed Linux Docker agent. */
+export function isWebUpdateCapable(
+  env: UpdateEnvironment = process.env,
+): boolean {
+  return enabled(env.POLYSIEM_AUTO_UPDATE_CAPABLE) && env.POLYSIEM_INSTALL_TYPE === "docker";
+}
+
 /** Resolve the effective setting without implying support on unmanaged installs. */
 export function resolveAutoUpdateConfig(
   storedEnabled: boolean,

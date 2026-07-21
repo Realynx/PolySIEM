@@ -10,6 +10,7 @@ import { UpdateCheck } from "@/components/settings/update-check";
 import { BashQuoteBlock } from "@/components/settings/bash-quote";
 import { getInstanceName } from "@/lib/settings";
 import { getCurrentVersion, getGitHubRepository } from "@/lib/updates/release";
+import { isWebUpdateCapable } from "@/lib/updates/auto-update";
 import { formatBytes } from "@/lib/format";
 import { computeMetricsReport } from "@/lib/services/compute-metrics";
 import type { ComputeMetricSummary } from "@/lib/compute/metrics";
@@ -387,6 +388,7 @@ export default async function AboutSettingsPage() {
   const repository = getGitHubRepository();
   const artStyle = INSTANCE_ART_STYLES[randomInt(INSTANCE_ART_STYLES.length)]!;
   const instanceArt = renderInstanceArt(instanceName, artStyle);
+  const terminalIdentity = `polysiem@${instanceName}`;
   const artSizeCqw = 96 / (instanceArt.width * 0.62);
   const installType = process.env.POLYSIEM_INSTALL_TYPE ?? "docker";
   const updateCommand =
@@ -456,13 +458,13 @@ export default async function AboutSettingsPage() {
           </div>
           <div className="absolute inset-x-0 flex pointer-events-none items-center justify-center gap-2 text-[10px] text-muted-foreground">
             <AppLogo className="size-3.5 text-primary" />
-            polysiem@homelab: ~
+            {terminalIdentity}: ~
           </div>
         </header>
 
         <div className="relative p-4 sm:p-6">
           <p className="mb-6">
-            <span className="font-bold text-primary">polysiem@homelab</span>
+            <span className="font-bold text-primary">{terminalIdentity}</span>
             <span className="text-muted-foreground">:</span>
             <span className="font-bold text-chart-2">~</span>
             <span className="text-muted-foreground">$</span> neofetch
@@ -509,7 +511,7 @@ export default async function AboutSettingsPage() {
 
             <div className="min-w-0">
               <div className="mb-3">
-                <p className="font-bold text-primary">polysiem@homelab</p>
+                <p className="font-bold text-primary">{terminalIdentity}</p>
                 <p className="text-muted-foreground">──────────────────</p>
               </div>
               <dl className="space-y-1.5">
@@ -547,7 +549,7 @@ export default async function AboutSettingsPage() {
 
           <div className="mt-8 border-t border-dashed border-border pt-5">
             <p className="mb-4">
-              <span className="font-bold text-primary">polysiem@homelab</span>
+              <span className="font-bold text-primary">{terminalIdentity}</span>
               <span className="text-muted-foreground">:</span>
               <span className="font-bold text-chart-2">~</span>
               <span className="text-muted-foreground">$</span> polysiem update
@@ -559,6 +561,7 @@ export default async function AboutSettingsPage() {
                 automaticRollback={
                   installType === "docker" || installType === "windows-docker"
                 }
+                webUpdateCapable={isWebUpdateCapable()}
               />
             </div>
           </div>

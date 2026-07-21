@@ -104,12 +104,11 @@ export function ResearchEvidenceEditor({
       value={value}
       onChange={onChange}
       placeholder={"# Investigation notes\n\nRecord hypotheses, pivots, and conclusions. Use Evidence to cite or embed a captured result."}
-      minHeightClass={compact ? "min-h-48" : "min-h-[22rem]"}
-      defaultMode={compact ? "write" : "split"}
+      minHeightClass={compact ? "min-h-48" : "min-h-[52svh]"}
+      defaultMode="write"
       showNodePicker={false}
       onSave={onSave}
       insertSlot={({ insertAtCursor, disabled }) => <EvidencePicker evidence={evidence} onInsert={insertAtCursor} disabled={disabled} />}
-      aiSlot={<span className="hidden text-xs text-muted-foreground sm:inline">Markdown · Ctrl/⌘ S to save</span>}
       renderPreview={(content) => <Markdown content={expandEvidenceReferences(content, evidence)} />}
     />
   );

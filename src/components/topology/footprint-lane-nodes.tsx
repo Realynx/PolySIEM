@@ -87,7 +87,7 @@ export const InternetNode = memo(function InternetNode({
         <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-info/10">
           <Globe className="size-5 text-info" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-card-foreground">Internet</p>
           <p className="truncate font-mono text-xs text-muted-foreground">
             {data.wanIp ? `WAN ${data.wanIp}` : "beyond the WAN"}
@@ -262,7 +262,7 @@ export const GatewayNode = memo(function GatewayNode({
       : "egress";
   return (
     <div
-      className="flex h-full w-full cursor-pointer items-center gap-2 rounded-full border border-info/40 bg-card px-3 shadow-sm transition-colors hover:border-info/75"
+      className="flex h-full w-full cursor-pointer items-center gap-2 overflow-hidden rounded-full border border-info/40 bg-card px-3 shadow-sm transition-colors hover:border-info/75"
       style={{ width: GATEWAY_WIDTH, height: GATEWAY_HEIGHT }}
     >
       <Handle
@@ -287,8 +287,11 @@ export const GatewayNode = memo(function GatewayNode({
               : "bg-muted-foreground/40",
         )}
       />
-      <div className="min-w-0">
-        <p className="truncate text-xs font-medium leading-tight text-card-foreground">
+      <div className="min-w-0 flex-1">
+        <p
+          className="truncate text-xs font-medium leading-tight text-card-foreground"
+          title={gateway.name}
+        >
           {gateway.name}
         </p>
         <p className="truncate font-mono text-[10px] leading-tight text-muted-foreground">
@@ -354,7 +357,7 @@ function ClientChip({ client }: { client: FpClient }) {
 export const LaneNode = memo(function LaneNode({
   data,
 }: NodeProps<LaneNodeType>) {
-  const { lane, expanded } = data;
+  const { lane, expanded, bw } = data;
   const clients = lane.clients;
   const hasClients = clients.length > 0;
   const machineArea = machineGridSize(lane.machines.length);
@@ -388,7 +391,7 @@ export const LaneNode = memo(function LaneNode({
       style={{
         backgroundImage: `linear-gradient(135deg, color-mix(in oklab, ${routeColor} 7%, transparent), transparent 42%)`,
       }}
-      title={`${lane.name}${lane.vlanId !== null ? ` · VLAN ${lane.vlanId}` : ""}${lane.cidr ? ` · ${lane.cidr}` : ""}`}
+      title={`${lane.name}${lane.vlanId !== null ? ` · VLAN ${lane.vlanId}` : ""}${lane.cidr ? ` · ${lane.cidr}` : ""}${bw ? ` · ↓${formatBps(bw.inBps)} ↑${formatBps(bw.outBps)}` : ""}`}
     >
       <Handle
         type="target"
@@ -501,7 +504,7 @@ export const LaneLabelNode = memo(function LaneLabelNode({
   const { lane, bw } = data;
   const routeColor = LANE_ROUTE_COLOR[lane.category];
   return (
-    <div className="pointer-events-none flex h-full w-full items-center gap-2 rounded-lg border border-border/80 bg-card px-2.5 shadow-sm">
+    <div className="pointer-events-none flex h-full w-full items-center gap-2 overflow-hidden rounded-lg border border-border/80 bg-card px-2.5 shadow-sm">
       <span
         className="h-5 w-1 shrink-0 rounded-full"
         style={{ background: routeColor }}
@@ -512,36 +515,50 @@ export const LaneLabelNode = memo(function LaneLabelNode({
         style={{ color: routeColor }}
         aria-hidden
       />
-      <span className="min-w-0 truncate text-xs font-semibold text-card-foreground">
-        {lane.name}
-      </span>
-      {lane.vlanId !== null && (
-        <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px]">
-          VLAN {lane.vlanId}
-        </Badge>
-      )}
-      {lane.cidr && (
-        <span className="shrink-0 font-mono text-[9px] text-muted-foreground">
-          {lane.cidr}
-        </span>
-      )}
-      {lane.workloadPolicy?.baselineGroup && (
-        <span
-          className="flex shrink-0 items-center gap-1 rounded bg-destructive/10 px-1.5 py-0.5 text-[9px] font-medium text-destructive"
-          title={`${lane.workloadPolicy.protectedCount} of ${lane.workloadPolicy.workloadCount} workloads use Proxmox default-deny policy “${lane.workloadPolicy.baselineGroup}”`}
-        >
-          <ShieldCheck className="size-2.5" aria-hidden />
-          isolated {lane.workloadPolicy.protectedCount}/{lane.workloadPolicy.workloadCount}
-        </span>
-      )}
-      {bw && (
-        <span
-          className="shrink-0 font-mono text-[9px] font-medium text-info"
-          title="Network throughput at the firewall interface, averaged over the last hour"
-        >
-          ↓{formatBps(bw.inBps)} ↑{formatBps(bw.outBps)}
-        </span>
-      )}
+      <div className="flex min-w-0 flex-1 flex-col justify-center">
+        <div className="flex min-w-0 items-center gap-1.5 leading-none">
+          <span
+            className="min-w-0 flex-1 truncate text-xs font-semibold text-card-foreground"
+            title={lane.name}
+          >
+            {lane.name}
+          </span>
+          {lane.vlanId !== null && (
+            <Badge variant="outline" className="h-4 shrink-0 px-1 text-[9px]">
+              VLAN {lane.vlanId}
+            </Badge>
+          )}
+          {lane.workloadPolicy?.baselineGroup && (
+            <span
+              className="flex shrink-0 items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[9px] font-medium text-destructive"
+              title={`${lane.workloadPolicy.protectedCount} of ${lane.workloadPolicy.workloadCount} workloads use Proxmox default-deny policy “${lane.workloadPolicy.baselineGroup}”`}
+            >
+              <ShieldCheck className="size-2.5" aria-hidden />
+              {lane.workloadPolicy.protectedCount}/{lane.workloadPolicy.workloadCount}
+            </span>
+          )}
+        </div>
+        {(lane.cidr || bw) && (
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 leading-none">
+            {lane.cidr && (
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-[9px] text-muted-foreground"
+                title={lane.cidr}
+              >
+                {lane.cidr}
+              </span>
+            )}
+            {bw && (
+              <span
+                className="min-w-0 truncate font-mono text-[9px] font-medium text-info"
+                title={`Network throughput at the firewall interface, averaged over the last hour: down ${formatBps(bw.inBps)}, up ${formatBps(bw.outBps)}`}
+              >
+                ↓{formatBps(bw.inBps)} ↑{formatBps(bw.outBps)}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 });

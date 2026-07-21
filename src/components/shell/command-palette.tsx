@@ -14,6 +14,7 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
+import { LAB_SEARCH_REQUEST_EVENT, type LabSearchRequest } from "@/lib/lab-search";
 import { NAV_GROUPS } from "./nav";
 import type { SearchKind, SearchResult } from "@/lib/types";
 
@@ -57,6 +58,17 @@ export function CommandPalette({ open, onOpenChange, isAdmin }: CommandPalettePr
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onOpenChange]);
+
+  useEffect(() => {
+    function onLabSearch(event: Event) {
+      const requestedQuery = (event as CustomEvent<LabSearchRequest>).detail?.query;
+      if (!requestedQuery) return;
+      setQuery(requestedQuery);
+      onOpenChange(true);
+    }
+    window.addEventListener(LAB_SEARCH_REQUEST_EVENT, onLabSearch);
+    return () => window.removeEventListener(LAB_SEARCH_REQUEST_EVENT, onLabSearch);
+  }, [onOpenChange]);
 
   const { data: results } = useQuery<SearchResult[]>({
     queryKey: ["palette-search", query],

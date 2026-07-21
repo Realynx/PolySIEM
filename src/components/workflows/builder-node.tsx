@@ -109,8 +109,8 @@ export const WorkflowNode = memo(function WorkflowNode({
         <div className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", cat.bg)}>
           <Icon className={cn("size-4", cat.fg)} />
         </div>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold leading-tight text-card-foreground">{title}</p>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold leading-tight text-card-foreground" title={title}>{title}</p>
           <p className="truncate text-[10px] uppercase tracking-wide text-muted-foreground">
             {caption}
           </p>

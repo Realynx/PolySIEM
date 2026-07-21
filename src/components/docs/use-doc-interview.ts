@@ -84,13 +84,14 @@ export function useDocInterview(): UseDocInterviewResult {
 
       let acc = "";
       let tools: AgentToolCall[] = [];
+      let persistedMessages = sendMessages;
       let sawTerminal = false;
       let sawError = false;
 
       const finishInterview = () => {
         if (acc.trim() || tools.length > 0) {
-          setMessages((previous) => [
-            ...previous,
+          setMessages([
+            ...persistedMessages,
             {
               role: "assistant",
               content: acc,
@@ -103,15 +104,11 @@ export function useDocInterview(): UseDocInterviewResult {
       };
 
       try {
-        const requestMessages = compactInterviewMessages(
-          sendMessages,
-          mode === "services" ? 30 : 16,
-        );
         const response = await fetch("/api/ai/doc-draft", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            messages: requestMessages,
+            messages: sendMessages,
             mode,
             goal: goalRef.current,
           }),
@@ -144,6 +141,28 @@ export function useDocInterview(): UseDocInterviewResult {
               case "tool_call":
               case "tool_result":
                 tools = upsertToolCall(tools, event.call);
+                if (
+                  event.type === "tool_result" &&
+                  event.call.name === "compact_interview" &&
+                  event.call.status === "success"
+                ) {
+                  const summary =
+                    typeof event.call.args.summary === "string"
+                      ? event.call.args.summary
+                      : undefined;
+                  const compacted = compactInterviewMessages(
+                    persistedMessages,
+                    { force: true, summary },
+                  );
+                  if (compacted.compacted) {
+                    persistedMessages = compacted.messages;
+                    lastRunRef.current = {
+                      messages: persistedMessages,
+                      mode,
+                    };
+                    setMessages(persistedMessages);
+                  }
+                }
                 setDraft((current) => ({
                   content: current?.content ?? acc,
                   toolCalls: tools,

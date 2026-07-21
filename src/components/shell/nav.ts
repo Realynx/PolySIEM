@@ -56,20 +56,20 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Inventory",
     items: [
-      { title: "Lab map", href: "/inventory/map", icon: Workflow },
       // Hosts, VMs and containers are tabs of one page; this lands on the first tab.
       { title: "Compute", href: "/inventory/hosts", icon: Server },
       { title: "Virtual machines", href: "/inventory/vms", icon: Monitor, paletteOnly: true },
       { title: "Containers", href: "/inventory/containers", icon: Container, paletteOnly: true },
       { title: "Services", href: "/inventory/services", icon: Box },
       { title: "Storage", href: "/inventory/storage", icon: HardDrive },
+      { title: "Lab map", href: "/inventory/map", icon: Workflow },
     ],
   },
   {
     title: "Network",
     items: [
-      { title: "Access map", href: "/network/access-map", icon: Waypoints },
       { title: "Firewall", href: "/firewall", icon: Shield },
+      { title: "Access map", href: "/network/access-map", icon: Waypoints },
       { title: "Edge networks", href: "/network/edge-networks", icon: Router },
       // IP addresses and Clients are tabs of the Networks page; these land on them.
       { title: "Networks", href: "/network", icon: Network },
@@ -82,8 +82,8 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Security",
     items: [
-      { title: "Security score", href: "/security", icon: Gauge },
       { title: "Threat center", href: "/logs/threats", icon: ShieldAlert },
+      { title: "Security score", href: "/security", icon: Gauge },
       { title: "Research", href: "/security/research", icon: BookOpenCheck },
       { title: "SSH keys", href: "/keys", icon: KeyRound },
       { title: "AI credentials", href: "/credentials", icon: BookKey, adminOnly: true },

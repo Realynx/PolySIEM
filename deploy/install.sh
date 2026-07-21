@@ -213,9 +213,9 @@ EOF
 Description=Check for verified PolySIEM releases
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=15min
-RandomizedDelaySec=2min
+OnBootSec=30s
+OnUnitActiveSec=30s
+RandomizedDelaySec=5s
 Persistent=true
 
 [Install]

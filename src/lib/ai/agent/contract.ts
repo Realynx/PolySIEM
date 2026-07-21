@@ -32,6 +32,7 @@ export type AgentToolKind =
   | "run_workflow"
   | "write_doc"
   | "ask_question"
+  | "compact_interview"
   | "trigger_sync"
   | "other";
 

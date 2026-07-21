@@ -6,10 +6,18 @@ const LIMIT_PER_KIND = 8;
 
 /** A whole or partial IPv4 address: "10", "10.0.", "10.0.1.50". */
 const IP_FRAGMENT_RE = /^\d{1,3}(\.\d{1,3}){0,3}\.?$/;
+/** A whole or partial IPv6 address, including compressed forms such as "fd00::1". */
+function looksLikeIpv6(query: string): boolean {
+  if (!query.includes(":") || !/^[0-9a-f:]+$/i.test(query)) return false;
+  const compression = query.indexOf("::");
+  if (compression !== -1 && compression !== query.lastIndexOf("::")) return false;
+  const hextets = query.split(":").filter(Boolean);
+  return hextets.length <= 8 && hextets.every((part) => part.length <= 4);
+}
 
 /** True when the query reads as an IP address (or a leading fragment of one). */
 export function looksLikeIp(query: string): boolean {
-  return IP_FRAGMENT_RE.test(query);
+  return IP_FRAGMENT_RE.test(query) || looksLikeIpv6(query);
 }
 
 /** Owner precedence when the same address is known from several sources. */

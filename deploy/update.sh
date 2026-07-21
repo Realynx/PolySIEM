@@ -227,6 +227,24 @@ main() {
             || ! chmod 700 "${INSTALL_DIR}/auto-update.sh"; then
             warn "PolySIEM updated, but auto-update.sh could not refresh itself."
         fi
+        if command -v systemctl >/dev/null 2>&1 \
+            && [ -f /etc/systemd/system/polysiem-auto-update.timer ]; then
+            cat > /etc/systemd/system/polysiem-auto-update.timer <<'EOF'
+[Unit]
+Description=Check for verified PolySIEM releases and browser update requests
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+RandomizedDelaySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+            systemctl daemon-reload
+            systemctl enable --now polysiem-auto-update.timer >/dev/null
+        fi
         exit 0
     fi
 

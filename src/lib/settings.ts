@@ -20,6 +20,7 @@ export const SETTING_KEYS = {
   backupHistory: "backup_history",
   publicDemo: "public_demo",
   autoUpdate: "auto_update",
+  updateRequest: "update_request",
   webCertificate: "web_certificate",
 } as const;
 

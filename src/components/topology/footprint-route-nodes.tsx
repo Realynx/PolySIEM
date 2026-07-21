@@ -31,8 +31,8 @@ export const FpSwitchNode = memo(function FpSwitchNode({
     >
       <Handle type="target" position={Position.Top} className={hiddenHandle} />
       <Cable className="size-5 shrink-0 text-warning" />
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-card-foreground">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-card-foreground" title={data.machine.name}>
           {data.machine.name}
         </p>
         <p className="text-xs text-muted-foreground">switch</p>

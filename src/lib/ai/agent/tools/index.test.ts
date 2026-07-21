@@ -57,6 +57,30 @@ describe("AI assistant tool registry", () => {
     expect(toolNames(context("ADMIN", "chat"))).not.toContain("ask_question");
   });
 
+  it("lets only the documentation interviewer request early compaction", () => {
+    const interviewTools = buildToolSet(context("USER", "doc-interview"));
+    const compact = interviewTools.find(
+      (tool) => tool.name === "compact_interview",
+    );
+
+    expect(compact).toBeDefined();
+    expect(compact?.returnDirect).toBe(false);
+    expect(compact?.schema.safeParse({ summary: "Confirmed backup policy." }).success).toBe(
+      true,
+    );
+    expect(toolNames(context("ADMIN", "chat"))).not.toContain(
+      "compact_interview",
+    );
+  });
+
+  it("ends an agent turn after presenting interview questions", () => {
+    const askQuestion = buildToolSet(context("USER", "doc-interview")).find(
+      (tool) => tool.name === "ask_question",
+    );
+
+    expect(askQuestion?.returnDirect).toBe(true);
+  });
+
   it("accepts batches of one to five structured interview questions", () => {
     const askQuestion = buildToolSet(context("USER", "doc-interview")).find(
       (tool) => tool.name === "ask_question",

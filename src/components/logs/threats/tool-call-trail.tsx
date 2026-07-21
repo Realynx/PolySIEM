@@ -15,6 +15,7 @@ import {
   ListChecks,
   LoaderCircle,
   MessageCircleQuestion,
+  Minimize2,
   Network,
   Play,
   RefreshCw,
@@ -50,6 +51,7 @@ const TOOL_ICONS: Record<AgentToolKind, LucideIcon> = {
   run_workflow: Play,
   write_doc: FileText,
   ask_question: MessageCircleQuestion,
+  compact_interview: Minimize2,
   trigger_sync: RefreshCw,
   other: Wrench,
 };

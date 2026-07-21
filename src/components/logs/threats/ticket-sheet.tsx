@@ -34,6 +34,7 @@ import { EvidenceRow } from "./evidence-row";
 import { InvestigationBadge } from "./investigation-badge";
 import { InvestigationPanel } from "./investigation-panel";
 import { SeverityBadge, TicketStatusBadge } from "./severity-badge";
+import { TicketIpIndicator } from "./ticket-ip-indicator";
 
 /** Detail drawer for a single ticket: narrative, AI investigation, evidence, and open/close actions. */
 export function TicketSheet({
@@ -81,10 +82,10 @@ export function TicketSheet({
   if (!ticket) return null;
   const isClosed = ticket.status === "CLOSED";
   const refGroups = [
-    { label: "Source IPs", values: ticket.refs?.srcIps ?? [] },
-    { label: "Destination IPs", values: ticket.refs?.destIps ?? [] },
-    { label: "Signatures", values: ticket.refs?.signatures ?? [] },
-    { label: "Hosts", values: ticket.refs?.hosts ?? [] },
+    { label: "Source IPs", kind: "ip", values: ticket.refs?.srcIps ?? [] },
+    { label: "Destination IPs", kind: "ip", values: ticket.refs?.destIps ?? [] },
+    { label: "Signatures", kind: "signature", values: ticket.refs?.signatures ?? [] },
+    { label: "Hosts", kind: "host", values: ticket.refs?.hosts ?? [] },
   ].filter((g) => g.values.length > 0);
 
   const close = () =>
@@ -232,8 +233,8 @@ export function TicketSheet({
                   <div key={group.label} className="flex flex-wrap items-baseline gap-1.5">
                     <span className="w-28 shrink-0 text-xs text-muted-foreground">{group.label}</span>
                     {group.values.map((value) => {
-                      const researchable = group.label !== "Signatures";
-                      return researchable ? (
+                      if (group.kind === "ip") return <TicketIpIndicator key={value} value={value} />;
+                      return group.kind === "host" ? (
                         <Badge key={value} variant="secondary" className="font-mono text-xs" asChild>
                           <Link href={`/security/research?subject=${encodeURIComponent(value)}`} title={`Research ${value}`}>
                             {value}<FileSearch className="size-3" />

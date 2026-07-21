@@ -12,6 +12,7 @@ const subjectSchema = z.string().trim().min(1).max(253).transform((value, ctx) =
 export const createSecurityResearchPageSchema = z.object({
   subject: subjectSchema,
   title: z.string().trim().max(160).optional(),
+  parentId: z.string().cuid().nullable().optional(),
 });
 
 export const updateSecurityResearchPageSchema = z.object({
@@ -19,6 +20,7 @@ export const updateSecurityResearchPageSchema = z.object({
   notes: z.string().max(50_000).nullable().optional(),
   verdict: z.enum(["unknown", "benign", "suspicious", "malicious"]).optional(),
   status: z.enum(["open", "archived"]).optional(),
+  parentId: z.string().cuid().nullable().optional(),
 });
 
 export const collectSecurityResearchSchema = z.object({

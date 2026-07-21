@@ -150,11 +150,16 @@ export async function getSecurityResearchPage(id: string) {
 
 export async function createSecurityResearchPage(input: CreateSecurityResearchPageInput, userId: string) {
   const { subject, subjectType } = classifySubject(input.subject);
+  if (input.parentId) {
+    const parent = await prisma.securityResearchPage.findUnique({ where: { id: input.parentId }, select: { id: true } });
+    if (!parent) throw new ApiError(400, "invalid_research_parent", "The selected parent page no longer exists.");
+  }
   return prisma.securityResearchPage.create({
     data: {
       title: input.title?.trim() || `Research: ${subject}`,
       subject,
       subjectType,
+      parentId: input.parentId ?? null,
       createdById: userId,
     },
     include: researchInclude,
@@ -163,6 +168,30 @@ export async function createSecurityResearchPage(input: CreateSecurityResearchPa
 
 export async function updateSecurityResearchPage(id: string, input: UpdateSecurityResearchPageInput) {
   await getSecurityResearchPage(id);
+  if (input.parentId !== undefined) {
+    if (input.parentId === id) {
+      throw new ApiError(400, "invalid_research_parent", "A research page cannot be its own parent.");
+    }
+    if (input.parentId) {
+      const pages = await prisma.securityResearchPage.findMany({ select: { id: true, parentId: true } });
+      const parents = new Map(pages.map((page) => [page.id, page.parentId]));
+      if (!parents.has(input.parentId)) {
+        throw new ApiError(400, "invalid_research_parent", "The selected parent page no longer exists.");
+      }
+      let cursor: string | null = input.parentId;
+      const visited = new Set<string>();
+      while (cursor) {
+        if (cursor === id) {
+          throw new ApiError(400, "invalid_research_parent", "Moving this page there would create a circular page tree.");
+        }
+        if (visited.has(cursor)) {
+          throw new ApiError(400, "invalid_research_parent", "The selected parent is already part of a circular page tree.");
+        }
+        visited.add(cursor);
+        cursor = parents.get(cursor) ?? null;
+      }
+    }
+  }
   return prisma.securityResearchPage.update({
     where: { id },
     data: input,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, ExternalLink, RefreshCw, TriangleAlert } from "lucide-react";
+import { CheckCircle2, ExternalLink, RefreshCw, Rocket, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,9 +16,11 @@ interface ApiResponse {
 export function UpdateCheck({
   updateCommand,
   automaticRollback,
+  webUpdateCapable,
 }: {
   updateCommand: string;
   automaticRollback: boolean;
+  webUpdateCapable: boolean;
 }) {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<UpdateCheckResult | null>(null);
@@ -40,6 +42,16 @@ export function UpdateCheck({
     } finally {
       setChecking(false);
     }
+  }
+
+  function openUpdater() {
+    const popup = window.open(
+      "/update",
+      "polysiem-update",
+      "popup=yes,width=760,height=760,resizable=yes,scrollbars=yes",
+    );
+    if (!popup) window.location.assign("/update");
+    else popup.focus();
   }
 
   return (
@@ -67,23 +79,35 @@ export function UpdateCheck({
           <p className="flex items-start gap-2">
             <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
             <span>
-              {automaticRollback
+              {webUpdateCapable
+                ? "PolySIEM will back up the database and configuration, install the verified release, restart, and automatically roll back if the health check fails."
+                : automaticRollback
                 ? "Run the host updater. It creates a PostgreSQL and configuration backup before migrations, verifies health, and rolls back automatically if startup fails."
                 : "Run the host installer again to update. Review the backup guidance in the release notes first; this installation type is not managed by the Docker rollback updater."}
             </span>
           </p>
-          <code className="block overflow-x-auto rounded bg-muted px-2.5 py-2 text-xs">
-            {updateCommand}
-          </code>
-          <a
-            href={result.releaseUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1.5 text-primary hover:underline"
-          >
-            Read {result.releaseName} release notes
-            <ExternalLink className="size-3.5" />
-          </a>
+          {!webUpdateCapable && (
+            <code className="block overflow-x-auto rounded bg-muted px-2.5 py-2 text-xs">
+              {updateCommand}
+            </code>
+          )}
+          <div className="flex flex-wrap items-center gap-3">
+            {webUpdateCapable && (
+              <Button size="sm" onClick={openUpdater}>
+                <Rocket className="size-4" />
+                Install v{result.latestVersion}
+              </Button>
+            )}
+            <a
+              href={result.releaseUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-primary hover:underline"
+            >
+              Read {result.releaseName} release notes
+              <ExternalLink className="size-3.5" />
+            </a>
+          </div>
         </div>
       )}
     </div>

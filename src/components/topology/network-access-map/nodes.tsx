@@ -393,7 +393,10 @@ function NetworkNode({ data }: NodeProps<NetworkNodeType>) {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="truncate text-sm font-semibold text-card-foreground">
+            <span
+              className="truncate text-sm font-semibold text-card-foreground"
+              title={node.name}
+            >
               {node.name}
             </span>
             {node.vlanId !== null && (
@@ -441,8 +444,8 @@ function WifiApNode({ data }: NodeProps<WifiApNodeType>) {
     <div className="flex h-full w-full items-center gap-3 rounded-xl border border-border border-l-4 border-l-info bg-card px-3 py-2 shadow-sm">
       <Handle type="target" position={Position.Left} className={hiddenHandle} />
       <Wifi className="size-5 shrink-0 text-info" />
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-card-foreground">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-card-foreground" title={data.ap.name}>
           {data.ap.name}
         </p>
         <p className="truncate text-xs text-muted-foreground">
@@ -464,8 +467,8 @@ function InternetNode({ data }: NodeProps<NetworkNodeType>) {
       <Handle type="target" position={Position.Left} id="delivery-in" className={hiddenHandle} />
       <Handle type="target" position={Position.Right} id="trace-in" className={hiddenHandle} />
       <Globe className="size-5 shrink-0 text-info" />
-      <div>
-        <p className="text-sm font-medium text-card-foreground">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-card-foreground" title={data.node.name}>
           {data.node.name}
         </p>
         <p className="text-xs text-muted-foreground">
@@ -487,8 +490,8 @@ function SwitchNode({ data }: NodeProps<SwitchNodeType>) {
     <div className="flex h-full w-full items-center gap-3 rounded-xl border border-border border-l-4 border-l-warning bg-card px-3 py-2 shadow-sm">
       <Handle type="target" position={Position.Left} className={hiddenHandle} />
       <Cable className="size-5 shrink-0 text-warning" />
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-card-foreground">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-card-foreground" title={data.sw.name}>
           {data.sw.name}
         </p>
         <p className="text-xs text-muted-foreground">
@@ -517,7 +520,10 @@ function EndpointNode({ data }: NodeProps<EndpointNodeType>) {
       <Handle type="target" position={Position.Right} id="peer-in" className={hiddenHandle} />
       <Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-xs font-medium text-card-foreground">
+        <p
+          className="truncate text-xs font-medium text-card-foreground"
+          title={data.endpoint.name}
+        >
           {data.endpoint.name}
         </p>
         <p className="truncate font-mono text-[9px] text-muted-foreground">
@@ -535,7 +541,10 @@ function CloudflareAccountNode({ data }: NodeProps<CloudflareAccountNodeType>) {
       <Handle type="source" position={Position.Right} className={hiddenHandle} />
       <Cloud className="size-4 shrink-0 text-info" aria-hidden />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-xs font-semibold text-card-foreground">
+        <p
+          className="truncate text-xs font-semibold text-card-foreground"
+          title={data.account.accountName}
+        >
           {data.account.accountName}
         </p>
         <p className="truncate text-[10px] text-muted-foreground">
@@ -553,7 +562,10 @@ function CloudflareAppNode({ data }: NodeProps<CloudflareAppNodeType>) {
       <Handle type="source" position={Position.Right} className={hiddenHandle} />
       <Globe className="size-3.5 shrink-0 text-info" aria-hidden />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-xs font-medium text-card-foreground">
+        <p
+          className="truncate text-xs font-medium text-card-foreground"
+          title={data.application.hostname}
+        >
           {data.application.hostname}
         </p>
         <p
@@ -580,7 +592,10 @@ function InterfaceGateNode({ data }: NodeProps<InterfaceGateNodeType>) {
       <Handle type="target" position={Position.Right} id="route-in" className={hiddenHandle} />
       <Router className="size-4 shrink-0 text-info" aria-hidden />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-xs font-medium text-card-foreground">
+        <p
+          className="truncate text-xs font-medium text-card-foreground"
+          title={data.node.interfaceKey ?? data.node.name}
+        >
           {data.node.interfaceKey ?? data.node.name}
         </p>
         <p className="truncate font-mono text-[9px] text-muted-foreground">
@@ -604,8 +619,8 @@ function PveGroupNode({ data }: NodeProps<PveGroupNodeType>) {
         style={{ height: PVE_HEADER - 6 }}
       >
         <ShieldCheck className="size-4 shrink-0 [color:var(--color-chart-3)]" />
-        <div className="min-w-0">
-          <p className="truncate text-xs font-semibold text-card-foreground">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-semibold text-card-foreground" title={data.name}>
             {data.name}
           </p>
           <p className="truncate text-[10px] leading-tight text-muted-foreground">
@@ -649,9 +664,9 @@ function PveBaselineNode({ data }: NodeProps<PveBaselineNodeType>) {
   return (
     <div className="flex h-full w-full flex-col justify-center rounded-xl border border-dashed bg-card/70 px-3 py-2 [border-color:var(--color-chart-3)]">
       <Handle type="target" position={Position.Left} className={hiddenHandle} />
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <Shield className="size-4 shrink-0 [color:var(--color-chart-3)]" />
-        <p className="text-xs font-semibold text-card-foreground">
+        <p className="min-w-0 flex-1 truncate text-xs font-semibold text-card-foreground" title={`All firewalled guests (${data.guestCount})`}>
           All firewalled guests{" "}
           <span className="font-normal text-muted-foreground">
             ({data.guestCount})
@@ -676,9 +691,9 @@ function PveSetNode({ data }: NodeProps<PveSetNodeType>) {
   return (
     <div className="flex h-full w-full flex-col justify-center rounded-xl border border-border bg-card px-3 py-1.5 shadow-sm">
       <Handle type="target" position={Position.Left} className={hiddenHandle} />
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <Users className="size-3.5 shrink-0 text-muted-foreground" />
-        <p className="truncate text-[11px] font-medium text-card-foreground">
+        <p className="min-w-0 flex-1 truncate text-[11px] font-medium text-card-foreground" title={data.label}>
           {data.label}
         </p>
       </div>

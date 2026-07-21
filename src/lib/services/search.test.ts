@@ -42,8 +42,14 @@ describe("looksLikeIp", () => {
     }
   });
 
+  it("accepts whole and partial IPv6 addresses", () => {
+    for (const q of ["fd12:3456::8", "fe80::", "2001:4860:4860::8888"]) {
+      expect(looksLikeIp(q), q).toBe(true);
+    }
+  });
+
   it("rejects non-IP queries", () => {
-    for (const q of ["poofy", "10.0.0.1.2", "10..1", "1.2.3.4x", "vlan 10"]) {
+    for (const q of ["poofy", "10.0.0.1.2", "10..1", "1.2.3.4x", "vlan 10", "2001::db8::1"]) {
       expect(looksLikeIp(q), q).toBe(false);
     }
   });

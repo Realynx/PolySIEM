@@ -165,17 +165,34 @@ describe("compactInterviewMessages", () => {
   }));
 
   it("keeps short interviews unchanged", () => {
-    expect(compactInterviewMessages(messages.slice(0, 8))).toEqual(
-      messages.slice(0, 8),
-    );
+    const short = messages.slice(0, 8);
+    const result = compactInterviewMessages(short);
+    expect(result.compacted).toBe(false);
+    expect(result.messages).toBe(short);
   });
 
-  it("keeps the kickoff and recent turns with a docs-reference notice", () => {
-    const compacted = compactInterviewMessages(messages, 10);
-    expect(compacted).toHaveLength(10);
-    expect(compacted[0]).toEqual(messages[0]);
-    expect(compacted[1].content).toMatch(/compacted.*token usage/i);
-    expect(compacted.at(-1)).toEqual(messages.at(-1));
+  it("automatically compacts at 90% while preserving five recent pairs", () => {
+    const result = compactInterviewMessages(messages, {
+      contextWindowTokens: 100,
+      reserveTokens: 90,
+    });
+    expect(result.compacted).toBe(true);
+    expect(result.thresholdTokens).toBe(90);
+    expect(result.messages).toHaveLength(12);
+    expect(result.messages[0]).toEqual(messages[0]);
+    expect(result.messages[1].content).toMatch(/compacted.*context usage/i);
+    expect(result.messages.slice(-10)).toEqual(messages.slice(-10));
+  });
+
+  it("accepts an interviewer-authored summary before the automatic threshold", () => {
+    const result = compactInterviewMessages(messages, {
+      force: true,
+      reserveTokens: 0,
+      summary: "Backups are nightly; restore ownership is unresolved.",
+    });
+    expect(result.compacted).toBe(true);
+    expect(result.messages[1].content).toContain("Backups are nightly");
+    expect(result.messages.at(-1)).toEqual(messages.at(-1));
   });
 });
 

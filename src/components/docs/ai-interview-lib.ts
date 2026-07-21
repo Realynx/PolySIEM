@@ -4,6 +4,10 @@ import type {
   InterviewServiceCandidate,
   InterviewServicePlan,
 } from "@/lib/ai/agent/contract";
+export {
+  compactInterviewMessages,
+  estimateInterviewTokens,
+} from "@/lib/ai/agent/interview-context";
 
 /**
  * Pure helpers for the AI documentation interview UI. No React / DOM imports so
@@ -159,29 +163,6 @@ export function formatInterviewQuestionAnswers(
       `Answer: ${item.answer.trim()}`,
     ]),
   ].join("\n");
-}
-
-const COMPACTED_INTERVIEW_NOTICE: ChatMessage = {
-  role: "assistant",
-  content:
-    "Earlier interview turns were compacted to reduce token usage. Their confirmed facts were saved into the documentation pages; read the relevant existing docs before editing or asking follow-up questions.",
-};
-
-/**
- * Bound repeated prompt tokens during long interviews. The kickoff and recent
- * turns stay verbatim; older confirmed facts remain available through get_doc.
- */
-export function compactInterviewMessages(
-  messages: ChatMessage[],
-  maxMessages = 16,
-): ChatMessage[] {
-  if (messages.length <= maxMessages) return messages;
-  const budget = Math.max(4, maxMessages);
-  return [
-    messages[0],
-    COMPACTED_INTERVIEW_NOTICE,
-    ...messages.slice(-(budget - 2)),
-  ];
 }
 
 /** Backwards-compatible default for callers that do not expose the setup step. */
