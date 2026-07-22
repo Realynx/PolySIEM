@@ -406,6 +406,14 @@ function isPlainObject(value: object): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
+function outsideNameTraversal(node: unknown, depth: number): boolean {
+  return node === null || node === undefined || depth > MAX_DEPTH;
+}
+
+function isObjectNode(node: unknown): node is object {
+  return node !== null && typeof node === "object";
+}
+
 /**
  * Pass 1 of anonymizeDeep: walk the value and record real → fake mappings
  * for every string under a name-like key, so composed labels and log lines
@@ -417,15 +425,12 @@ export function collectNames(value: unknown): Map<string, string> {
   const seen = new WeakSet<object>();
 
   const walk = (node: unknown, kind: KeyKind | undefined, depth: number): void => {
-    if (node === null || node === undefined || depth > MAX_DEPTH) return;
+    if (outsideNameTraversal(node, depth)) return;
     if (typeof node === "string") {
-      if (node.length < 3) return;
-      if (kind === "name") map.set(node, anonymizeName(node));
-      else if (kind === "username") map.set(node, anonymizeUsername(node));
-      else if (kind === "host") map.set(node, anonymizeHostname(node));
+      collectStringName(map, node, kind);
       return;
     }
-    if (typeof node !== "object") return;
+    if (!isObjectNode(node)) return;
     if (node instanceof Date) return;
     if (seen.has(node)) return;
     seen.add(node);
@@ -444,6 +449,13 @@ export function collectNames(value: unknown): Map<string, string> {
 
   walk(value, undefined, 0);
   return map;
+}
+
+function collectStringName(map: Map<string, string>, value: string, kind: KeyKind | undefined): void {
+  if (value.length < 3) return;
+  if (kind === "name") map.set(value, anonymizeName(value));
+  else if (kind === "username") map.set(value, anonymizeUsername(value));
+  else if (kind === "host") map.set(value, anonymizeHostname(value));
 }
 
 function transformString(

@@ -243,6 +243,28 @@ describe("parseInterviewServicePlan", () => {
     });
     expect(() => parseInterviewServicePlan(broken)).toThrow();
   });
+
+  it.each([
+    ["numeric strings", "443"],
+    ["booleans", true],
+    ["single-item arrays", [443]],
+  ])("rejects coercible %s as service ports", (_label, port) => {
+    const proposal = JSON.stringify({
+      services: [
+        {
+          name: "Grafana",
+          port,
+          protocol: "https",
+          target: { kind: "container", id: "ct-1", name: "monitoring" },
+          evidence: "operator answer",
+        },
+      ],
+    });
+
+    expect(() => parseInterviewServicePlan(proposal)).toThrow(
+      "Service 1 has an invalid port.",
+    );
+  });
 });
 
 describe("upsertToolCall", () => {

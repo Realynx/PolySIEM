@@ -22,6 +22,42 @@ import { formatDuration, runInputSummary } from "@/components/workflows/lib";
 import { RunStatusBadge } from "@/components/workflows/meta";
 import { RunTriggerBadge } from "@/components/workflows/run-steps";
 import { RunDetailSheet } from "@/components/workflows/run-detail-sheet";
+import type { WorkflowRunDto, WorkflowRunStatus } from "@/lib/workflows/types";
+
+function latestRunTone(status: WorkflowRunStatus): "destructive" | "primary" | "success" | "neutral" {
+  if (status === "FAILED") return "destructive";
+  if (status === "RUNNING") return "primary";
+  return status === "SUCCESS" ? "success" : "neutral";
+}
+
+function LatestRunIcon({ status }: { status: WorkflowRunStatus }) {
+  if (status === "SUCCESS") return <CircleCheck className="size-3.5" aria-hidden />;
+  if (status === "FAILED") return <CircleX className="size-3.5" aria-hidden />;
+  if (status === "RUNNING") return <LoaderCircle className="size-3.5 animate-spin" aria-hidden />;
+  return <History className="size-3.5" aria-hidden />;
+}
+
+function RunsOverview({ runs }: { runs: WorkflowRunDto[] }) {
+  const success = runs.filter((run) => run.status === "SUCCESS").length;
+  const failed = runs.filter((run) => run.status === "FAILED").length;
+  const running = runs.filter((run) => run.status === "RUNNING").length;
+  const latest = runs[0];
+  return (
+    <OperationsOverview
+      icon={<Activity className="size-5" aria-hidden />}
+      title="Workflow execution"
+      description="A live operational summary of recorded workflow runs."
+      status={<><LatestRunIcon status={latest.status} />Latest run: {latest.status.toLowerCase()}</>}
+      statusTone={latestRunTone(latest.status)}
+      metrics={[
+        { icon: <History />, label: "Recorded runs", value: runs.length.toLocaleString(), detail: "Across every workflow" },
+        { icon: <CircleCheck />, label: "Successful", value: success.toLocaleString(), detail: `${Math.round((success / runs.length) * 100)}% of recorded runs`, tone: "success" },
+        { icon: <CircleX />, label: "Failed", value: failed.toLocaleString(), detail: failed > 0 ? "Review run details for errors" : "No failed runs recorded", tone: failed > 0 ? "destructive" : "success" },
+        { icon: <LoaderCircle />, label: "Running now", value: running.toLocaleString(), detail: running > 0 ? "Status updates automatically" : "No active executions", tone: running > 0 ? "primary" : "neutral" },
+      ]}
+    />
+  );
+}
 
 /** Global run-history table (/workflows/runs); row click opens step details. */
 export function GlobalRunsTable() {
@@ -71,71 +107,10 @@ export function GlobalRunsTable() {
   }
 
   const runRows = runs ?? [];
-  const successCount = runRows.filter((run) => run.status === "SUCCESS").length;
-  const failedCount = runRows.filter((run) => run.status === "FAILED").length;
-  const runningCount = runRows.filter((run) => run.status === "RUNNING").length;
-  const latestRun = runRows[0];
-  const latestTone =
-    latestRun.status === "FAILED"
-      ? "destructive"
-      : latestRun.status === "RUNNING"
-        ? "primary"
-        : latestRun.status === "SUCCESS"
-          ? "success"
-          : "neutral";
-
   return (
     <>
       <div className="space-y-4">
-        <OperationsOverview
-          icon={<Activity className="size-5" aria-hidden />}
-          title="Workflow execution"
-          description="A live operational summary of recorded workflow runs."
-          status={
-            <>
-              {latestRun.status === "SUCCESS" ? (
-                <CircleCheck className="size-3.5" aria-hidden />
-              ) : latestRun.status === "FAILED" ? (
-                <CircleX className="size-3.5" aria-hidden />
-              ) : latestRun.status === "RUNNING" ? (
-                <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
-              ) : (
-                <History className="size-3.5" aria-hidden />
-              )}
-              Latest run: {latestRun.status.toLowerCase()}
-            </>
-          }
-          statusTone={latestTone}
-          metrics={[
-            {
-              icon: <History />,
-              label: "Recorded runs",
-              value: runRows.length.toLocaleString(),
-              detail: "Across every workflow",
-            },
-            {
-              icon: <CircleCheck />,
-              label: "Successful",
-              value: successCount.toLocaleString(),
-              detail: `${Math.round((successCount / runRows.length) * 100)}% of recorded runs`,
-              tone: "success",
-            },
-            {
-              icon: <CircleX />,
-              label: "Failed",
-              value: failedCount.toLocaleString(),
-              detail: failedCount > 0 ? "Review run details for errors" : "No failed runs recorded",
-              tone: failedCount > 0 ? "destructive" : "success",
-            },
-            {
-              icon: <LoaderCircle />,
-              label: "Running now",
-              value: runningCount.toLocaleString(),
-              detail: runningCount > 0 ? "Status updates automatically" : "No active executions",
-              tone: runningCount > 0 ? "primary" : "neutral",
-            },
-          ]}
-        />
+        <RunsOverview runs={runRows} />
 
         <ListCard
           title="Execution history"

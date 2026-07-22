@@ -3,8 +3,7 @@
 import { createContext, memo, useContext, useMemo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { cn } from "@/lib/utils";
-import type { NodeTypeMeta } from "@/lib/workflows/types";
-import { isTriggerKind } from "@/lib/workflows/types";
+import { isTriggerKind, type NodeTypeMeta } from "@/lib/workflows/types";
 import { isConditionKind, summarizeNodeConfig } from "@/components/workflows/lib";
 import { categoryMeta } from "@/components/workflows/meta";
 
@@ -58,6 +57,29 @@ function BranchRow({ branch }: { branch: "true" | "false" }) {
   );
 }
 
+function nodeBorder(selected: boolean, hasIssues: boolean): string {
+  if (selected) return "border-primary ring-2 ring-primary/30";
+  if (hasIssues) return "border-destructive/60";
+  return "border-border hover:border-primary/50";
+}
+
+function NodePorts({ condition }: { condition: boolean }) {
+  if (condition) {
+    return <div className="border-t border-border/60 py-1"><BranchRow branch="true" /><BranchRow branch="false" /></div>;
+  }
+  return <Handle type="source" position={Position.Right} className={cn(handleBase, "!-right-[5px]")} />;
+}
+
+function SummaryRow({ meta, summary }: { meta: NodeTypeMeta | null; summary: string | null }) {
+  if (!meta) return <p className="truncate border-t border-border/60 px-3 py-1.5 font-mono text-[11px] italic text-muted-foreground/60">Unknown node type</p>;
+  if (!summary && !meta.inputs.some((field) => field.required) && !isTriggerKind(meta.kind)) return null;
+  return (
+    <p className={cn("truncate border-t border-border/60 px-3 py-1.5 font-mono text-[11px]", summary ? "text-muted-foreground" : "italic text-muted-foreground/60")} title={summary ?? undefined}>
+      {summary ?? "Not configured"}
+    </p>
+  );
+}
+
 export const WorkflowNode = memo(function WorkflowNode({
   data,
   selected,
@@ -76,17 +98,12 @@ export const WorkflowNode = memo(function WorkflowNode({
     [meta, data.config, entityLabels],
   );
   const hasIssues = data.issues.length > 0;
-  const requiresConfig = (meta?.inputs.some((f) => f.required) ?? false) || trigger;
 
   return (
     <div
       className={cn(
         "relative rounded-xl border bg-card shadow-sm transition-[border-color,box-shadow]",
-        selected
-          ? "border-primary ring-2 ring-primary/30"
-          : hasIssues
-            ? "border-destructive/60"
-            : "border-border hover:border-primary/50",
+        nodeBorder(selected, hasIssues),
       )}
       style={{ width: NODE_WIDTH }}
     >
@@ -116,25 +133,8 @@ export const WorkflowNode = memo(function WorkflowNode({
           </p>
         </div>
       </div>
-      {(summary || requiresConfig || !meta) && (
-        <p
-          className={cn(
-            "truncate border-t border-border/60 px-3 py-1.5 font-mono text-[11px]",
-            summary ? "text-muted-foreground" : "italic text-muted-foreground/60",
-          )}
-          title={summary ?? undefined}
-        >
-          {!meta ? "Unknown node type" : (summary ?? "Not configured")}
-        </p>
-      )}
-      {condition ? (
-        <div className="border-t border-border/60 py-1">
-          <BranchRow branch="true" />
-          <BranchRow branch="false" />
-        </div>
-      ) : (
-        <Handle type="source" position={Position.Right} className={cn(handleBase, "!-right-[5px]")} />
-      )}
+      <SummaryRow meta={meta} summary={summary} />
+      <NodePorts condition={condition} />
     </div>
   );
 });

@@ -458,7 +458,7 @@ function isGroupRef(raw: RawFwRule): boolean {
 async function fetchClusterFirewall(cfg: DriverConfig, errors: string[]): Promise<PveClusterFirewall> {
   const fw = emptyPveClusterFirewall();
 
-  try {
+  const fetchGroups = async (): Promise<void> => { try {
     const rawGroups = await pveGet<RawFwGroup[]>(cfg, "/cluster/firewall/groups");
     for (const g of rawGroups) {
       const rules: PveFirewallRule[] = [];
@@ -472,9 +472,9 @@ async function fetchClusterFirewall(cfg: DriverConfig, errors: string[]): Promis
     }
   } catch (err) {
     errors.push(`cluster firewall: groups list failed (${err instanceof Error ? err.message : err})`);
-  }
+  } };
 
-  try {
+  const fetchIpsets = async (): Promise<void> => { try {
     const rawSets = await pveGet<RawFwIpset[]>(cfg, "/cluster/firewall/ipset");
     for (const s of rawSets) {
       const cidrs: string[] = [];
@@ -491,18 +491,18 @@ async function fetchClusterFirewall(cfg: DriverConfig, errors: string[]): Promis
     }
   } catch (err) {
     errors.push(`cluster firewall: ipset list failed (${err instanceof Error ? err.message : err})`);
-  }
+  } };
 
-  try {
+  const fetchAliases = async (): Promise<void> => { try {
     const rawAliases = await pveGet<RawFwAlias[]>(cfg, "/cluster/firewall/aliases");
     for (const a of rawAliases) {
       fw.aliases.push({ name: a.name, cidr: a.cidr, comment: a.comment ?? null });
     }
   } catch (err) {
     errors.push(`cluster firewall: aliases fetch failed (${err instanceof Error ? err.message : err})`);
-  }
+  } };
 
-  try {
+  const fetchRules = async (): Promise<void> => { try {
     const rawRules = await pveGet<RawFwRule[]>(cfg, "/cluster/firewall/rules");
     rawRules.forEach((r, i) => {
       // Cluster rules may also reference groups; keep only plain rules here.
@@ -510,7 +510,9 @@ async function fetchClusterFirewall(cfg: DriverConfig, errors: string[]): Promis
     });
   } catch (err) {
     errors.push(`cluster firewall: rules fetch failed (${err instanceof Error ? err.message : err})`);
-  }
+  } };
+
+  await Promise.all([fetchGroups(), fetchIpsets(), fetchAliases(), fetchRules()]);
 
   return fw;
 }
@@ -566,6 +568,115 @@ function toBigInt(n: number | string | undefined | null): bigint | null {
   return BigInt(Math.round(v));
 }
 
+async function fetchNodeRecord(cfg: DriverConfig, rawNode: RawNode, errors: string[]): Promise<PveNode> {
+  const name = rawNode.node;
+  let status: RawNodeStatus = {};
+  try { status = await pveGet<RawNodeStatus>(cfg, `/nodes/${name}/status`); } catch { /* Offline nodes may reject status. */ }
+  let interfaces: PveNodeIface[] = [];
+  try {
+    const rawIfaces = await pveGet<RawNetIface[]>(cfg, `/nodes/${name}/network`);
+    interfaces = rawIfaces.map((iface) => ({
+      name: iface.iface,
+      type: iface.type ?? "unknown",
+      address: iface.address ?? (iface.cidr ? iface.cidr.split("/")[0] : null),
+      cidr: iface.cidr ?? null,
+      gateway: iface.gateway ?? null,
+      mac: null,
+    }));
+  } catch (error) {
+    errors.push(`node ${name}: network list failed (${error instanceof Error ? error.message : error})`);
+  }
+  return {
+    name,
+    status: rawNode.status ?? "unknown",
+    cpuCores: status.cpuinfo?.cores ?? rawNode.maxcpu ?? null,
+    cpuModel: status.cpuinfo?.model ?? null,
+    memoryBytes: toBigInt(status.memory?.total ?? rawNode.maxmem),
+    pveVersion: status.pveversion?.replace(/^pve-manager\//, "").split("/")[0] ?? null,
+    uptimeSec: rawNode.uptime ?? null,
+    interfaces,
+  };
+}
+
+async function fetchGuestRecord(
+  cfg: DriverConfig,
+  node: string,
+  kind: "qemu" | "lxc",
+  item: RawGuestListItem,
+  errors: string[],
+): Promise<PveGuest> {
+  const vmid = Number(item.vmid);
+  let config: RawGuestConfig = {};
+  try {
+    config = await pveGet<RawGuestConfig>(cfg, `/nodes/${node}/${kind}/${vmid}/config`);
+  } catch (error) {
+    errors.push(`${kind}/${vmid}@${node}: config fetch failed (${error instanceof Error ? error.message : error})`);
+  }
+  const memMiB = typeof config.memory === "string" ? Number(config.memory) : config.memory;
+  let nics = guestNics(config);
+  if (kind === "qemu" && item.status === "running") {
+    try {
+      const agent = await pveGet<RawAgentNetworkResult>(cfg, `/nodes/${node}/qemu/${vmid}/agent/network-get-interfaces`);
+      nics = mergeGuestAgentAddresses(nics, agent.result ?? []);
+    } catch { /* Guest agent is optional. */ }
+  }
+  return {
+    kind,
+    node,
+    vmid,
+    name: item.name ?? String(vmid),
+    status: item.status ?? "unknown",
+    cpuCores: config.cores ? config.cores * (config.sockets ?? 1) : null,
+    memoryBytes: guestMemoryBytes(memMiB),
+    diskBytes: toBigInt(item.maxdisk),
+    osName: typeof config.ostype === "string" ? config.ostype : null,
+    description: typeof config.description === "string" ? config.description : null,
+    nics,
+    firewall: await fetchGuestFirewall(cfg, node, kind, vmid, errors),
+  };
+}
+
+function guestMemoryBytes(memoryMiB: number | undefined): bigint | null {
+  return memoryMiB && Number.isFinite(memoryMiB) ? BigInt(Math.round(memoryMiB * MiB)) : null;
+}
+
+async function fetchNodeGuests(
+  cfg: DriverConfig,
+  node: string,
+  kind: "qemu" | "lxc",
+  errors: string[],
+): Promise<PveGuest[]> {
+  try {
+    const list = await pveGet<RawGuestListItem[]>(cfg, `/nodes/${node}/${kind}`);
+    const guests: PveGuest[] = [];
+    for (const item of list) {
+      guests.push(await fetchGuestRecord(cfg, node, kind, item, errors));
+    }
+    return guests;
+  } catch (error) {
+    errors.push(`node ${node}: ${kind} list failed (${error instanceof Error ? error.message : error})`);
+    return [];
+  }
+}
+
+async function fetchNodeStorage(cfg: DriverConfig, node: string, errors: string[]): Promise<PveStorage[]> {
+  try {
+    const pools = await pveGet<RawStorage[]>(cfg, `/nodes/${node}/storage`);
+    return pools.map((pool) => ({
+      node,
+      name: pool.storage,
+      type: pool.type ?? null,
+      totalBytes: toBigInt(pool.total),
+      usedBytes: toBigInt(pool.used),
+      content: pool.content ?? null,
+      shared: pool.shared === 1 || pool.shared === true,
+    }));
+  } catch (error) {
+    errors.push(`node ${node}: storage list failed (${error instanceof Error ? error.message : error})`);
+    return [];
+  }
+}
+
 // ---------- snapshot ----------
 
 /** Fetch a full normalized snapshot from a live Proxmox VE cluster. */
@@ -581,102 +692,14 @@ export async function fetchProxmoxSnapshotFromApi(cfg: DriverConfig): Promise<Pr
   for (const rawNode of rawNodes) {
     const name = rawNode.node;
     try {
-      // Node detail (version, CPU model) — optional, keep going on failure.
-      let status: RawNodeStatus = {};
-      try {
-        status = await pveGet<RawNodeStatus>(cfg, `/nodes/${name}/status`);
-      } catch {
-        // offline nodes reject the status call; list data is enough
-      }
-      const interfaces: PveNodeIface[] = [];
-      try {
-        const rawIfaces = await pveGet<RawNetIface[]>(cfg, `/nodes/${name}/network`);
-        for (const iface of rawIfaces) {
-          interfaces.push({
-            name: iface.iface,
-            type: iface.type ?? "unknown",
-            address: iface.address ?? (iface.cidr ? iface.cidr.split("/")[0] : null),
-            cidr: iface.cidr ?? null,
-            gateway: iface.gateway ?? null,
-            mac: null,
-          });
-        }
-      } catch (err) {
-        errors.push(`node ${name}: network list failed (${err instanceof Error ? err.message : err})`);
-      }
-      nodes.push({
-        name,
-        status: rawNode.status ?? "unknown",
-        cpuCores: status.cpuinfo?.cores ?? rawNode.maxcpu ?? null,
-        cpuModel: status.cpuinfo?.model ?? null,
-        memoryBytes: toBigInt(status.memory?.total ?? rawNode.maxmem),
-        pveVersion: status.pveversion?.replace(/^pve-manager\//, "").split("/")[0] ?? null,
-        uptimeSec: rawNode.uptime ?? null,
-        interfaces,
-      });
-
-      for (const kind of ["qemu", "lxc"] as const) {
-        try {
-          const list = await pveGet<RawGuestListItem[]>(cfg, `/nodes/${name}/${kind}`);
-          for (const item of list) {
-            const vmid = Number(item.vmid);
-            let config: RawGuestConfig = {};
-            try {
-              config = await pveGet<RawGuestConfig>(cfg, `/nodes/${name}/${kind}/${vmid}/config`);
-            } catch (err) {
-              errors.push(`${kind}/${vmid}@${name}: config fetch failed (${err instanceof Error ? err.message : err})`);
-            }
-            const memMiB = typeof config.memory === "string" ? Number(config.memory) : config.memory;
-            let nics = guestNics(config);
-            if (kind === "qemu" && item.status === "running") {
-              try {
-                const agent = await pveGet<RawAgentNetworkResult>(
-                  cfg,
-                  `/nodes/${name}/qemu/${vmid}/agent/network-get-interfaces`,
-                );
-                nics = mergeGuestAgentAddresses(nics, agent.result ?? []);
-              } catch {
-                // The QEMU guest agent is optional; network observations may
-                // still resolve this VM's addresses by MAC.
-              }
-            }
-            const guestFirewall = await fetchGuestFirewall(cfg, name, kind, vmid, errors);
-            guests.push({
-              kind,
-              node: name,
-              vmid,
-              name: item.name ?? String(vmid),
-              status: item.status ?? "unknown",
-              cpuCores: config.cores ? config.cores * (config.sockets ?? 1) : null,
-              memoryBytes: memMiB && Number.isFinite(memMiB) ? BigInt(Math.round(memMiB * MiB)) : null,
-              diskBytes: toBigInt(item.maxdisk),
-              osName: typeof config.ostype === "string" ? config.ostype : null,
-              description: typeof config.description === "string" ? config.description : null,
-              nics,
-              firewall: guestFirewall,
-            });
-          }
-        } catch (err) {
-          errors.push(`node ${name}: ${kind} list failed (${err instanceof Error ? err.message : err})`);
-        }
-      }
-
-      try {
-        const rawStorage = await pveGet<RawStorage[]>(cfg, `/nodes/${name}/storage`);
-        for (const pool of rawStorage) {
-          storage.push({
-            node: name,
-            name: pool.storage,
-            type: pool.type ?? null,
-            totalBytes: toBigInt(pool.total),
-            usedBytes: toBigInt(pool.used),
-            content: pool.content ?? null,
-            shared: pool.shared === 1 || pool.shared === true,
-          });
-        }
-      } catch (err) {
-        errors.push(`node ${name}: storage list failed (${err instanceof Error ? err.message : err})`);
-      }
+      nodes.push(await fetchNodeRecord(cfg, rawNode, errors));
+      const [qemu, lxc, nodeStorage] = await Promise.all([
+        fetchNodeGuests(cfg, name, "qemu", errors),
+        fetchNodeGuests(cfg, name, "lxc", errors),
+        fetchNodeStorage(cfg, name, errors),
+      ]);
+      guests.push(...qemu, ...lxc);
+      storage.push(...nodeStorage);
     } catch (err) {
       errors.push(`node ${name}: ${err instanceof Error ? err.message : err}`);
     }

@@ -40,7 +40,7 @@ describe("Tailscale API integration", () => {
     expect(result).toMatchObject({ ok: true });
     expect(result.detail).toContain("1 device");
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/tailnet/example.ts.net/devices?fields=all");
-    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({
+    expect((fetchMock.mock.calls[0]![1] as RequestInit).headers).toMatchObject({
       Authorization: `Basic ${Buffer.from("tskey-api-example:").toString("base64")}`,
     });
   });

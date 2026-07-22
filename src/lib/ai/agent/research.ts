@@ -6,8 +6,7 @@
  */
 import "server-only";
 import { prisma } from "@/lib/db";
-import { getField } from "@/lib/integrations/elasticsearch/client";
-import { esFetch } from "@/lib/integrations/elasticsearch/client";
+import { esFetch, getField } from "@/lib/integrations/elasticsearch/client";
 import { detectSources } from "@/lib/integrations/elasticsearch/detect";
 import { isMock } from "@/lib/integrations/types";
 import { mockFetchPulses } from "@/lib/integrations/otx";
@@ -70,22 +69,32 @@ export async function gatherIpIdentity(ip: string): Promise<IpIdentityReport> {
     }),
   ]);
 
+  function ownerKind(row: (typeof ipRows)[number]): string | null {
+    if (row.interface?.device) return "device";
+    if (row.interface?.vm) return "vm";
+    return row.interface?.container ? "container" : null;
+  }
+
+  function ownerName(row: (typeof ipRows)[number]): string | null {
+    const iface = row.interface;
+    return iface?.device?.name ?? iface?.vm?.name ?? iface?.container?.name ?? null;
+  }
+
+  function identityRecord(row: (typeof ipRows)[number]): IdentityInput["ipRecords"][number] {
+    return {
+      networkName: row.network?.name ?? null,
+      networkCidr: null,
+      vlanId: row.network?.vlanId ?? null,
+      ownerKind: ownerKind(row),
+      ownerName: ownerName(row),
+      macAddress: row.interface?.macAddress ?? null,
+    };
+  }
+
   const input: IdentityInput = {
     ip,
     networks: networks.map((n) => ({ name: n.name, cidr: n.cidr, vlanId: n.vlanId })),
-    ipRecords: ipRows.map((r) => {
-      const iface = r.interface;
-      const owner = iface?.device ?? iface?.vm ?? iface?.container ?? null;
-      const ownerKind = iface?.device ? "device" : iface?.vm ? "vm" : iface?.container ? "container" : null;
-      return {
-        networkName: r.network?.name ?? null,
-        networkCidr: null,
-        vlanId: r.network?.vlanId ?? null,
-        ownerKind,
-        ownerName: owner?.name ?? null,
-        macAddress: iface?.macAddress ?? null,
-      };
-    }),
+    ipRecords: ipRows.map(identityRecord),
     leases: leases.map((l) => ({
       hostname: l.hostname,
       macAddress: l.macAddress,
@@ -171,6 +180,89 @@ interface EsSearchResponse {
   hits?: { total?: { value?: number } | number; hits?: EsHit[] };
 }
 
+type LogSource = Awaited<ReturnType<typeof resolveLogSource>>;
+type LogSettings = ReturnType<typeof elasticsearchSettingsSchema.parse>;
+
+function logQueryShould(term: string): unknown[] {
+  const exact = looksLikeIp(term) ? IP_FIELDS.map((field) => ({ term: { [field]: term } })) : [];
+  return [...exact, {
+    simple_query_string: {
+      query: term,
+      fields: ["*"],
+      default_operator: "and",
+      lenient: true,
+      analyze_wildcard: false,
+      flags: "NONE",
+    },
+  }];
+}
+
+async function logIndexPattern(source: LogSource, settings: LogSettings, scope: string): Promise<string> {
+  if (scope === "all") return settings.indexPattern;
+  const detected = await detectSources(source);
+  if (scope === "cloudflared") return detected.cloudflared ?? settings.cloudflaredIndexPattern;
+  return detected.suricata ?? settings.indexPattern;
+}
+
+async function fetchLogHits(
+  source: LogSource,
+  settings: LogSettings,
+  term: string,
+  scope: string,
+  fromIso: string,
+  toIso: string,
+): Promise<EsSearchResponse> {
+  const indexPattern = await logIndexPattern(source, settings, scope);
+  return esFetch<EsSearchResponse>(
+    source,
+    `/${encodeURIComponent(indexPattern)}/_search?ignore_unavailable=true&allow_no_indices=true`,
+    {
+      size: 60,
+      _source: [...new Set([
+        settings.timestampField, settings.messageField, ...SIGNATURE_FIELDS, ...IP_FIELDS,
+        ...DEST_PORT_FIELDS, ...EVENT_TYPE_FIELDS, ...HOSTNAME_FIELDS,
+      ])],
+      track_total_hits: 10_000,
+      timeout: "5s",
+      terminate_after: 10_000,
+      sort: [{ [settings.timestampField]: { order: "desc", unmapped_type: "date" } }],
+      query: {
+        bool: {
+          should: logQueryShould(term),
+          minimum_should_match: 1,
+          filter: [{ range: { [settings.timestampField]: { gte: fromIso, lte: toIso } } }],
+        },
+      },
+    },
+  );
+}
+
+function summarizeLogHits(hits: EsHit[], term: string, messageField: string) {
+  const eventTypes = new Map<string, number>();
+  const ports = new Map<string, number>();
+  const signatures = new Map<string, number>();
+  const hostnames = new Map<string, number>();
+  const peers = new Map<string, number>();
+  const samples: string[] = [];
+  hits.forEach((hit) => {
+    const source = hit._source ?? {};
+    bump(eventTypes, firstField(source, EVENT_TYPE_FIELDS) ?? hit._index);
+    bump(ports, firstField(source, DEST_PORT_FIELDS));
+    bump(signatures, firstField(source, SIGNATURE_FIELDS));
+    bump(hostnames, firstField(source, HOSTNAME_FIELDS));
+    IP_FIELDS.forEach((field) => {
+      const value = firstField(source, [field]);
+      if (value && value !== term) bump(peers, value);
+    });
+    if (samples.length >= 8) return;
+    const line = firstField(source, SIGNATURE_FIELDS)
+      ?? firstField(source, [messageField, "message", "event.original"])
+      ?? JSON.stringify(source).slice(0, 200);
+    samples.push(line.slice(0, 300));
+  });
+  return { eventTypes, ports, signatures, hostnames, peers, samples };
+}
+
 function totalOf(res: EsSearchResponse): number {
   const total = res.hits?.total;
   return typeof total === "number" ? total : (total?.value ?? 0);
@@ -223,62 +315,9 @@ export async function queryLogsForTerm(
   const now = Date.now();
   const fromIso = new Date(now - hours * 3_600_000).toISOString();
   const toIso = new Date(now).toISOString();
-  const size = 60;
-
-  const should: unknown[] = [];
-  if (looksLikeIp(term)) {
-    for (const field of IP_FIELDS) should.push({ term: { [field]: term } });
-  }
-  should.push({
-    simple_query_string: {
-      query: term,
-      fields: ["*"],
-      default_operator: "and",
-      lenient: true,
-      analyze_wildcard: false,
-      flags: "NONE",
-    },
-  });
-
-  const detected = scope === "all" ? null : await detectSources(cfg);
-  const indexPattern =
-    scope === "cloudflared"
-      ? detected?.cloudflared ?? s.cloudflaredIndexPattern
-      : scope === "suricata"
-        ? detected?.suricata ?? s.indexPattern
-        : s.indexPattern;
-
   let res: EsSearchResponse;
   try {
-    res = await esFetch<EsSearchResponse>(
-      cfg,
-      `/${encodeURIComponent(indexPattern)}/_search?ignore_unavailable=true&allow_no_indices=true`,
-      {
-        size,
-        _source: [
-          ...new Set([
-            s.timestampField,
-            s.messageField,
-            ...SIGNATURE_FIELDS,
-            ...IP_FIELDS,
-            ...DEST_PORT_FIELDS,
-            ...EVENT_TYPE_FIELDS,
-            ...HOSTNAME_FIELDS,
-          ]),
-        ],
-        track_total_hits: 10_000,
-        timeout: "5s",
-        terminate_after: 10_000,
-        sort: [{ [s.timestampField]: { order: "desc", unmapped_type: "date" } }],
-        query: {
-          bool: {
-            should,
-            minimum_should_match: 1,
-            filter: [{ range: { [s.timestampField]: { gte: fromIso, lte: toIso } } }],
-          },
-        },
-      },
-    );
+    res = await fetchLogHits(cfg, s, term, scope, fromIso, toIso);
   } catch (err) {
     return {
       term,
@@ -298,31 +337,7 @@ export async function queryLogsForTerm(
   }
 
   const hits = res.hits?.hits ?? [];
-  const eventTypes = new Map<string, number>();
-  const ports = new Map<string, number>();
-  const signatures = new Map<string, number>();
-  const hostnames = new Map<string, number>();
-  const peers = new Map<string, number>();
-  const samples: string[] = [];
-
-  for (const hit of hits) {
-    const source = hit._source ?? {};
-    bump(eventTypes, firstField(source, EVENT_TYPE_FIELDS) ?? hit._index);
-    bump(ports, firstField(source, DEST_PORT_FIELDS));
-    bump(signatures, firstField(source, SIGNATURE_FIELDS));
-    bump(hostnames, firstField(source, HOSTNAME_FIELDS));
-    // Peer IPs = the IP fields that are NOT the queried term.
-    for (const field of IP_FIELDS) {
-      const value = firstField(source, [field]);
-      if (value && value !== term) bump(peers, value);
-    }
-    if (samples.length < 8) {
-      const sig = firstField(source, SIGNATURE_FIELDS);
-      const msg = firstField(source, [s.messageField, "message", "event.original"]);
-      const line = sig ?? msg ?? JSON.stringify(source).slice(0, 200);
-      samples.push(line.slice(0, 300));
-    }
-  }
+  const { eventTypes, ports, signatures, hostnames, peers, samples } = summarizeLogHits(hits, term, s.messageField);
 
   return {
     term,

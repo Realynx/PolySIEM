@@ -36,6 +36,59 @@ function isDefunct(gateway: TrafficSummaryGateway): boolean {
   return metadataFlag(gateway.metadata, "defunct");
 }
 
+function interfaceAliases<T extends TrafficSummaryInterface>(interfaces: T[]): Map<string, T> {
+  const aliases = new Map<string, T>();
+  for (const iface of interfaces) {
+    aliases.set(normalized(iface.key), iface);
+    if (iface.name) aliases.set(normalized(iface.name), iface);
+  }
+  return aliases;
+}
+
+function blockedInterfaceKeys<T extends TrafficSummaryInterface>(
+  gateways: TrafficSummaryGateway[],
+  aliases: Map<string, T>,
+): Set<string> {
+  const defunct = new Set<string>();
+  const usable = new Set<string>();
+  for (const gateway of gateways) {
+    if (!gateway.interfaceName) continue;
+    const iface = aliases.get(normalized(gateway.interfaceName));
+    if (iface) (isDefunct(gateway) ? defunct : usable).add(iface.key);
+  }
+  return new Set([...defunct].filter((key) => !usable.has(key)));
+}
+
+function selectNamedWanGateways<T extends TrafficSummaryInterface>(
+  selected: Set<string>, gateways: TrafficSummaryGateway[], aliases: Map<string, T>,
+): void {
+  for (const gateway of gateways) {
+    if (isDefunct(gateway) || !gateway.interfaceName || !INTERNET_FACING_RE.test(gateway.name)) continue;
+    const iface = aliases.get(normalized(gateway.interfaceName));
+    if (iface) selected.add(iface.key);
+  }
+}
+
+function selectNamedWanInterfaces<T extends TrafficSummaryInterface>(
+  selected: Set<string>, interfaces: T[], blocked: Set<string>,
+): void {
+  for (const iface of interfaces) {
+    if (!blocked.has(iface.key) && (normalized(iface.key) === "wan" || Boolean(iface.name && INTERNET_FACING_RE.test(iface.name)))) {
+      selected.add(iface.key);
+    }
+  }
+}
+
+function selectDefaultGateways<T extends TrafficSummaryInterface>(
+  selected: Set<string>, gateways: TrafficSummaryGateway[], aliases: Map<string, T>,
+): void {
+  for (const gateway of gateways) {
+    if (isDefunct(gateway) || !gateway.isDefault || !gateway.interfaceName || TUNNEL_RE.test(gateway.name)) continue;
+    const iface = aliases.get(normalized(gateway.interfaceName));
+    if (iface && !TUNNEL_RE.test(iface.name ?? iface.key)) selected.add(iface.key);
+  }
+}
+
 /**
  * Express interface counters from the attached network's perspective. A WAN
  * receives downloads and transmits uploads; an internal interface does the
@@ -60,49 +113,20 @@ export function selectTrafficSummaryInterfaces<T extends TrafficSummaryInterface
   gateways: TrafficSummaryGateway[] = [],
 ): T[] {
   const selected = new Set<string>();
-  const byAlias = new Map<string, T>();
-  for (const iface of interfaces) {
-    byAlias.set(normalized(iface.key), iface);
-    if (iface.name) byAlias.set(normalized(iface.name), iface);
-  }
+  const byAlias = interfaceAliases(interfaces);
 
   // OPNsense can retain a named gateway for an interface that no longer has a
   // usable route. Do not let that stale name turn its interface counters into
   // provider-wide internet traffic. A usable gateway on the same interface
   // wins over a second defunct definition.
-  const defunctKeys = new Set<string>();
-  const usableGatewayKeys = new Set<string>();
-  for (const gateway of gateways) {
-    if (!gateway.interfaceName) continue;
-    const iface = byAlias.get(normalized(gateway.interfaceName));
-    if (!iface) continue;
-    (isDefunct(gateway) ? defunctKeys : usableGatewayKeys).add(iface.key);
-  }
-  const blockedKeys = new Set([...defunctKeys].filter((key) => !usableGatewayKeys.has(key)));
+  const blockedKeys = blockedInterfaceKeys(gateways, byAlias);
 
   // Explicit WAN naming is stronger evidence than routing default. A VPN can
   // be the default gateway while its encrypted packets still cross WAN; in
   // that case including both interfaces would reintroduce double-counting.
-  for (const gateway of gateways) {
-    if (isDefunct(gateway) || !gateway.interfaceName || !INTERNET_FACING_RE.test(gateway.name)) continue;
-    const iface = byAlias.get(normalized(gateway.interfaceName));
-    if (iface) selected.add(iface.key);
-  }
-
-  for (const iface of interfaces) {
-    if (
-      !blockedKeys.has(iface.key) &&
-      (normalized(iface.key) === "wan" || (iface.name && INTERNET_FACING_RE.test(iface.name)))
-    ) {
-      selected.add(iface.key);
-    }
-  }
-
-  for (const gateway of gateways) {
-    if (isDefunct(gateway) || !gateway.isDefault || !gateway.interfaceName || TUNNEL_RE.test(gateway.name)) continue;
-    const iface = byAlias.get(normalized(gateway.interfaceName));
-    if (iface && !TUNNEL_RE.test(iface.name ?? iface.key)) selected.add(iface.key);
-  }
+  selectNamedWanGateways(selected, gateways, byAlias);
+  selectNamedWanInterfaces(selected, interfaces, blockedKeys);
+  selectDefaultGateways(selected, gateways, byAlias);
 
   if (selected.size === 0 && interfaces.length === 1 && !blockedKeys.has(interfaces[0].key)) {
     selected.add(interfaces[0].key);

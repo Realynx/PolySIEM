@@ -211,15 +211,19 @@ export function routeFootprintFlow({
   allocateGroupPorts();
   const targetGroupEntryByEdge = groupEntryByEndpoint.target;
   const childrenByParent = new Map<string, FootprintFlowNode[]>();
+  const indexChildren = () => {
   for (const node of nodes) {
     if (!node.parentId || node.type === "laneLabel") continue;
     const children = childrenByParent.get(node.parentId);
     if (children) children.push(node);
     else childrenByParent.set(node.parentId, [node]);
   }
+  };
+  indexChildren();
   // A lower-row machine must not be approached through the card above it.
   // Choose the clearer vertical face before endpoint offsets are assigned so
   // both top and bottom ports retain the same uniform pitch.
+  const selectMachineHandles = () => {
   for (const edge of edges) {
     const port = groupPortByEndpoint.target.get(edge.id);
     const targetNode = nodeById.get(edge.target);
@@ -241,6 +245,8 @@ export function routeFootprintFlow({
     }
     if (above > below) edge.targetHandle = "matrix-bottom-in";
   }
+  };
+  selectMachineHandles();
   const handleSide = (
     handle: string | null | undefined,
     fallback: FootprintTraceSide,
@@ -278,6 +284,7 @@ export function routeFootprintFlow({
     right: [],
   };
   const traceBankByKey = new Map<string, FootprintCircuitBank>();
+  const indexTraceBanks = () => {
   for (const edge of edges) {
     const traceKey = (edge.data as { traceKey?: string } | undefined)?.traceKey;
     if (!traceKey) continue;
@@ -285,9 +292,12 @@ export function routeFootprintFlow({
     const bank = laneId ? laneBankById.get(laneId) : undefined;
     if (bank) traceBankByKey.set(traceKey, bank);
   }
+  };
+  indexTraceBanks();
   const corridorCenterX = (traceCorridor.left + traceCorridor.right) / 2;
   const exactPairKey = (edge: Edge) => `${edge.source}→${edge.target}`;
   const exactPairMembers = new Map<string, Edge[]>();
+  const collectExactPairs = () => {
   for (const edge of edges) {
     const relationship = (
       edge.data as { relationship?: string } | undefined
@@ -298,7 +308,10 @@ export function routeFootprintFlow({
     if (members) members.push(edge);
     else exactPairMembers.set(key, [edge]);
   }
+  };
+  collectExactPairs();
   const exactPairBank = new Map<string, FootprintCircuitBank>();
+  const assignExactPairBanks = () => {
   for (const [key, members] of exactPairMembers) {
     if (members.length < 2) continue;
     const first = members[0];
@@ -315,6 +328,9 @@ export function routeFootprintFlow({
       ((source.x + target.x) / 2 < corridorCenterX ? "left" : "right");
     exactPairBank.set(key, bank);
   }
+  };
+  assignExactPairBanks();
+  const assignCircuitEdges = () => {
   for (const edge of edges) {
     const edgeData = edge.data as {
       relationship?: string;
@@ -342,6 +358,8 @@ export function routeFootprintFlow({
     if (!bank) continue;
     circuitEdges[bank].push(edge);
   }
+  };
+  assignCircuitEdges();
   const occupiedSegments: FootprintRouteSegment[] = [];
   const endpointLeadRanks = (endpoint: "source" | "target") => {
     const groups = new Map<string, Edge[]>();
@@ -393,7 +411,7 @@ export function routeFootprintFlow({
     graph.routes.map((route) => [route.id, route.tunnelId] as const),
   );
   const exactPairLateralByEdge = new Map<string, number>();
-  for (const bank of ["left", "right"] as const) {
+  const routeCircuitBank = (bank: FootprintCircuitBank) => {
     const bankEdges = circuitEdges[bank].sort((a, b) => {
       const aTarget = nodeCenter(a.target)!;
       const bTarget = nodeCenter(b.target)!;
@@ -432,6 +450,7 @@ export function routeFootprintFlow({
       return entry ? `${entry.laneId}:${entry.side}` : null;
     };
     const targetGroups = new Map<string, Edge[]>();
+    const collectTargetGroups = () => {
     for (const edge of bankEdges) {
       const key = targetGroupFamilyKey(edge);
       if (key) {
@@ -440,6 +459,8 @@ export function routeFootprintFlow({
         else targetGroups.set(key, [edge]);
       }
     }
+    };
+    collectTargetGroups();
     const regionFamilyKey = (edge: Edge): string | null => {
       const data = edge.data as {
         relationship?: string;
@@ -452,6 +473,7 @@ export function routeFootprintFlow({
       return tunnelId && laneId ? `${tunnelId}:${laneId}` : null;
     };
     const regions = new Map<string, Edge[]>();
+    const collectRegions = () => {
     for (const edge of bankEdges) {
       const key = regionFamilyKey(edge);
       if (key) {
@@ -460,7 +482,10 @@ export function routeFootprintFlow({
         else regions.set(key, [edge]);
       }
     }
+    };
+    collectRegions();
     const familyByEdge = new Map<string, TraceFamily>();
+    const selectFamilies = () => {
     for (const edge of bankEdges) {
       const pair = pairs.get(exactPairKey(edge)) ?? [];
       const sourceKey = sourceFamilyKey(edge);
@@ -487,7 +512,7 @@ export function routeFootprintFlow({
         members = targetGroup;
         key = targetGroupKey;
       } else {
-        const candidates = [
+        const sharedCandidates = () => [
           ...(source.length >= 2
             ? [{ mode: "source" as const, members: source, key: sourceKey }]
             : []),
@@ -497,7 +522,8 @@ export function routeFootprintFlow({
           ...(regionKey && region.length >= 3
             ? [{ mode: "region" as const, members: region, key: regionKey }]
             : []),
-        ].sort(
+        ];
+        const candidates = sharedCandidates().sort(
           (a, b) =>
             b.members.length - a.members.length ||
             Number(a.mode === "region") - Number(b.mode === "region") ||
@@ -515,11 +541,14 @@ export function routeFootprintFlow({
       const family = { id, mode, edges: members };
       familyByEdge.set(edge.id, family);
     }
+    };
+    selectFamilies();
 
     // Collapse the per-edge family views into one plan, largest buses first.
     // This is a planning pass only: every trace still receives its own lane.
     const edgeById = new Map(bankEdges.map((edge) => [edge.id, edge]));
     const families = new Map<string, TraceFamily>();
+    const collectFamilies = () => {
     for (const [edgeId, selected] of familyByEdge) {
       const edge = edgeById.get(edgeId)!;
       const family = families.get(selected.id) ?? {
@@ -530,6 +559,8 @@ export function routeFootprintFlow({
       family.edges.push(edge);
       families.set(selected.id, family);
     }
+    };
+    collectFamilies();
     const familyTrack = new Map<
       string,
       {
@@ -542,10 +573,12 @@ export function routeFootprintFlow({
         targetGroupSide?: GroupEntrySide;
       }
     >();
+    const planFamilyTracks = () => {
     for (const family of [...families.values()].sort(
       (a, b) => b.edges.length - a.edges.length || a.id.localeCompare(b.id),
     )) {
       if (family.edges.length < 2) continue;
+      const familyGeometry = () => {
       const familyEndpointIds = new Set<string>();
       const firstFamilyEdge = family.edges[0];
       if (family.mode !== "target") {
@@ -553,10 +586,11 @@ export function routeFootprintFlow({
           familyEndpointIds.add(id);
       }
       if (family.mode !== "source") {
-        const targetEdges =
+        const relevantTargetEdges = () =>
           family.mode === "region" || family.mode === "group"
             ? family.edges
             : [firstFamilyEdge];
+        const targetEdges = relevantTargetEdges();
         for (const edge of targetEdges)
           for (const id of endpointFamily(edge.target))
             familyEndpointIds.add(id);
@@ -601,6 +635,9 @@ export function routeFootprintFlow({
               ]);
       const familyTop = Math.min(...familyYs);
       const familyBottom = Math.max(...familyYs);
+      return { familyObstacles, junctionY, familyTop, familyBottom };
+      };
+      const { familyObstacles, junctionY, familyTop, familyBottom } = familyGeometry();
       const laneSpacing = RIBBON_PITCH;
       const bundleHalfWidth = ((family.edges.length - 1) * laneSpacing) / 2;
       const familyMembers = family.edges.map((edge) => ({
@@ -623,18 +660,17 @@ export function routeFootprintFlow({
             x - bundleHalfWidth >= obstacle.x + obstacle.width + 8
           );
         });
+      const onlySetValue = <T,>(values: Set<T>): T | undefined =>
+        values.size === 1 ? [...values][0] : undefined;
+      const targetGroupGeometry = () => {
       const targetLaneIds = new Set(
         family.edges.map((edge) => targetGroupEntryByEdge.get(edge.id)?.laneId),
       );
       const targetEntrySides = new Set(
         family.edges.map((edge) => targetGroupEntryByEdge.get(edge.id)?.side),
       );
-      const sharedTargetLane =
-        targetLaneIds.size === 1 ? [...targetLaneIds][0] : undefined;
-      const sharedTargetEntrySide =
-        targetEntrySides.size === 1
-          ? [...targetEntrySides][0]
-          : undefined;
+      const sharedTargetLane = onlySetValue(targetLaneIds);
+      const sharedTargetEntrySide = onlySetValue(targetEntrySides);
       const targetLaneNode = sharedTargetLane
         ? nodeById.get(sharedTargetLane)
         : undefined;
@@ -674,6 +710,10 @@ export function routeFootprintFlow({
               obstacle.x + obstacle.width + 8
           );
         });
+      return { sharedTargetEntrySide, targetGroupTrackX, followsTargetGroup };
+      };
+      const { sharedTargetEntrySide, targetGroupTrackX, followsTargetGroup } =
+        targetGroupGeometry();
       const approachHighwayX = footprintTraceHighwayX(
         familyMembers,
         gutterCandidates,
@@ -682,29 +722,25 @@ export function routeFootprintFlow({
       const highwayX = followsTargetGroup
         ? targetGroupTrackX
         : approachHighwayX;
-      if (highwayX === null) continue;
-      const ordered = [...family.edges].sort((a, b) => {
-        if (
-          family.mode === "target" ||
-          family.mode === "region" ||
-          family.mode === "group"
-        ) {
-          return (
-            (family.mode === "region" || family.mode === "group"
-              ? nodeCenter(a.target)!.x - nodeCenter(b.target)!.x ||
-                nodeCenter(a.target)!.y - nodeCenter(b.target)!.y ||
-                nodeCenter(a.source)!.x - nodeCenter(b.source)!.x
-              : (traceOffsets.get(a.id)?.targetOffset ?? 0) -
-                (traceOffsets.get(b.id)?.targetOffset ?? 0)) ||
-            a.id.localeCompare(b.id)
-          );
-        }
-        return (
-          (traceOffsets.get(a.id)?.sourceOffset ?? 0) -
-            (traceOffsets.get(b.id)?.sourceOffset ?? 0) ||
-          a.id.localeCompare(b.id)
-        );
-      });
+      if (highwayX == null) continue;
+      const familyOrderKey = (edge: Edge): [number, number, number, string] => {
+        if (family.mode === "region" || family.mode === "group") return [
+          nodeCenter(edge.target)!.x,
+          nodeCenter(edge.target)!.y,
+          nodeCenter(edge.source)!.x,
+          edge.id,
+        ];
+        if (family.mode === "target")
+          return [traceOffsets.get(edge.id)?.targetOffset ?? 0, 0, 0, edge.id];
+        return [traceOffsets.get(edge.id)?.sourceOffset ?? 0, 0, 0, edge.id];
+      };
+      const compareFamilyEdges = (a: Edge, b: Edge) => {
+        const left = familyOrderKey(a);
+        const right = familyOrderKey(b);
+        return left[0] - right[0] || left[1] - right[1] || left[2] - right[2] ||
+          left[3].localeCompare(right[3]);
+      };
+      const ordered = [...family.edges].sort(compareFamilyEdges);
       ordered.forEach((edge, index) => {
         if (family.mode === "pair") {
           exactPairLateralByEdge.set(
@@ -738,8 +774,11 @@ export function routeFootprintFlow({
         });
       });
     }
+    };
+    planFamilyTracks();
 
     const familySourceRailRank = new Map<string, number>();
+    const rankFamilySourceRails = () => {
     for (const family of families.values()) {
       if (
         family.mode !== "target" &&
@@ -762,9 +801,12 @@ export function routeFootprintFlow({
           )
           .forEach((edge, index) => familySourceRailRank.set(edge.id, index));
     }
+    };
+    rankFamilySourceRails();
 
     const approachTrackByTraceKey = new Map<string, number>();
     const publishedGroupByTraceKey = new Map<string, string>();
+    const indexPublishedTracks = () => {
     for (const edge of bankEdges) {
       const data = edge.data as {
         relationship?: string;
@@ -783,10 +825,13 @@ export function routeFootprintFlow({
         );
       }
     }
+    };
+    indexPublishedTracks();
     // Keep the service leg on the same physical lane that delivered its
     // hostname whenever both stages have a planned family. Besides avoiding a
     // needless 6px side-step, this turns the two stages into one visually
     // continuous ribbon through the reserved bus channel.
+    const alignServiceTracks = () => {
     for (const edge of bankEdges) {
       const data = edge.data as {
         relationship?: string;
@@ -810,106 +855,84 @@ export function routeFootprintFlow({
         if (extra <= 160) serviceTrack.trackX = approachTrackX;
       }
     }
+    };
+    alignServiceTracks();
 
-    const routingEdges = [...bankEdges].sort((a, b) => {
-      const aTrack = familyTrack.get(a.id);
-      const bTrack = familyTrack.get(b.id);
-      const aSize = aTrack ? (families.get(aTrack.familyId)?.edges.length ?? 0) : 0;
-      const bSize = bTrack ? (families.get(bTrack.familyId)?.edges.length ?? 0) : 0;
-      return (
-        bSize - aSize ||
-        (aTrack?.familyId ?? "~").localeCompare(bTrack?.familyId ?? "~") ||
-        (aTrack?.trackX ?? 0) - (bTrack?.trackX ?? 0) ||
-        a.id.localeCompare(b.id)
-      );
-    });
+    const routingPriority = (edge: Edge) => {
+      const track = familyTrack.get(edge.id);
+      if (!track) return { size: 0, familyId: "~", trackX: 0 };
+      return {
+        size: families.get(track.familyId)?.edges.length ?? 0,
+        familyId: track.familyId,
+        trackX: track.trackX,
+      };
+    };
+    const compareRoutingPriority = (a: Edge, b: Edge) => {
+      const left = routingPriority(a);
+      const right = routingPriority(b);
+      return right.size - left.size || left.familyId.localeCompare(right.familyId) ||
+        left.trackX - right.trackX || a.id.localeCompare(b.id);
+    };
+    const routingEdges = [...bankEdges].sort(compareRoutingPriority);
     routingEdges.forEach((edge) => {
-      const source = nodeCenter(edge.source)!;
-      const target = nodeCenter(edge.target)!;
-      const highway = familyTrack.get(edge.id);
-      const traceKey = (
-        edge.data as { traceKey?: string } | undefined
-      )?.traceKey;
-      const collisionGroup =
-        highway?.followsTargetGroup
+      const traceIdentity = () => {
+        const source = nodeCenter(edge.source)!;
+        const target = nodeCenter(edge.target)!;
+        const highway = familyTrack.get(edge.id);
+        const traceKey = (edge.data as { traceKey?: string } | undefined)?.traceKey;
+        const collisionGroup = highway?.followsTargetGroup
           ? highway.familyId
-          : (traceKey ? publishedGroupByTraceKey.get(traceKey) : undefined) ??
-            highway?.familyId;
-      if (highway) {
-        edge.data = {
-          ...edge.data,
-          traceFamily: highway.familyId,
-          tracePlannedTrackX: highway.trackX,
+          : (traceKey ? publishedGroupByTraceKey.get(traceKey) : undefined) ?? highway?.familyId;
+        if (highway) edge.data = { ...edge.data, traceFamily: highway.familyId,
+          tracePlannedTrackX: highway.trackX };
+        edge.data = { ...edge.data, traceBank: bank };
+        return { source, target, highway, traceKey, collisionGroup,
+          isPublishedTrace: traceKey !== undefined };
+      };
+      const identity = traceIdentity();
+      const { source, target, highway, traceKey, collisionGroup, isPublishedTrace } = identity;
+      const endpointRouting = () => {
+        const baseLead = isPublishedTrace ? 8 : 12;
+        const baseSourceLead = baseLead + (sourceLeadRanks.get(edge.id) ?? 0) * RIBBON_PITCH +
+          (familySourceRailRank.get(edge.id) ?? 0) * RIBBON_PITCH;
+        const baseTargetLead = baseLead + (targetLeadRanks.get(edge.id) ?? 0) * RIBBON_PITCH;
+        const portRouting = () => {
+        const originalSourceSide = handleSide(edge.sourceHandle, "bottom");
+        const originalTargetSide = handleSide(edge.targetHandle, "top");
+        const sourceGroupPort = groupPortByEndpoint.source.get(edge.id);
+        const targetGroupPort = groupPortByEndpoint.target.get(edge.id);
+        const sourcesGroupCard = sourceGroupPort?.laneId === edge.source;
+        const targetsGroupCard = targetGroupPort?.laneId === edge.target;
+        const sourceSide = sourcesGroupCard && sourceGroupPort ? sourceGroupPort.side : originalSourceSide;
+        const targetSide = targetsGroupCard && targetGroupPort ? targetGroupPort.side : originalTargetSide;
+        if (sourcesGroupCard && sourceGroupPort) edge.sourceHandle = `circuit-${sourceGroupPort.side}-out`;
+        if (targetsGroupCard && targetGroupPort) edge.targetHandle = `circuit-${targetGroupPort.side}-in`;
+        return { originalSourceSide, originalTargetSide, sourceGroupPort, targetGroupPort,
+          sourcesGroupCard, targetsGroupCard, sourceSide, targetSide };
         };
-      }
-      edge.data = { ...edge.data, traceBank: bank };
-      const isPublishedTrace = (
-        edge.data as { traceKey?: string } | undefined
-      )?.traceKey !== undefined;
-      // Route pills need to clear the 6px obstacle halo before a bus may cross
-      // the row; an 8px lead keeps the first lane outside that halo.
-      const baseLead = isPublishedTrace ? 8 : 12;
-      const baseSourceLead =
-        baseLead +
-        (sourceLeadRanks.get(edge.id) ?? 0) * RIBBON_PITCH +
-        (familySourceRailRank.get(edge.id) ?? 0) * RIBBON_PITCH;
-      const baseTargetLead =
-        baseLead + (targetLeadRanks.get(edge.id) ?? 0) * RIBBON_PITCH;
-      const originalSourceSide = handleSide(edge.sourceHandle, "bottom");
-      const originalTargetSide = handleSide(edge.targetHandle, "top");
-      const sourceGroupPort = groupPortByEndpoint.source.get(edge.id);
-      const targetGroupPort = groupPortByEndpoint.target.get(edge.id);
-      const sourcesGroupCard = sourceGroupPort?.laneId === edge.source;
-      const targetsGroupCard = targetGroupPort?.laneId === edge.target;
-      const sourceSide =
-        sourcesGroupCard && sourceGroupPort
-          ? sourceGroupPort.side
-          : originalSourceSide;
-      const targetSide =
-        targetsGroupCard && targetGroupPort
-          ? targetGroupPort.side
-          : originalTargetSide;
-      if (sourcesGroupCard && sourceGroupPort)
-        edge.sourceHandle = `circuit-${sourceGroupPort.side}-out`;
-      if (targetsGroupCard && targetGroupPort)
-        edge.targetHandle = `circuit-${targetGroupPort.side}-in`;
-      const exactPairLateral = exactPairLateralByEdge.get(edge.id);
-      const sourceLateral =
-        exactPairLateral ?? traceOffsets.get(edge.id)?.sourceOffset ?? 0;
-      const targetLateral =
-        exactPairLateral ?? traceOffsets.get(edge.id)?.targetOffset ?? 0;
-      const sourceEscapeX =
-        sourceSide === "left"
-          ? source.x - source.width / 2 - baseSourceLead
-          : sourceSide === "right"
-            ? source.x + source.width / 2 + baseSourceLead
+        const ports = portRouting();
+        const exactPairLateral = exactPairLateralByEdge.get(edge.id);
+        return { baseLead, baseSourceLead, baseTargetLead, ...ports,
+          sourceLateral: exactPairLateral ?? traceOffsets.get(edge.id)?.sourceOffset ?? 0,
+          targetLateral: exactPairLateral ?? traceOffsets.get(edge.id)?.targetOffset ?? 0 };
+      };
+      const endpoint = endpointRouting();
+      const { baseLead, baseSourceLead, baseTargetLead, originalSourceSide, originalTargetSide,
+        sourceGroupPort, targetGroupPort, sourcesGroupCard, targetsGroupCard, sourceSide, targetSide,
+        sourceLateral, targetLateral } = endpoint;
+      const approachTrack = () => {
+        if (highway?.followsTargetGroup) return highway.approachTrackX;
+        const inherited = traceKey ? approachTrackByTraceKey.get(traceKey) : undefined;
+        if (!highway || inherited === undefined) return undefined;
+        const sourceEscapeX = sourceSide === "left" ? source.x - source.width / 2 - baseSourceLead
+          : sourceSide === "right" ? source.x + source.width / 2 + baseSourceLead
             : source.x + sourceLateral;
-      const inheritedApproachTrackX = traceKey
-        ? approachTrackByTraceKey.get(traceKey)
-        : undefined;
-      const approachTrackX =
-        highway?.followsTargetGroup
-          ? highway.approachTrackX
-          : highway && inheritedApproachTrackX !== undefined
-          ? (() => {
-              const direct = Math.abs(sourceEscapeX - highway.trackX);
-              const via =
-                Math.abs(sourceEscapeX - inheritedApproachTrackX) +
-                Math.abs(inheritedApproachTrackX - highway.trackX);
-              const extra = Math.max(0, via - direct);
-              // Continuing the inbound bus is useful only while it remains a
-              // local approach. Reject an out-and-back excursion that would
-              // make a sparse regional ribbon substantially longer.
-              return extra <= Math.max(48, direct * 0.2)
-                ? inheritedApproachTrackX
-                : undefined;
-            })()
-          : undefined;
-      const ignoredObstacles = new Set([
-        ...endpointFamily(edge.source),
-        ...endpointFamily(edge.target),
-      ]);
-      const routeOptions = {
+        const direct = Math.abs(sourceEscapeX - highway.trackX);
+        const via = Math.abs(sourceEscapeX - inherited) + Math.abs(inherited - highway.trackX);
+        return Math.max(0, via - direct) <= Math.max(48, direct * 0.2) ? inherited : undefined;
+      };
+      const approachTrackX = approachTrack();
+      const buildRouteOptions = () => ({
         sourceSide,
         targetSide,
         sourceLead: baseSourceLead,
@@ -922,9 +945,8 @@ export function routeFootprintFlow({
           ? target.y + targetLateral +
             (source.y <= target.y ? -RIBBON_PITCH * 2 : RIBBON_PITCH * 2)
           : highway?.junctionY,
-        obstacles: routeObstacles.filter(
-          (obstacle) => !ignoredObstacles.has(obstacle.id),
-        ),
+        obstacles: routeObstacles.filter((obstacle) =>
+          !endpointFamily(edge.source).has(obstacle.id) && !endpointFamily(edge.target).has(obstacle.id)),
         occupied: occupiedSegments,
         owner: edge.id,
         group: collisionGroup,
@@ -945,7 +967,8 @@ export function routeFootprintFlow({
         // fast candidate set already contains family tracks and every gutter.
         allowMazeRouting: highway?.followsTargetGroup === true,
         maxMazeStates: 1_200,
-      };
+      });
+      const routeOptions = buildRouteOptions();
       const portEndpoint = (port: GroupPort) => ({
         x: port.x,
         y: port.y,
@@ -1043,162 +1066,98 @@ export function routeFootprintFlow({
       let sourceMatrixRailY: number | undefined;
       let targetMatrixRailY: number | undefined;
       let targetMatrixColumnX: number | undefined;
-      let waypoints: { x: number; y: number }[] | null;
-      if (sourceGroupPort || targetGroupPort) {
-        const externalSource = sourceGroupPort
-          ? portEndpoint(sourceGroupPort)
-          : source;
-        const externalTarget = targetGroupPort
-          ? portEndpoint(targetGroupPort)
-          : target;
-        const externalIgnoredObstacles = new Set<string>();
+      let waypoints: { x: number; y: number }[] | null = null;
+      const sourceMatrixPath = (port: GroupPort) => {
+        if (sourcesGroupCard) return [{ x: port.x, y: port.y }];
+        const connection = endpointConnection(source, originalSourceSide, sourceLateral);
+        const lead = leadPoint(connection, originalSourceSide, baseSourceLead);
+        const railY = matrixRailY(port, lead.x, edge.source);
+        sourceMatrixRailY = railY;
+        return [lead, { x: lead.x, y: railY }, { x: port.x, y: railY }, { x: port.x, y: port.y }];
+      };
+      const targetMatrixPath = (port: GroupPort) => {
+        if (targetsGroupCard) return [{ x: port.x, y: port.y }];
+        const connection = endpointConnection(target, originalTargetSide, targetLateral);
+        const lead = leadPoint(connection, originalTargetSide, baseTargetLead);
+        const railY = matrixRailY(port, lead.x, edge.target);
+        targetMatrixRailY = railY;
+        const targetColumnRank = targetLeadRanks.get(edge.id) ?? 0;
+        const direction = port.side === "left" ? -1 : 1;
+        let columnX = target.x + direction * (target.width / 2 + baseLead + targetColumnRank * RIBBON_PITCH);
+        for (let attempt = 0; attempt < 24; attempt += 1) {
+          const conflicts = occupiedSegments.some((segment) => {
+            if (Math.abs(segment.a.x - segment.b.x) >= 0.01) return false;
+            const overlap = Math.min(Math.max(railY, lead.y), Math.max(segment.a.y, segment.b.y)) -
+              Math.max(Math.min(railY, lead.y), Math.min(segment.a.y, segment.b.y));
+            return overlap > 0.01 && Math.abs(segment.a.x - columnX) < RIBBON_PITCH;
+          });
+          if (!conflicts) break;
+          columnX += direction * RIBBON_PITCH;
+        }
+        targetMatrixColumnX = columnX;
+        return [{ x: port.x, y: port.y }, { x: port.x, y: railY },
+          { x: columnX, y: railY }, { x: columnX, y: lead.y }, lead];
+      };
+      const ignoredExternalObstacles = () => {
+        const ignored = new Set<string>();
         if (!sourceGroupPort)
-          for (const id of endpointFamily(edge.source))
-            externalIgnoredObstacles.add(id);
+          for (const id of endpointFamily(edge.source)) ignored.add(id);
         if (!targetGroupPort)
-          for (const id of endpointFamily(edge.target))
-            externalIgnoredObstacles.add(id);
-        const externalRouteOptions = {
-          ...routeOptions,
-          sourceSide: sourceGroupPort?.side ?? originalSourceSide,
-          targetSide: targetGroupPort?.side ?? originalTargetSide,
-          sourceLead: sourceGroupPort ? baseLead : baseSourceLead,
-          targetLead: targetGroupPort ? baseLead : baseTargetLead,
-          sourceLateral: sourceGroupPort ? 0 : sourceLateral,
-          targetLateral: targetGroupPort ? 0 : targetLateral,
-          targetApproachAxis: targetGroupPort ? "horizontal" as const : undefined,
-          preferredJunctionY: targetGroupPort?.y ?? routeOptions.preferredJunctionY,
-          obstacles: routeObstacles.filter(
-            (obstacle) => !externalIgnoredObstacles.has(obstacle.id),
-          ),
-          allowMazeRouting: false,
-          maxMazeStates: 1_200,
-        };
-        let externalWaypoints = routeFootprintTrace(
+          for (const id of endpointFamily(edge.target)) ignored.add(id);
+        return ignored;
+      };
+      const externalRoutePlan = () => {
+        const externalSource = sourceGroupPort ? portEndpoint(sourceGroupPort) : source;
+        const externalTarget = targetGroupPort ? portEndpoint(targetGroupPort) : target;
+        const ignored = ignoredExternalObstacles();
+        return {
           externalSource,
           externalTarget,
-          externalRouteOptions,
+          options: {
+            ...routeOptions,
+            sourceSide: sourceGroupPort?.side ?? originalSourceSide,
+            targetSide: targetGroupPort?.side ?? originalTargetSide,
+            sourceLead: sourceGroupPort ? baseLead : baseSourceLead,
+            targetLead: targetGroupPort ? baseLead : baseTargetLead,
+            sourceLateral: sourceGroupPort ? 0 : sourceLateral,
+            targetLateral: targetGroupPort ? 0 : targetLateral,
+            targetApproachAxis: targetGroupPort ? "horizontal" as const : undefined,
+            preferredJunctionY: targetGroupPort?.y ?? routeOptions.preferredJunctionY,
+            obstacles: routeObstacles.filter((obstacle) => !ignored.has(obstacle.id)),
+            allowMazeRouting: false,
+            maxMazeStates: 1_200,
+          },
+        };
+      };
+      const routeExternalPlan = (plan: ReturnType<typeof externalRoutePlan>) => {
+        let result = routeFootprintTrace(plan.externalSource, plan.externalTarget, plan.options);
+        if (!result && collisionGroup) result = routeFootprintTrace(
+          plan.externalSource,
+          plan.externalTarget,
+          { ...plan.options, occupied: occupiedSegments.filter((segment) => segment.group !== collisionGroup) },
         );
-        if (!externalWaypoints && collisionGroup) {
-          externalWaypoints = routeFootprintTrace(
-            externalSource,
-            externalTarget,
-            {
-              ...externalRouteOptions,
-              occupied: occupiedSegments.filter(
-                (segment) => segment.group !== collisionGroup,
-              ),
-            },
-          );
-        }
-        if (!externalWaypoints && groupMazeBudget > 0) {
+        if (!result && groupMazeBudget > 0) {
           groupMazeBudget -= 1;
-          externalWaypoints = routeFootprintTrace(
-            externalSource,
-            externalTarget,
-            { ...externalRouteOptions, allowMazeRouting: true },
-          );
+          result = routeFootprintTrace(plan.externalSource, plan.externalTarget,
+            { ...plan.options, allowMazeRouting: true });
         }
+        return result;
+      };
+      const routeGroupOrDirect = () => {
+      if (!sourceGroupPort && !targetGroupPort) {
+        waypoints = routeFootprintTrace(source, target, routeOptions);
+        return;
+      }
+        const externalWaypoints = routeExternalPlan(externalRoutePlan());
         if (!externalWaypoints) {
           waypoints = null;
         } else {
-          const prefix = sourceGroupPort
-            ? sourcesGroupCard
-              ? [{ x: sourceGroupPort.x, y: sourceGroupPort.y }]
-              : (() => {
-                  const connection = endpointConnection(
-                    source,
-                    originalSourceSide,
-                    sourceLateral,
-                  );
-                  const lead = leadPoint(
-                    connection,
-                    originalSourceSide,
-                    baseSourceLead,
-                  );
-                  const railY = matrixRailY(
-                    sourceGroupPort,
-                    lead.x,
-                    edge.source,
-                  );
-                  sourceMatrixRailY = railY;
-                  return [
-                    lead,
-                    { x: lead.x, y: railY },
-                    { x: sourceGroupPort.x, y: railY },
-                    { x: sourceGroupPort.x, y: sourceGroupPort.y },
-                  ];
-                })()
-            : [];
-          const suffix = targetGroupPort
-            ? targetsGroupCard
-              ? [{ x: targetGroupPort.x, y: targetGroupPort.y }]
-              : (() => {
-                  // The lane-local matrix is a horizontal side-port rail with
-                  // one vertical peel per evenly-spaced endpoint column.
-                  const connection = endpointConnection(
-                    target,
-                    originalTargetSide,
-                    targetLateral,
-                  );
-                  const lead = leadPoint(
-                    connection,
-                    originalTargetSide,
-                    baseTargetLead,
-                  );
-                  const railY = matrixRailY(
-                    targetGroupPort,
-                    lead.x,
-                    edge.target,
-                  );
-                  targetMatrixRailY = railY;
-                  const targetColumnRank = targetLeadRanks.get(edge.id) ?? 0;
-                  let columnX =
-                    targetGroupPort.side === "left"
-                      ? target.x - target.width / 2 -
-                        baseLead -
-                        targetColumnRank * RIBBON_PITCH
-                      : target.x + target.width / 2 +
-                        baseLead +
-                        targetColumnRank * RIBBON_PITCH;
-                  const columnDirection =
-                    targetGroupPort.side === "left" ? -1 : 1;
-                  for (let attempt = 0; attempt < 24; attempt += 1) {
-                    const conflicts = occupiedSegments.some((segment) => {
-                      if (Math.abs(segment.a.x - segment.b.x) >= 0.01)
-                        return false;
-                      const overlap =
-                        Math.min(
-                          Math.max(railY, lead.y),
-                          Math.max(segment.a.y, segment.b.y),
-                        ) -
-                        Math.max(
-                          Math.min(railY, lead.y),
-                          Math.min(segment.a.y, segment.b.y),
-                        );
-                      return (
-                        overlap > 0.01 &&
-                        Math.abs(segment.a.x - columnX) < RIBBON_PITCH
-                      );
-                    });
-                    if (!conflicts) break;
-                    columnX += columnDirection * RIBBON_PITCH;
-                  }
-                  targetMatrixColumnX = columnX;
-                  return [
-                    { x: targetGroupPort.x, y: targetGroupPort.y },
-                    { x: targetGroupPort.x, y: railY },
-                    { x: columnX, y: railY },
-                    { x: columnX, y: lead.y },
-                    lead,
-                  ];
-                })()
-            : [];
+          const prefix = sourceGroupPort ? sourceMatrixPath(sourceGroupPort) : [];
+          const suffix = targetGroupPort ? targetMatrixPath(targetGroupPort) : [];
           waypoints = [...prefix, ...externalWaypoints, ...suffix];
         }
-      } else {
-        waypoints = routeFootprintTrace(source, target, routeOptions);
-      }
+      };
+      routeGroupOrDirect();
       const usesPlannedTrack = (
         points: readonly { x: number; y: number }[],
       ) =>
@@ -1217,8 +1176,9 @@ export function routeFootprintFlow({
       const mazeBudget = relationship
         ? (mazeFallbacksByRelationship.get(relationship) ?? 0)
         : generalMazeBudget;
+      const retryWithMaze = (current: typeof waypoints): typeof waypoints => {
       if (
-        !waypoints &&
+        !current &&
         !sourceGroupPort &&
         !targetGroupPort &&
         mazeBudget > 0
@@ -1226,11 +1186,14 @@ export function routeFootprintFlow({
         if (relationship)
           mazeFallbacksByRelationship.set(relationship, mazeBudget - 1);
         else generalMazeBudget -= 1;
-        waypoints = routeFootprintTrace(source, target, {
+        return routeFootprintTrace(source, target, {
           ...routeOptions,
           allowMazeRouting: true,
         });
       }
+      return current;
+      };
+      waypoints = retryWithMaze(waypoints);
       if (!waypoints) {
         edge.data = { ...edge.data, routingFailed: true };
         edge.hidden = true;
@@ -1251,12 +1214,15 @@ export function routeFootprintFlow({
         );
         return { direct, extra: Math.max(0, length - direct) };
       };
+      const replaceExcessiveDetour = (
+        current: { x: number; y: number }[],
+      ): { x: number; y: number }[] => {
       if (
         relationship === "published-service" &&
         !highway?.followsTargetGroup &&
-        followsPlannedHighway(waypoints)
+        followsPlannedHighway(current)
       ) {
-        const detour = routeDetour(waypoints);
+        const detour = routeDetour(current);
         if (detour.extra > Math.max(160, detour.direct * 0.35)) {
           // This member is a regional outlier. Give it one local bounded pass
           // and stop advertising it as ribbon copper if the bus would require
@@ -1268,14 +1234,18 @@ export function routeFootprintFlow({
             preferredJunctionY: undefined,
             preferredTrackTolerance: 0,
           });
-          if (localWaypoints) waypoints = localWaypoints;
+          if (localWaypoints) return localWaypoints;
         }
       }
-      waypoints.slice(1).forEach((point, index) => {
+      return current;
+      };
+      waypoints = replaceExcessiveDetour(waypoints);
+      const routedWaypoints = waypoints;
+      routedWaypoints.slice(1).forEach((point, index) => {
         occupiedSegments.push({
           owner: edge.id,
           group: collisionGroup,
-          a: waypoints[index],
+          a: routedWaypoints[index],
           b: point,
         });
       });
@@ -1287,41 +1257,27 @@ export function routeFootprintFlow({
             const detour = routeDetour(waypoints);
             return detour.extra <= Math.max(160, detour.direct * 0.35);
           })());
+      const endpointAnchor = (
+        endpoint: typeof source,
+        side: FootprintTraceSide,
+        port: GroupPort | undefined,
+        targetsCard: boolean,
+      ) => {
+        if (targetsCard && port) return {
+          x: port.x,
+          y: absolutePosition(port.laneId)!.y + LANE_HEADER + 4,
+        };
+        if (side === "left") return { x: endpoint.x - endpoint.width / 2, y: endpoint.y };
+        if (side === "right") return { x: endpoint.x + endpoint.width / 2, y: endpoint.y };
+        if (side === "top") return { x: endpoint.x, y: endpoint.y - endpoint.height / 2 };
+        return { x: endpoint.x, y: endpoint.y + endpoint.height / 2 };
+      };
+      const commitRoutedEdge = () => {
       edge.data = {
         ...edge.data,
         waypoints,
-        sourceAnchor:
-          sourcesGroupCard && sourceGroupPort
-            ? {
-                x: sourceGroupPort.x,
-                y:
-                  absolutePosition(sourceGroupPort.laneId)!.y +
-                  LANE_HEADER +
-                  4,
-              }
-            : sourceSide === "left"
-            ? { x: source.x - source.width / 2, y: source.y }
-            : sourceSide === "right"
-              ? { x: source.x + source.width / 2, y: source.y }
-              : sourceSide === "top"
-                ? { x: source.x, y: source.y - source.height / 2 }
-                : { x: source.x, y: source.y + source.height / 2 },
-        targetAnchor:
-          targetsGroupCard && targetGroupPort
-            ? {
-                x: targetGroupPort.x,
-                y:
-                  absolutePosition(targetGroupPort.laneId)!.y +
-                  LANE_HEADER +
-                  4,
-              }
-            : targetSide === "left"
-            ? { x: target.x - target.width / 2, y: target.y }
-            : targetSide === "right"
-              ? { x: target.x + target.width / 2, y: target.y }
-              : targetSide === "top"
-                ? { x: target.x, y: target.y - target.height / 2 }
-                : { x: target.x, y: target.y + target.height / 2 },
+        sourceAnchor: endpointAnchor(source, sourceSide, sourceGroupPort, sourcesGroupCard),
+        targetAnchor: endpointAnchor(target, targetSide, targetGroupPort, targetsGroupCard),
         traceBank: bank,
         ...(targetGroupPort
           ? {
@@ -1361,8 +1317,11 @@ export function routeFootprintFlow({
           : {}),
       };
       if (sourceGroupPort || targetGroupPort) edge.zIndex = 1;
+      };
+      commitRoutedEdge();
     });
-  }
+  };
+  for (const bank of ["left", "right"] as const) routeCircuitBank(bank);
 
   // Fan every shared endpoint into the axis lanes used above.
   const midpointTracks = endpointOffsets(
@@ -1379,7 +1338,8 @@ export function routeFootprintFlow({
     RIBBON_PITCH,
     30,
   );
-  for (const edge of edges) {
+  const applyEndpointTracks = () => {
+  const endpointTrackData = (edge: Edge) => {
     const existingData = edge.data as {
       outerGutterX?: number;
       sourceAnchor?: { x: number; y: number };
@@ -1416,24 +1376,28 @@ export function routeFootprintFlow({
             },
           ]
         : undefined;
+    return { existingData, endpointTrack, exactPairLateral, midpointOffset, outerWaypoints };
+  };
+  const endpointOffsetMetadata = (data: ReturnType<typeof endpointTrackData>) => {
+    const { existingData, endpointTrack, exactPairLateral } = data;
+    if (!endpointTrack) return {};
+    return {
+      sourceOffset: existingData.traceGroupSourcesCard && existingData.traceGroupExitPort &&
+        existingData.sourceAnchor
+        ? existingData.traceGroupExitPort.y - existingData.sourceAnchor.y
+        : exactPairLateral ?? endpointTrack.sourceOffset,
+      targetOffset: existingData.traceGroupTargetsCard && existingData.traceGroupPort &&
+        existingData.targetAnchor
+        ? existingData.traceGroupPort.y - existingData.targetAnchor.y
+        : exactPairLateral ?? endpointTrack.targetOffset,
+    };
+  };
+  for (const edge of edges) {
+    const trackData = endpointTrackData(edge);
+    const { midpointOffset, outerWaypoints } = trackData;
     edge.data = {
       ...edge.data,
-      ...(endpointTrack
-        ? {
-            sourceOffset:
-              existingData.traceGroupSourcesCard &&
-              existingData.traceGroupExitPort &&
-              existingData.sourceAnchor
-                ? existingData.traceGroupExitPort.y - existingData.sourceAnchor.y
-                : exactPairLateral ?? endpointTrack.sourceOffset,
-            targetOffset:
-              existingData.traceGroupTargetsCard &&
-              existingData.traceGroupPort &&
-              existingData.targetAnchor
-                ? existingData.traceGroupPort.y - existingData.targetAnchor.y
-                : exactPairLateral ?? endpointTrack.targetOffset,
-          }
-        : {}),
+      ...endpointOffsetMetadata(trackData),
       ...(outerWaypoints
         ? { waypoints: outerWaypoints, routingFailed: false }
         : {}),
@@ -1441,9 +1405,12 @@ export function routeFootprintFlow({
       casingGap: 2,
     };
   }
+  };
+  applyEndpointTracks();
 
   // Bake the at-rest style into each edge so the no-hover/no-selection state
   // needs no styling pass at all (applyFocus returns these objects untouched).
+  const applyRestingStyles = () => {
   for (const edge of edges) {
     const data = edge.data as {
       baseOpacity: number;
@@ -1456,6 +1423,8 @@ export function routeFootprintFlow({
     };
     edge.hidden = !!data.hoverOnly || data.routingFailed === true;
   }
+  };
+  applyRestingStyles();
 
   const parentOfNode = new Map(
     nodes.flatMap((node) =>

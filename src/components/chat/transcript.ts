@@ -72,6 +72,27 @@ function finalizeDraft(state: ChatTranscriptState): ChatMessage[] {
   ];
 }
 
+function reduceStreamEvent(state: ChatTranscriptState, event: AgentStreamEvent): ChatTranscriptState {
+  if (event.type === "token") {
+    const draft = state.draft ?? { content: "", toolCalls: [] };
+    return { ...state, draft: { ...draft, content: draft.content + event.text } };
+  }
+  if (event.type === "tool_call" || event.type === "tool_result") {
+    const draft = state.draft ?? { content: "", toolCalls: [] };
+    return { ...state, draft: { ...draft, toolCalls: upsertToolCall(draft.toolCalls, event.call) } };
+  }
+  if (event.type === "done") {
+    const assistant: ChatMessage = {
+      role: "assistant",
+      content: event.content,
+      ...(event.toolCalls.length > 0 ? { toolCalls: event.toolCalls } : {}),
+    };
+    return { messages: [...state.messages, assistant], draft: null, status: "idle", error: null };
+  }
+  if (event.type === "error") return { ...state, draft: null, status: "error", error: event.message };
+  return state;
+}
+
 export function transcriptReducer(
   state: ChatTranscriptState,
   action: ChatTranscriptAction,
@@ -88,44 +109,7 @@ export function transcriptReducer(
     case "resend":
       return { ...state, draft: { content: "", toolCalls: [] }, status: "streaming", error: null };
 
-    case "event": {
-      const { event } = action;
-      switch (event.type) {
-        case "token": {
-          const draft = state.draft ?? { content: "", toolCalls: [] };
-          return { ...state, draft: { ...draft, content: draft.content + event.text } };
-        }
-        case "tool_call":
-        case "tool_result": {
-          const draft = state.draft ?? { content: "", toolCalls: [] };
-          return {
-            ...state,
-            draft: { ...draft, toolCalls: upsertToolCall(draft.toolCalls, event.call) },
-          };
-        }
-        case "done":
-          return {
-            messages: [
-              ...state.messages,
-              {
-                role: "assistant",
-                content: event.content,
-                ...(event.toolCalls.length > 0 ? { toolCalls: event.toolCalls } : {}),
-              },
-            ],
-            draft: null,
-            status: "idle",
-            error: null,
-          };
-        case "error":
-          // Discard the partial draft so the transcript still ends with the
-          // user's message — retry can simply re-stream over it.
-          return { ...state, draft: null, status: "error", error: event.message };
-        default:
-          // "report" (investigate-only) and future event types: ignore.
-          return state;
-      }
-    }
+    case "event": return reduceStreamEvent(state, action.event);
 
     case "fail":
       return { ...state, draft: null, status: "error", error: action.message };

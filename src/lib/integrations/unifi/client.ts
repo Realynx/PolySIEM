@@ -190,15 +190,7 @@ export function mapDevice(dev: RawUnifiDevice): UnifiApDevice {
   };
 }
 
-export function mapManagedDevice(dev: RawUnifiDevice, siteId = "default"): UnifiManagedDevice {
-  const type = dev.type?.toLowerCase() ?? "";
-  const features = type === "uap"
-    ? ["accessPoint"]
-    : type === "usw"
-      ? ["switching"]
-      : type === "ugw" || type === "udm" || type === "ucg"
-        ? ["gateway", "routing"]
-        : [];
+function managedDeviceIdentity(dev: RawUnifiDevice, siteId: string) {
   return {
     externalId: dev._id ?? "",
     siteId,
@@ -208,14 +200,21 @@ export function mapManagedDevice(dev: RawUnifiDevice, siteId = "default"): Unifi
     ip: dev.ip ?? null,
     state: mapApState(dev.state),
     version: dev.version ?? null,
+  };
+}
+
+export function mapManagedDevice(dev: RawUnifiDevice, siteId = "default"): UnifiManagedDevice {
+  const type = dev.type?.toLowerCase() ?? "";
+  const gatewayTypes = new Set(["ugw", "udm", "ucg"]);
+  const features = type === "uap" ? ["accessPoint"] : type === "usw" ? ["switching"] : gatewayTypes.has(type) ? ["gateway", "routing"] : [];
+  const interfaces = type === "uap" ? ["radios"] : type === "usw" ? ["ports"] : [];
+  const kind = gatewayTypes.has(type) ? "firewall" : type === "usw" ? "switch" : "device";
+  return {
+    ...managedDeviceIdentity(dev, siteId),
     features,
-    interfaces: type === "uap" ? ["radios"] : type === "usw" ? ["ports"] : [],
+    interfaces,
     isAccessPoint: type === "uap",
-    kind: type === "ugw" || type === "udm" || type === "ucg"
-      ? "firewall"
-      : type === "usw"
-        ? "switch"
-        : "device",
+    kind,
   };
 }
 

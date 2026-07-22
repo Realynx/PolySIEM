@@ -143,7 +143,7 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
         />
       )}
 
-      {!overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && (
+      {!overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && (() => (
         <Tabs defaultValue={defaultTab} className="gap-5">
           <div className="overflow-x-auto pb-1">
             <TabsList className="grid h-10 min-w-[19rem] w-full grid-cols-3 sm:inline-grid sm:w-auto">
@@ -240,7 +240,7 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
             )}
           </TabsContent>
         </Tabs>
-      )}
+      ))()}
     </div>
   );
 }
@@ -374,7 +374,7 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
 
   return (
     <Card>
-      <CardHeader className="border-b pb-4">
+      {(() => (<CardHeader className="border-b pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Server className="size-5" /></div>
@@ -383,7 +383,7 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
               <CardDescription className="mt-1 font-mono">ssh://{sshEndpoint(server.baseUrl)}</CardDescription>
             </div>
           </div>
-          {isAdmin && (
+          {isAdmin && (() => (
             <div className="flex flex-wrap gap-2">
               {!server.enabled && reconciliation.cleanupRequired && <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}><Trash2 /> Clear remote rules</Button>}
               {server.enabled && <Button variant="outline" size="sm" onClick={() => setEnrollmentOpen(true)}>
@@ -395,12 +395,12 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
                 {applyMutation.isPending ? <Loader2 className="animate-spin" /> : <Check />}{pending ? "Apply changes" : "Apply rules"}
               </Button>}
             </div>
-          )}
+          ))()}
         </div>
 
         <ReconciliationStatus server={server} />
 
-        {!server.enabled && (
+        {!server.enabled && (() => (
           <Alert variant={reconciliation.cleanupRequired ? "destructive" : "default"}>
             <TriangleAlert />
             <AlertTitle>{reconciliation.cleanupRequired ? "Disabled here, but remote rules may still be live" : "Disabled and remotely cleared"}</AlertTitle>
@@ -410,10 +410,10 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
                 : "The integration is disabled and the last observed remote state contains no PolySIEM-managed NAT rules."}
             </AlertDescription>
           </Alert>
-        )}
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        ))()}
+      </CardHeader>))()}
+      {(() => (<CardContent className="space-y-4">
+        {(() => (<div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
           <ServerFact label="Public IP" value={settings.syncedSnapshot?.publicIp ?? settings.publicIp ?? "Not detected"} mono />
           <ServerFact
             label="SSH host key"
@@ -423,7 +423,7 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
           />
           <ServerFact label="Forwarding" value={settings.syncedSnapshot?.ipForwarding ?? settings.enableIpForwarding ? "Enabled" : "Disabled"} />
           <ServerFact label="Last checked" value={server.lastSyncAt ? formatRelative(server.lastSyncAt) : "Not checked yet"} />
-        </div>
+        </div>))()}
 
         {(server.lastSyncError || settings.lastApplyError) && (
           <Alert variant="destructive"><TriangleAlert /><AlertTitle>Server needs attention</AlertTitle><AlertDescription>{settings.lastApplyError ?? server.lastSyncError}</AlertDescription></Alert>
@@ -440,7 +440,7 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
           </Alert>
         )}
 
-        {server.rules.length === 0 ? (
+        {(() => server.rules.length === 0 ? (
           <div className="rounded-lg border border-dashed p-6 text-center">
             <p className="font-medium">No ports are published</p>
             <p className="mt-1 text-sm text-muted-foreground">This server exposes no lab targets until an explicit rule is added and applied.</p>
@@ -465,9 +465,9 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
               })}</TableBody>
             </Table>
           </div>
-        )}
+        ))()}
         <p className="text-xs text-muted-foreground">Only rules marked Applied are confirmed in the last successful remote ruleset. The forwarding rule publishes the edge address instead of directly publishing the home router&apos;s WAN address.</p>
-      </CardContent>
+      </CardContent>))()}
 
       <SshEnrollmentDialog server={server} open={enrollmentOpen} onOpenChange={setEnrollmentOpen} />
       <NatRuleDialog server={server} rule={ruleDialog.rule} open={ruleDialog.open} onOpenChange={(open) => setRuleDialog((current) => ({ ...current, open }))} />
@@ -526,7 +526,7 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
     },
     onError: (error: Error) => toast.error(`Could not install the Edge service: ${error.message}`),
   });
-  return (
+  const dialog = () => (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
@@ -608,6 +608,7 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
       </DialogContent>
     </Dialog>
   );
+  return dialog();
 }
 
 function EnrollmentStep({ number, title, children }: { number: string; title: string; children: ReactNode }) {

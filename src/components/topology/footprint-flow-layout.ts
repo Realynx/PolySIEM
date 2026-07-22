@@ -22,12 +22,15 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     : INTERNET_NODE_ID;
   const primaryFirewallId = graph.firewalls[0]?.id;
   const natRulesByTarget = new Map<string, NatRuleSummary[]>();
+  const collectNatRules = () => {
   for (const edge of graph.inbound) {
     if (edge.type !== "nat" || !edge.nat) continue;
     const rules = natRulesByTarget.get(edge.targetId) ?? [];
     rules.push({ id: edge.id, enabled: edge.enabled, ...edge.nat });
     natRulesByTarget.set(edge.targetId, rules);
   }
+  };
+  collectNatRules();
 
   const sizes = new Map<string, { width: number; height: number }>();
   const addNode = (id: string, width: number, height: number) => {
@@ -35,11 +38,14 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     g.setNode(id, { width, height });
   };
   const publishedRoutesByTarget = new Map<string, number>();
+  const collectPublishedTargets = () => {
   for (const route of graph.routes)
     publishedRoutesByTarget.set(
       route.targetId,
       (publishedRoutesByTarget.get(route.targetId) ?? 0) + 1,
     );
+  };
+  collectPublishedTargets();
   const matrixChannelHeightByLane = new Map(
     graph.lanes.map((lane) => {
       const busiestTarget = Math.max(
@@ -57,6 +63,7 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     }),
   );
 
+  const configureGraphNodes = () => {
   if (!hasGatewayRoots) {
     addNode(
       INTERNET_NODE_ID,
@@ -86,14 +93,20 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       unknownHeight(natRulesByTarget.get(target.id)?.length ?? 0),
     );
   }
+  };
+  configureGraphNodes();
 
   // Layout skeleton: internet above the edge band, lanes below it. Lane-level
   // rendered edges (reachability, carriage) also shape the layout.
   const laneOfMachine = new Map<string, string>();
+  const configureGraphEdges = () => {
+  const indexLaneMachines = () => {
   for (const lane of graph.lanes) {
     for (const machine of lane.machines)
       laneOfMachine.set(machine.id, laneNodeId(lane.id));
   }
+  };
+  const connectFirewalls = () => {
   for (const fw of graph.firewalls) {
     if (hasGatewayRoots) {
       for (const gateway of graph.gateways)
@@ -104,6 +117,8 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     for (const lane of graph.lanes) g.setEdge(fw.id, laneNodeId(lane.id));
     for (const target of graph.unknownTargets) g.setEdge(fw.id, target.id);
   }
+  };
+  const connectReachability = () => {
   for (const edge of graph.reachability) {
     const source =
       edge.source === INTERNET_NODE_ID
@@ -115,6 +130,8 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
         : laneNodeId(edge.target);
     if (source !== target) g.setEdge(source, target);
   }
+  };
+  const connectSwitches = () => {
   for (const link of graph.switchLinks) {
     const target =
       link.kind === "carriage"
@@ -122,6 +139,13 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
         : laneOfMachine.get(link.targetId);
     if (target) g.setEdge(link.switchId, target);
   }
+  };
+  indexLaneMachines();
+  connectFirewalls();
+  connectReachability();
+  connectSwitches();
+  };
+  configureGraphEdges();
 
   dagre.layout(g);
 
@@ -132,6 +156,7 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     return { x: pos.x - size.width / 2, y: pos.y - size.height / 2 };
   };
 
+  const createTopLevelNodes = () => {
   if (!hasGatewayRoots) {
     nodes.push({
       id: INTERNET_NODE_ID,
@@ -192,7 +217,10 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       data: { target, natRules: natRulesByTarget.get(target.id) ?? [] },
     });
   }
+  };
+  createTopLevelNodes();
   // Lanes before their machines (React Flow requires parents first).
+  const createLaneNodes = () => {
   for (const lane of graph.lanes) {
     const id = laneNodeId(lane.id);
     const laneDimensions = sizes.get(id)!;
@@ -276,6 +304,8 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       });
     }
   }
+  };
+  createLaneNodes();
 
   // ----- stable lower layout: compact network shelves + physical switches -----
   //
@@ -351,6 +381,7 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
     };
   };
 
+  const placeCircuitBanks = () => {
   if (laneNodes.length > 0) {
     const laneStartY = Math.min(
       ...laneNodes.map(({ node }) => node.position.y),
@@ -398,11 +429,14 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
   } else if (unknownNodes.length > 0) {
     placeUnknownTargets();
   }
+  };
+  placeCircuitBanks();
 
   // Physical switches are network gates, so keep them in a distribution band
   // between the firewall and the VLAN shelves. Their connected networks still
   // determine left-to-right order, but no switch is relegated to an outer
   // decoration column merely because it was added after the lanes were packed.
+  const placeSwitches = () => {
   if (graph.switches.length > 0) {
     const laneRouteX = new Map(
       laneNodes.map(({ node }) => [
@@ -496,6 +530,8 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       }
     }
   }
+  };
+  placeSwitches();
 
   const routesByTunnel = new Map(
     graph.tunnels.map((tunnel) => [tunnel.id, [] as typeof graph.routes]),
@@ -509,18 +545,17 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
   // traces to cross before they can form a PCB ribbon. The router still owns
   // the actual path choice—this only gives it contiguous, monotonic endpoints.
   const layoutNodeById = new Map(nodes.map((node) => [node.id, node]));
+  const nodePosition = (node: FootprintFlowNode | undefined) =>
+    node?.position ?? { x: 0, y: 0 };
   const routeDestinationOrder = (route: (typeof graph.routes)[number]) => {
     const laneId = laneOfMachine.get(route.targetId);
     const laneNode = laneId ? topLevelById.get(laneId) : undefined;
     const targetNode = layoutNodeById.get(route.targetId);
-    const laneX = laneNode?.position.x ?? targetNode?.position.x ?? 0;
-    const laneY = laneNode?.position.y ?? targetNode?.position.y ?? 0;
-    const targetX = laneNode
-      ? laneX + (targetNode?.position.x ?? 0)
-      : (targetNode?.position.x ?? 0);
-    const targetY = laneNode
-      ? laneY + (targetNode?.position.y ?? 0)
-      : (targetNode?.position.y ?? 0);
+    const lanePosition = nodePosition(laneNode ?? targetNode);
+    const targetPosition = nodePosition(targetNode);
+    const { x: laneX, y: laneY } = lanePosition;
+    const targetX = laneNode ? laneX + targetPosition.x : targetPosition.x;
+    const targetY = laneNode ? laneY + targetPosition.y : targetPosition.y;
     return { laneId: laneId ?? route.targetId, laneX, laneY, targetX, targetY };
   };
   for (const routes of routesByTunnel.values()) {
@@ -546,6 +581,7 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
   // Tunnel components stay outside the central trace corridor just like the
   // network groups below them. Each hostname keeps its own ingress trace.
 
+  const placePublishedRoutes = () => {
   if (routeGroups.length > 0) {
     const topBandIds = new Set<string>([
       INTERNET_NODE_ID,
@@ -692,5 +728,7 @@ export function buildFootprintLayout(graph: FootprintGraph, traffic: TrafficStat
       });
     });
   }
+  };
+  placePublishedRoutes();
   return { nodes, externalRootId, hasGatewayRoots, primaryFirewallId, laneOfMachine, laneBankById, topLevelById, routeGroups, traceCorridor, traceCorridorWidth };
 }

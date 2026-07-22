@@ -363,22 +363,24 @@ async function fetchOpnsenseWeb(cfg: DriverConfig, ts: string, pattern: string, 
     );
     return {
       total: totalOf(res),
-      rows: hitsOf(res).map(({ source, timestamp }) => {
-        // Prefer the parsed opnsense.* fields; current shippers only send the
-        // raw access-log line, so fall back to parsing the message.
-        const parsed = parseLighttpdLine(str(source, "message") ?? "");
-        return {
-          timestamp,
-          sourceIp: str(source, "opnsense.source.ip") ?? parsed?.sourceIp ?? null,
-          method: str(source, "opnsense.http.method") ?? parsed?.method ?? null,
-          statusCode: str(source, "opnsense.http.status_code") ?? parsed?.statusCode ?? null,
-          url: str(source, "opnsense.url") ?? parsed?.url ?? null,
-          userAgent: str(source, "opnsense.user_agent") ?? parsed?.userAgent ?? null,
-          bytes: num(source, "opnsense.http.bytes") ?? parsed?.bytes ?? null,
-        };
-      }),
+      rows: hitsOf(res).map(opnsenseWebRow),
     };
   });
+}
+
+function opnsenseWebRow({ source, timestamp }: ReturnType<typeof hitsOf>[number]): OpnsenseWebRow {
+  const parsed = parseLighttpdLine(str(source, "message") ?? "");
+  const fallbackText = (field: string, fallback: string | null | undefined): string | null => str(source, field) ?? fallback ?? null;
+  const fallbackNumber = (field: string, fallback: number | null | undefined): number | null => num(source, field) ?? fallback ?? null;
+  return {
+    timestamp,
+    sourceIp: fallbackText("opnsense.source.ip", parsed?.sourceIp),
+    method: fallbackText("opnsense.http.method", parsed?.method),
+    statusCode: fallbackText("opnsense.http.status_code", parsed?.statusCode),
+    url: fallbackText("opnsense.url", parsed?.url),
+    userAgent: fallbackText("opnsense.user_agent", parsed?.userAgent),
+    bytes: fallbackNumber("opnsense.http.bytes", parsed?.bytes),
+  };
 }
 
 async function fetchIdsTls(cfg: DriverConfig, ts: string, pattern: string, hours: number) {

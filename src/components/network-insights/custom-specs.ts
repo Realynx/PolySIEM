@@ -1,6 +1,5 @@
 import type { NetworkInsightsResponse } from "@/lib/types";
-import type { NetworkInsightWidgetSize } from "./types";
-import type { NetworkInsightWidgetDefinition } from "./types";
+import type { NetworkInsightWidgetDefinition, NetworkInsightWidgetSize } from "./types";
 
 export const CUSTOM_GRAPHIC_VERSION = 1 as const;
 

@@ -104,6 +104,36 @@ function titleCaseKind(kind: string | null): string {
   return map[kind] ?? kind;
 }
 
+function bestIdentity(
+  input: IdentityInput,
+  owned: IdentityIpRecord | undefined,
+  vendor: string | null,
+): string | null {
+  if (owned?.ownerName) return `${owned.ownerName} (${titleCaseKind(owned.ownerKind)})`;
+  const lease = input.leases.find((item) => item.hostname);
+  const neighbor = input.neighbors.find((item) => item.hostname);
+  const host = lease?.hostname ?? neighbor?.hostname ?? null;
+  if (host) return neighbor?.manufacturer ? `${host} — ${neighbor.manufacturer}` : host;
+  if (input.neighbors.some((item) => item.permanent)) return "firewall interface (permanent ARP entry)";
+  return vendor ? `unlabelled ${vendor} device` : null;
+}
+
+function networkDetails(
+  input: IdentityInput,
+  matched: IdentityNetwork | null,
+  owned: IdentityIpRecord | undefined,
+): { name: string | null; vlanId: number | null } {
+  const leaseNetwork = input.leases.find((item) => item.networkName)?.networkName ?? null;
+  return {
+    name: matched?.name ?? owned?.networkName ?? leaseNetwork,
+    vlanId: matched?.vlanId ?? owned?.vlanId ?? null,
+  };
+}
+
+function firstVendor(neighbors: IdentityNeighbor[]): string | null {
+  return neighbors.find((item) => item.manufacturer)?.manufacturer ?? null;
+}
+
 /**
  * Resolve what an IP address *is*: the owning inventory entity when known,
  * else the DHCP/ARP hostname, else the vendor, else just its network location.
@@ -116,41 +146,17 @@ export function resolveIpIdentity(input: IdentityInput): IdentityResult {
   const matched = matchNetwork(ip, input.networks);
 
   const owned = input.ipRecords.find((r) => r.ownerName);
-  const vendor =
-    input.neighbors.find((n) => n.manufacturer)?.manufacturer ??
-    input.ipRecords.find(() => false)?.macAddress ??
-    null;
+  const vendor = firstVendor(input.neighbors);
+  const network = networkDetails(input, matched, owned);
 
-  const networkName = matched?.name ?? owned?.networkName ?? input.leases.find((l) => l.networkName)?.networkName ?? null;
-  const vlanId = matched?.vlanId ?? owned?.vlanId ?? null;
-
-  // Assemble the best available identity, most authoritative first.
-  let identity: string | null = null;
-  if (owned?.ownerName) {
-    identity = `${owned.ownerName} (${titleCaseKind(owned.ownerKind)})`;
-  } else {
-    const lease = input.leases.find((l) => l.hostname);
-    const neighbor = input.neighbors.find((n) => n.hostname);
-    const host = lease?.hostname ?? neighbor?.hostname ?? null;
-    if (host) {
-      identity = neighbor?.manufacturer ? `${host} — ${neighbor.manufacturer}` : host;
-    } else if (input.neighbors.find((n) => n.permanent)) {
-      identity = "firewall interface (permanent ARP entry)";
-    } else if (vendor) {
-      identity = `unlabelled ${vendor} device`;
-    }
-  }
-
-  if (!identity && networkName) {
-    identity = `unknown host on ${networkName}`;
-  }
+  const identity = bestIdentity(input, owned, vendor) ?? (network.name ? `unknown host on ${network.name}` : null);
 
   return {
     ip,
     scope,
     identity,
-    network: networkName,
-    vlanId,
+    network: network.name,
+    vlanId: network.vlanId,
     vendor,
     internal: scope === "internal",
     valid,

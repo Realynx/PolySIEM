@@ -35,6 +35,22 @@ import { listLogSources } from "@/lib/services/logs";
 import { isMobileView } from "@/lib/device";
 import { MobileHostDetail } from "@/components/mobile/pages/inventory-detail/mobile-host-detail";
 
+function hostEditInitial(host: Awaited<ReturnType<typeof getDevice>>) {
+  return {
+    name: host.name,
+    kind: host.kind,
+    manufacturer: host.manufacturer ?? "",
+    model: host.model ?? "",
+    location: host.location ?? "",
+    cpuModel: host.cpuModel ?? "",
+    cpuCores: host.cpuCores?.toString() ?? "",
+    memoryGib: bytesToGibString(host.memoryBytes),
+    osName: host.osName ?? "",
+    osVersion: host.osVersion ?? "",
+    description: host.description ?? "",
+  };
+}
+
 export async function generateMetadata({
   params,
 }: {
@@ -62,19 +78,7 @@ export default async function HostDetailPage({
     logSources: logSourcesData,
   });
 
-  const initial = {
-    name: host.name,
-    kind: host.kind,
-    manufacturer: host.manufacturer ?? "",
-    model: host.model ?? "",
-    location: host.location ?? "",
-    cpuModel: host.cpuModel ?? "",
-    cpuCores: host.cpuCores?.toString() ?? "",
-    memoryGib: bytesToGibString(host.memoryBytes),
-    osName: host.osName ?? "",
-    osVersion: host.osVersion ?? "",
-    description: host.description ?? "",
-  };
+  const initial = hostEditInitial(host);
 
   if (await isMobileView()) {
     return <MobileHostDetail host={host} logSources={logSources} initial={initial} />;

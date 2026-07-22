@@ -83,7 +83,7 @@ async function searchIps(q: string): Promise<SearchResult[]> {
 
   const candidates: IpCandidate[] = [];
 
-  for (const a of addresses) {
+  addresses.forEach((a) => {
     const iface = a.interface;
     const owner = iface?.device
       ? { name: iface.device.name, href: `/inventory/hosts/${iface.device.id}` }
@@ -109,9 +109,9 @@ async function searchIps(q: string): Promise<SearchResult[]> {
         result: { kind: "ip", id: a.id, name: a.address, subtitle: a.network.name, href: `/network/${a.network.id}` },
       });
     }
-  }
+  });
 
-  for (const l of leases) {
+  leases.forEach((l) => {
     candidates.push({
       priority: PRIORITY_LEASE,
       result: {
@@ -122,9 +122,9 @@ async function searchIps(q: string): Promise<SearchResult[]> {
         href: l.network ? `/network/${l.network.id}` : "/network",
       },
     });
-  }
+  });
 
-  for (const n of neighbors) {
+  neighbors.forEach((n) => {
     candidates.push({
       priority: PRIORITY_NEIGHBOR,
       result: {
@@ -135,14 +135,14 @@ async function searchIps(q: string): Promise<SearchResult[]> {
         href: n.network ? `/network/${n.network.id}` : "/network",
       },
     });
-  }
+  });
 
   // Deduplicate by address, keeping the best-owned candidate per IP.
   const byAddress = new Map<string, IpCandidate>();
-  for (const c of candidates) {
+  candidates.forEach((c) => {
     const existing = byAddress.get(c.result.name);
     if (!existing || c.priority > existing.priority) byAddress.set(c.result.name, c);
-  }
+  });
 
   const rank = (address: string) => (address === q ? 0 : address.startsWith(q) ? 1 : 2);
   return [...byAddress.values()]

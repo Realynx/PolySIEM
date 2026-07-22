@@ -28,44 +28,56 @@ function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, "").split("+")[0] ?? "";
 }
 
-/** Compare stable semver-like release versions without adding a runtime dependency. */
-export function compareVersions(left: string, right: string): number {
-  const parse = (value: string) => {
-    const normalized = normalizeVersion(value);
-    const match = normalized.match(
-      /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?$/,
-    );
-    if (!match) {
-      throw new Error(`Invalid version: ${value}`);
-    }
-    return {
-      core: [Number(match[1]), Number(match[2] ?? 0), Number(match[3] ?? 0)],
-      prerelease: match[4] ? match[4].split(".") : [],
-    };
-  };
+interface ParsedVersion {
+  core: number[];
+  prerelease: string[];
+}
 
-  const a = parse(left);
-  const b = parse(right);
+function parseVersion(value: string): ParsedVersion {
+  const match = normalizeVersion(value).match(
+    /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?$/,
+  );
+  if (!match) throw new Error(`Invalid version: ${value}`);
+  return {
+    core: [Number(match[1]), Number(match[2] ?? 0), Number(match[3] ?? 0)],
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+function compareCore(left: number[], right: number[]): number {
   for (let index = 0; index < 3; index++) {
-    if (a.core[index] !== b.core[index]) {
-      return (a.core[index] ?? 0) > (b.core[index] ?? 0) ? 1 : -1;
-    }
-  }
-  if (a.prerelease.length === 0 && b.prerelease.length > 0) return 1;
-  if (b.prerelease.length === 0 && a.prerelease.length > 0) return -1;
-  for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index++) {
-    const aPart = a.prerelease[index];
-    const bPart = b.prerelease[index];
-    if (aPart === undefined) return -1;
-    if (bPart === undefined) return 1;
-    if (aPart === bPart) continue;
-    const aNumeric = /^\d+$/.test(aPart);
-    const bNumeric = /^\d+$/.test(bPart);
-    if (aNumeric && bNumeric) return Number(aPart) > Number(bPart) ? 1 : -1;
-    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
-    return aPart.localeCompare(bPart) > 0 ? 1 : -1;
+    if (left[index] !== right[index]) return (left[index] ?? 0) > (right[index] ?? 0) ? 1 : -1;
   }
   return 0;
+}
+
+function comparePrereleasePart(left: string, right: string): number {
+  const leftNumeric = /^\d+$/.test(left);
+  const rightNumeric = /^\d+$/.test(right);
+  if (leftNumeric && rightNumeric) return Number(left) > Number(right) ? 1 : -1;
+  if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+  return left.localeCompare(right) > 0 ? 1 : -1;
+}
+
+function comparePrerelease(left: string[], right: string[]): number {
+  if (left.length === 0 && right.length > 0) return 1;
+  if (right.length === 0 && left.length > 0) return -1;
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const leftPart = left[index];
+    const rightPart = right[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    if (leftPart !== rightPart) return comparePrereleasePart(leftPart, rightPart);
+  }
+  return 0;
+}
+
+/** Compare stable semver-like release versions without adding a runtime dependency. */
+export function compareVersions(left: string, right: string): number {
+  const parsedLeft = parseVersion(left);
+  const parsedRight = parseVersion(right);
+  return compareCore(parsedLeft.core, parsedRight.core) ||
+    comparePrerelease(parsedLeft.prerelease, parsedRight.prerelease);
 }
 
 export function getCurrentVersion(): string {

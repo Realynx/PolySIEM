@@ -13,6 +13,7 @@ import {
   type OperationsOverviewMetric,
 } from "@/components/shared/operations-overview";
 import { formatBytes } from "@/lib/format";
+import type { ComputeMetricsPayload } from "@/lib/compute/metrics";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_COMPUTE_REFRESH_MS,
@@ -58,6 +59,61 @@ function MetricDetail({
   );
 }
 
+function computeStatus(
+  loading: boolean,
+  hasWarning: boolean,
+  offlineNodes: number,
+  data: ComputeMetricsPayload | null,
+  totalNodes: number,
+) {
+  if (loading) return <><Activity className="size-3.5 animate-pulse" aria-hidden />Connecting</>;
+  if (hasWarning) return (
+    <span className="inline-flex items-center gap-2" title={data?.errors.length ? data.errors.join("\n") : undefined}>
+      <TriangleAlert className="size-3.5" aria-hidden />
+      {offlineNodes > 0 ? `${offlineNodes} ${offlineNodes === 1 ? "node" : "nodes"} offline` : "Partial data"}
+    </span>
+  );
+  return <><CheckCircle2 className="size-3.5" aria-hidden />{totalNodes > 0 ? "All nodes online" : "Metrics live"}</>;
+}
+
+function metricValue(loading: boolean, value: number | null): React.ReactNode {
+  if (loading) return <LoadingValue />;
+  return value === null ? "—" : `${value}%`;
+}
+
+function computeMetrics(
+  summary: ComputeMetricsPayload["summary"],
+  loading: boolean,
+  cpu: number | null,
+  memory: number | null,
+  offlineNodes: number,
+): OperationsOverviewMetric[] {
+  const waiting = "Waiting for metrics";
+  return [
+    {
+      icon: <Activity />, label: "Cluster",
+      value: loading ? <LoadingValue /> : `${summary.nodesOnline}/${summary.nodesTotal}`,
+      detail: loading ? waiting : `${summary.clusters} ${summary.clusters === 1 ? "cluster" : "clusters"}`,
+      tone: offlineNodes > 0 ? "warning" : "neutral",
+    },
+    {
+      icon: <Cpu />, label: "CPU", value: metricValue(loading, cpu),
+      detail: loading ? waiting : <MetricDetail text={`${summary.cpuUsedCores.toFixed(1)} / ${summary.cpuTotalCores} cores`} progress={cpu} />,
+      tone: cpu !== null && cpu >= 85 ? "warning" : "neutral",
+    },
+    {
+      icon: <MemoryStick />, label: "Memory", value: metricValue(loading, memory),
+      detail: loading ? waiting : <MetricDetail text={`${formatBytes(summary.memoryUsedBytes)} / ${formatBytes(summary.memoryTotalBytes)}`} progress={memory} />,
+      tone: memory !== null && memory >= 85 ? "warning" : "neutral",
+    },
+    {
+      icon: <Boxes />, label: "Workloads",
+      value: loading ? <LoadingValue /> : `${summary.workloadsRunning}/${summary.workloadsTotal}`,
+      detail: loading ? waiting : "Running workloads",
+    },
+  ];
+}
+
 /** Shared live cluster summary used above every Compute inventory tab. */
 export function ComputeMetricsStrip() {
   const data = useComputeMetrics();
@@ -89,94 +145,8 @@ export function ComputeMetricsStrip() {
   const hasErrors = Boolean(data?.errors.length);
   const hasWarning = offlineNodes > 0 || hasErrors;
 
-  let status;
-  if (loading) {
-    status = (
-      <>
-        <Activity className="size-3.5 animate-pulse" aria-hidden />
-        Connecting
-      </>
-    );
-  } else if (hasWarning) {
-    status = (
-      <span
-        className="inline-flex items-center gap-2"
-        title={data?.errors.length ? data.errors.join("\n") : undefined}
-      >
-        <TriangleAlert className="size-3.5" aria-hidden />
-        {offlineNodes > 0
-          ? `${offlineNodes} ${offlineNodes === 1 ? "node" : "nodes"} offline`
-          : "Partial data"}
-      </span>
-    );
-  } else {
-    status = (
-      <>
-        <CheckCircle2 className="size-3.5" aria-hidden />
-        {summary.nodesTotal > 0 ? "All nodes online" : "Metrics live"}
-      </>
-    );
-  }
-
-  const metrics: OperationsOverviewMetric[] = [
-    {
-      icon: <Activity />,
-      label: "Cluster",
-      value: loading ? (
-        <LoadingValue />
-      ) : (
-        `${summary.nodesOnline}/${summary.nodesTotal}`
-      ),
-      detail: loading
-        ? "Waiting for metrics"
-        : `${summary.clusters} ${summary.clusters === 1 ? "cluster" : "clusters"}`,
-      tone: offlineNodes > 0 ? "warning" : "neutral",
-    },
-    {
-      icon: <Cpu />,
-      label: "CPU",
-      value: loading ? <LoadingValue /> : cpu === null ? "—" : `${cpu}%`,
-      detail: loading ? (
-        "Waiting for metrics"
-      ) : (
-        <MetricDetail
-          text={`${summary.cpuUsedCores.toFixed(1)} / ${summary.cpuTotalCores} cores`}
-          progress={cpu}
-        />
-      ),
-      tone: cpu !== null && cpu >= 85 ? "warning" : "neutral",
-    },
-    {
-      icon: <MemoryStick />,
-      label: "Memory",
-      value: loading ? (
-        <LoadingValue />
-      ) : memory === null ? (
-        "—"
-      ) : (
-        `${memory}%`
-      ),
-      detail: loading ? (
-        "Waiting for metrics"
-      ) : (
-        <MetricDetail
-          text={`${formatBytes(summary.memoryUsedBytes)} / ${formatBytes(summary.memoryTotalBytes)}`}
-          progress={memory}
-        />
-      ),
-      tone: memory !== null && memory >= 85 ? "warning" : "neutral",
-    },
-    {
-      icon: <Boxes />,
-      label: "Workloads",
-      value: loading ? (
-        <LoadingValue />
-      ) : (
-        `${summary.workloadsRunning}/${summary.workloadsTotal}`
-      ),
-      detail: loading ? "Waiting for metrics" : "Running workloads",
-    },
-  ];
+  const status = computeStatus(loading, hasWarning, offlineNodes, data, summary.nodesTotal);
+  const metrics = computeMetrics(summary, loading, cpu, memory, offlineNodes);
 
   return (
     <OperationsOverview

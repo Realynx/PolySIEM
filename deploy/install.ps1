@@ -49,7 +49,9 @@ function Get-HostAddress {
         } finally {
             $socket.Dispose()
         }
-    } catch { }
+    } catch {
+        Write-Verbose "Could not detect a routable host address: $($_.Exception.Message)"
+    }
     return "localhost"
 }
 
@@ -70,7 +72,9 @@ function Test-PolySIEMHealth {
                 }
             }
             if ($response.StatusCode -eq 200) { return $true }
-        } catch { }
+        } catch {
+            Write-Verbose "Health check failed for ${uri}: $($_.Exception.Message)"
+        }
     }
     return $false
 }

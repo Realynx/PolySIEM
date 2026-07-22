@@ -363,22 +363,10 @@ export const LaneNode = memo(function LaneNode({
   const traffic = bw ? networkTrafficRates(bw, lane.category === "wan") : null;
   const clients = lane.clients;
   const hasClients = clients.length > 0;
-  const machineArea = machineGridSize(lane.machines.length);
-  const peerGroups = lane.workloadPolicy?.peerGroups ?? [];
-  const policyArea = policyBlockSize(peerGroups.length);
-  const policyTop =
-    LANE_HEADER +
-    LANE_PAD +
-    machineArea.height +
-    matrixChannelHeight +
-    (lane.machines.length > 0 && peerGroups.length > 0 ? POLICY_SECTION_GAP : 0);
-  // Client block sits below the (overlaid) machine chip grid inside the lane box.
-  const clientsTop =
-    policyTop +
-    policyArea.height +
-    ((lane.machines.length > 0 || peerGroups.length > 0) && hasClients
-      ? CLIENT_SECTION_GAP
-      : 0);
+  const { peerGroups, policyTop, clientsTop } = laneContentMetrics(
+    lane,
+    matrixChannelHeight,
+  );
   const visible = expanded ? clients : clients.slice(0, CLIENT_COLLAPSED_MAX);
   const hidden = clients.length - visible.length;
   const expandable = clients.length > CLIENT_COLLAPSED_MAX;
@@ -500,6 +488,19 @@ export const LaneNode = memo(function LaneNode({
     </div>
   );
 });
+
+function laneContentMetrics(lane: FootprintLane, matrixChannelHeight: number) {
+  const machineArea = machineGridSize(lane.machines.length);
+  const peerGroups = lane.workloadPolicy?.peerGroups ?? [];
+  const policyArea = policyBlockSize(peerGroups.length);
+  const hasMachinesAndPolicy = lane.machines.length > 0 && peerGroups.length > 0;
+  const policyTop = LANE_HEADER + LANE_PAD + machineArea.height + matrixChannelHeight +
+    (hasMachinesAndPolicy ? POLICY_SECTION_GAP : 0);
+  const hasPrimaryContent = lane.machines.length > 0 || peerGroups.length > 0;
+  const clientsTop = policyTop + policyArea.height +
+    (hasPrimaryContent && lane.clients.length > 0 ? CLIENT_SECTION_GAP : 0);
+  return { peerGroups, policyTop, clientsTop };
+}
 
 /** Opaque group title plate rendered as its own high-z child node. */
 export const LaneLabelNode = memo(function LaneLabelNode({

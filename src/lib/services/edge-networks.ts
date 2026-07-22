@@ -312,7 +312,11 @@ async function pinEdgeHostKey(actor: AuditActor, integrationId: string, fingerpr
   if (!observed.some((key) => key.fingerprint === fingerprint)) {
     throw new ApiError(409, "host_key_not_observed", "The selected fingerprint is not currently presented by this server");
   }
-  const settings = edgeNatSettingsSchema.parse({ ...(integration.settings as object ?? {}), hostKeyFingerprint: fingerprint });
+  const currentSettings: Record<string, unknown> = integration.settings &&
+    typeof integration.settings === "object" && !Array.isArray(integration.settings)
+    ? integration.settings as Record<string, unknown>
+    : {};
+  const settings = edgeNatSettingsSchema.parse({ ...currentSettings, hostKeyFingerprint: fingerprint });
   const updated = await prisma.integrationConfig.update({
     where: { id: integrationId }, data: { settings: settings as unknown as Prisma.InputJsonValue },
   });
@@ -368,8 +372,8 @@ export async function provisionEdgeNatService(
   }
 }
 
-export async function getEdgeNetworksOverview() {
-  const integrations = await prisma.integrationConfig.findMany({
+async function loadEdgeIntegrations() {
+  return prisma.integrationConfig.findMany({
     where: {
       OR: [
         { type: "EDGE_NAT_SERVER" },
@@ -395,6 +399,12 @@ export async function getEdgeNetworksOverview() {
     },
     orderBy: { name: "asc" },
   });
+}
+
+type EdgeIntegrationRows = Awaited<ReturnType<typeof loadEdgeIntegrations>>;
+type EdgeIntegrationRow = EdgeIntegrationRows[number];
+
+async function refreshCloudflareCapabilities(integrations: EdgeIntegrationRows): Promise<void> {
   // Cloudflare does not include policies in its normal token-verification
   // response. When the token is allowed to read its own detail, inspect that
   // read-only metadata; otherwise leave capability unknown until a real route
@@ -423,7 +433,9 @@ export async function getEdgeNetworksOverview() {
     });
     row.settings = settings as unknown as Prisma.JsonValue;
   }
-  const edgeServers = integrations.filter((row) => row.type === "EDGE_NAT_SERVER").map((row) => {
+}
+
+function edgeServerOverview(row: EdgeIntegrationRow) {
     const settings = edgeNatSettingsSchema.parse(row.settings ?? {});
     const appliedIds = new Set(settings.appliedRules.map((rule) => rule.id));
     const desiredHash = settings.desiredRulesHash;
@@ -437,7 +449,7 @@ export async function getEdgeNetworksOverview() {
       snapshotAppliedRevision: settings.syncedSnapshot?.appliedRevision,
       snapshotRulesetDrift: settings.syncedSnapshot?.rulesetDrift,
     });
-    return {
+  return {
       id: row.id, name: row.name, baseUrl: row.baseUrl, enabled: row.enabled,
       lastSyncAt: row.lastSyncAt, lastSyncStatus: row.lastSyncStatus, lastSyncError: row.lastSyncError,
       hostKeyEnrolled: Boolean(settings.hostKeyFingerprint), settings,
@@ -451,21 +463,25 @@ export async function getEdgeNetworksOverview() {
         error: settings.lastApplyError ?? null,
       })),
       ruleCount: row.edgeNatRules.length,
-    };
-  });
-  const tailscale = integrations.filter((row) => row.type === "TAILSCALE").map((row) => {
-    const settings = tailscaleSettingsSchema.safeParse(row.settings ?? {});
-    const snapshot = settings.success ? settings.data.syncedSnapshot : undefined;
-    return {
-      id: row.id, name: row.name, enabled: row.enabled, lastSyncAt: row.lastSyncAt, lastSyncStatus: row.lastSyncStatus,
-      tailnet: snapshot?.tailnet ?? (settings.success ? settings.data.tailnet : "-"),
-      deviceCount: snapshot?.devices.length ?? 0, dnsDomain: snapshot?.dns.tailnetDomain ?? null,
-      subnetRoutes: snapshot?.devices.flatMap((device) => device.enabledRoutes.filter((route) => route !== "0.0.0.0/0" && route !== "::/0")) ?? [],
-      exitNodes: snapshot?.devices.filter((device) => device.enabledRoutes.includes("0.0.0.0/0") || device.enabledRoutes.includes("::/0")).map((device) => device.hostname) ?? [],
-    };
-  });
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const otherNetworks: Array<{
+  };
+}
+
+function tailscaleOverview(row: EdgeIntegrationRow) {
+  const settings = tailscaleSettingsSchema.safeParse(row.settings ?? {});
+  const snapshot = settings.success ? settings.data.syncedSnapshot : undefined;
+  return {
+    id: row.id, name: row.name, enabled: row.enabled, lastSyncAt: row.lastSyncAt, lastSyncStatus: row.lastSyncStatus,
+    tailnet: snapshot?.tailnet ?? (settings.success ? settings.data.tailnet : "-"),
+    deviceCount: snapshot?.devices.length ?? 0, dnsDomain: snapshot?.dns.tailnetDomain ?? null,
+    subnetRoutes: snapshot?.devices.flatMap((device) =>
+      device.enabledRoutes.filter((route) => route !== "0.0.0.0/0" && route !== "::/0")) ?? [],
+    exitNodes: snapshot?.devices.filter((device) =>
+      device.enabledRoutes.includes("0.0.0.0/0") || device.enabledRoutes.includes("::/0"))
+      .map((device) => device.hostname) ?? [],
+  };
+}
+
+type OtherNetwork = {
     id: string;
     type: "CLOUDFLARE" | "ELASTICSEARCH" | "OPNSENSE" | "PROXMOX";
     name: string;
@@ -483,72 +499,91 @@ export async function getEdgeNetworksOverview() {
     gateways?: Array<{ id: string; name: string; interfaceName: string | null; ipAddress: string | null; isDefault: boolean; online: boolean | null }>;
     portForwards?: Array<{ id: string; protocol: string | null; publicPort: string | null; targetIp: string; targetPort: string | null; sourceSpec: string | null; description: string | null }>;
     targets?: Array<{ id: string; name: string; kind: "device" | "vm" | "container"; addresses: string[] }>;
-  }> = [];
-  for (const row of integrations) {
-    if (row.type === "CLOUDFLARE") {
-      const parsed = cloudflareSettingsSchema.safeParse(row.settings ?? {});
-      const snapshot = parsed.success ? parsed.data.syncedSnapshot : undefined;
-      otherNetworks.push({
-        id: row.id, type: row.type, name: row.name, lastSyncAt: row.lastSyncAt,
-        account: snapshot?.account ?? null,
-        routeManagementCapability: snapshot?.routeManagementCapability ?? { status: "unknown", checkedAt: null, reason: null },
-        tunnels: snapshot?.tunnels.map((tunnel) => ({
-          id: tunnel.id, name: tunnel.name, status: tunnel.status,
-          configSource: tunnel.configSource, ingress: tunnel.ingress,
-        })) ?? [],
-        zones: snapshot?.zones.map((zone) => ({ id: zone.id, name: zone.name, status: zone.status })) ?? [],
-        privateRoutes: snapshot?.privateRoutes.map((route) => route.network) ?? [],
-        publishedHostnames: snapshot?.zones.flatMap((zone) => zone.dnsRecords.filter((record) => record.proxied).map((record) => record.name)) ?? [],
-      });
-      continue;
-    }
-    if (row.type === "ELASTICSEARCH") {
-      const parsed = elasticsearchSettingsSchema.safeParse(row.settings ?? {});
-      const routes = parsed.success ? parsed.data.sourceDiscovery?.cloudflaredRoutes.filter((route) => {
-        const seen = route.lastSeenAt ? Date.parse(route.lastSeenAt) : Number.NaN;
-        return Number.isFinite(seen) && seen >= cutoff;
-      }) ?? [] : [];
-      otherNetworks.push({
-        id: row.id,
-        type: row.type,
-        name: row.name,
-        lastSyncAt: row.lastSyncAt,
-        tunnels: [],
-        privateRoutes: [],
-        publishedHostnames: [...new Set(routes.map((route) => route.hostname))],
-      });
-      continue;
-    }
-    if (row.type === "OPNSENSE") {
-      otherNetworks.push({
-        id: row.id, type: row.type, name: row.name, lastSyncAt: row.lastSyncAt,
-        tunnels: [], privateRoutes: [], publishedHostnames: [],
-        gateways: row.networkGateways.map((gateway) => ({
-          id: gateway.id, name: gateway.name, interfaceName: gateway.interfaceName,
-          ipAddress: gateway.ipAddress, isDefault: gateway.isDefault, online: gateway.online,
-        })),
-        portForwards: row.portForwards.map((forward) => ({
-          id: forward.id, protocol: forward.protocol, publicPort: forward.destPort,
-          targetIp: forward.targetIp, targetPort: forward.targetPort,
-          sourceSpec: forward.sourceSpec, description: forward.descriptionText,
-        })),
-      });
-      continue;
-    }
-    if (row.type === "PROXMOX") {
-      const addresses = (interfaces: Array<{ ip: { address: string } | null }>) =>
-        interfaces.flatMap((iface) => iface.ip ? [iface.ip.address] : []);
-      otherNetworks.push({
-        id: row.id, type: row.type, name: row.name, lastSyncAt: row.lastSyncAt,
-        tunnels: [], privateRoutes: [], publishedHostnames: [],
-        targets: [
-          ...row.devices.map((device) => ({ id: device.id, name: device.name, kind: "device" as const, addresses: addresses(device.interfaces) })),
-          ...row.virtualMachines.map((vm) => ({ id: vm.id, name: vm.name, kind: "vm" as const, addresses: addresses(vm.interfaces) })),
-          ...row.containers.map((container) => ({ id: container.id, name: container.name, kind: "container" as const, addresses: addresses(container.interfaces) })),
-        ],
-      });
-    }
-  }
+  };
+
+function cloudflareNetwork(row: EdgeIntegrationRow): OtherNetwork {
+  const parsed = cloudflareSettingsSchema.safeParse(row.settings ?? {});
+  const snapshot = parsed.success ? parsed.data.syncedSnapshot : undefined;
+  return {
+    id: row.id, type: "CLOUDFLARE", name: row.name, lastSyncAt: row.lastSyncAt,
+    account: snapshot?.account ?? null,
+    routeManagementCapability: snapshot?.routeManagementCapability ?? { status: "unknown", checkedAt: null, reason: null },
+    tunnels: snapshot?.tunnels.map((tunnel) => ({
+      id: tunnel.id, name: tunnel.name, status: tunnel.status,
+      configSource: tunnel.configSource, ingress: tunnel.ingress,
+    })) ?? [],
+    zones: snapshot?.zones.map((zone) => ({ id: zone.id, name: zone.name, status: zone.status })) ?? [],
+    privateRoutes: snapshot?.privateRoutes.map((route) => route.network) ?? [],
+    publishedHostnames: snapshot?.zones.flatMap((zone) =>
+      zone.dnsRecords.filter((record) => record.proxied).map((record) => record.name)) ?? [],
+  };
+}
+
+function elasticsearchNetwork(row: EdgeIntegrationRow, cutoff: number): OtherNetwork {
+  const parsed = elasticsearchSettingsSchema.safeParse(row.settings ?? {});
+  const routes = parsed.success ? parsed.data.sourceDiscovery?.cloudflaredRoutes.filter((route) => {
+    const seen = route.lastSeenAt ? Date.parse(route.lastSeenAt) : Number.NaN;
+    return Number.isFinite(seen) && seen >= cutoff;
+  }) ?? [] : [];
+  return {
+    id: row.id, type: "ELASTICSEARCH", name: row.name, lastSyncAt: row.lastSyncAt,
+    tunnels: [], privateRoutes: [],
+    publishedHostnames: Array.from(new Set(routes.map((route) => route.hostname))),
+  };
+}
+
+function opnsenseNetwork(row: EdgeIntegrationRow): OtherNetwork {
+  return {
+    id: row.id, type: "OPNSENSE", name: row.name, lastSyncAt: row.lastSyncAt,
+    tunnels: [], privateRoutes: [], publishedHostnames: [],
+    gateways: row.networkGateways.map((gateway) => ({
+      id: gateway.id, name: gateway.name, interfaceName: gateway.interfaceName,
+      ipAddress: gateway.ipAddress, isDefault: gateway.isDefault, online: gateway.online,
+    })),
+    portForwards: row.portForwards.map((forward) => ({
+      id: forward.id, protocol: forward.protocol, publicPort: forward.destPort,
+      targetIp: forward.targetIp, targetPort: forward.targetPort,
+      sourceSpec: forward.sourceSpec, description: forward.descriptionText,
+    })),
+  };
+}
+
+function proxmoxNetwork(row: EdgeIntegrationRow): OtherNetwork {
+  const addresses = (interfaces: Array<{ ip: { address: string } | null }>) =>
+    interfaces.flatMap((iface) => iface.ip ? [iface.ip.address] : []);
+  return {
+    id: row.id, type: "PROXMOX", name: row.name, lastSyncAt: row.lastSyncAt,
+    tunnels: [], privateRoutes: [], publishedHostnames: [],
+    targets: [
+      ...row.devices.map((device) => ({ id: device.id, name: device.name, kind: "device" as const, addresses: addresses(device.interfaces) })),
+      ...row.virtualMachines.map((vm) => ({ id: vm.id, name: vm.name, kind: "vm" as const, addresses: addresses(vm.interfaces) })),
+      ...row.containers.map((container) => ({ id: container.id, name: container.name, kind: "container" as const, addresses: addresses(container.interfaces) })),
+    ],
+  };
+}
+
+function otherNetwork(row: EdgeIntegrationRow, cutoff: number): OtherNetwork | null {
+  if (row.type === "CLOUDFLARE") return cloudflareNetwork(row);
+  if (row.type === "ELASTICSEARCH") return elasticsearchNetwork(row, cutoff);
+  if (row.type === "OPNSENSE") return opnsenseNetwork(row);
+  if (row.type === "PROXMOX") return proxmoxNetwork(row);
+  return null;
+}
+
+function collectOtherNetworks(integrations: EdgeIntegrationRows): OtherNetwork[] {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  return integrations.flatMap((row) => {
+    const network = otherNetwork(row, cutoff);
+    return network ? [network] : [];
+  });
+}
+
+export async function getEdgeNetworksOverview() {
+  const integrations = await loadEdgeIntegrations();
+  await refreshCloudflareCapabilities(integrations);
+  const edgeServers = integrations.filter((row) => row.type === "EDGE_NAT_SERVER").map(edgeServerOverview);
+  const tailscale = integrations.filter((row) => row.type === "TAILSCALE").map(tailscaleOverview);
+  const otherNetworks = collectOtherNetworks(integrations);
   return {
     edgeServers,
     tailscale,

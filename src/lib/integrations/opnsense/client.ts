@@ -168,36 +168,38 @@ function splitCidr(value: string | undefined): { ip: string | null; prefix: numb
   };
 }
 
+function overviewItems(raw: unknown): RawOverviewIface[] {
+  if (Array.isArray(raw)) return raw as RawOverviewIface[];
+  return typeof raw === "object" && raw !== null ? Object.values(raw) as RawOverviewIface[] : [];
+}
+
+function interfaceAddress(item: RawOverviewIface): { ip: string | null; prefix: number | null } {
+  const first = Array.isArray(item.ipv4) ? item.ipv4[0] : undefined;
+  if (typeof first === "string") return splitCidr(first);
+  if (first && typeof first === "object") return splitCidr(first.ipaddr);
+  return splitCidr(typeof item.addr4 === "string" ? item.addr4 : undefined);
+}
+
+function parseInterface(item: RawOverviewIface): OpnInterface | null {
+  const key = item.identifier ?? "";
+  if (!key) return null;
+  const address = interfaceAddress(item);
+  const gateway = Array.isArray(item.gateways) ? item.gateways[0] : item.gateways;
+  const vlan = item.vlan_tag !== undefined ? Number(item.vlan_tag) : NaN;
+  return {
+    key,
+    description: item.description ?? key.toUpperCase(),
+    device: item.device ?? null,
+    ipv4: address.ip,
+    prefix: address.prefix,
+    gateway: typeof gateway === "string" && gateway.length > 0 ? gateway.split(" ")[0] : null,
+    vlanTag: Number.isInteger(vlan) && vlan > 0 ? vlan : null,
+    enabled: item.enabled === undefined ? true : truthy(item.enabled),
+  };
+}
+
 function parseInterfaces(raw: unknown): OpnInterface[] {
-  const items: RawOverviewIface[] = Array.isArray(raw)
-    ? (raw as RawOverviewIface[])
-    : typeof raw === "object" && raw !== null
-      ? (Object.values(raw) as RawOverviewIface[])
-      : [];
-  const out: OpnInterface[] = [];
-  for (const item of items) {
-    const key = item.identifier ?? "";
-    if (!key) continue;
-    let ipv4: string | null = null;
-    let prefix: number | null = null;
-    const first = Array.isArray(item.ipv4) ? item.ipv4[0] : undefined;
-    if (typeof first === "string") ({ ip: ipv4, prefix } = splitCidr(first));
-    else if (first && typeof first === "object") ({ ip: ipv4, prefix } = splitCidr(first.ipaddr));
-    else if (typeof item.addr4 === "string") ({ ip: ipv4, prefix } = splitCidr(item.addr4));
-    const gw = Array.isArray(item.gateways) ? item.gateways[0] : item.gateways;
-    const vlan = item.vlan_tag !== undefined ? Number(item.vlan_tag) : NaN;
-    out.push({
-      key,
-      description: item.description ?? key.toUpperCase(),
-      device: item.device ?? null,
-      ipv4,
-      prefix,
-      gateway: typeof gw === "string" && gw.length > 0 ? gw.split(" ")[0] : null,
-      vlanTag: Number.isInteger(vlan) && vlan > 0 ? vlan : null,
-      enabled: item.enabled === undefined ? true : truthy(item.enabled),
-    });
-  }
-  return out;
+  return overviewItems(raw).map(parseInterface).filter((item): item is OpnInterface => item !== null);
 }
 
 interface RawAliasEntry {
@@ -363,18 +365,17 @@ export function parseGatewayRows(
     const name = cellStr(item, "name");
     if (name) statusByName.set(name, item);
   }
-  const out: OpnGateway[] = [];
-  for (const row of rows) {
+  const parseRow = (row: Record<string, unknown>): OpnGateway | null => {
     const name = cellStr(row, "name");
-    if (!name) continue;
-    if (truthy((cellStr(row, "disabled") ?? "0") as string)) continue;
+    if (!name || truthy((cellStr(row, "disabled") ?? "0") as string)) return null;
     const status = statusByName.get(name);
     const translated = status ? (cellStr(status, "status_translated") ?? "").toLowerCase() : "";
     const configuredIp = cellStr(row, "gateway");
     const liveIp = status ? cellStr(status, "address") : null;
-    const ipAddress =
-      liveIp && IPV4_RE.test(liveIp) ? liveIp : configuredIp && IPV4_RE.test(configuredIp) ? configuredIp : null;
-    out.push({
+    const ipAddress = liveIp && IPV4_RE.test(liveIp)
+      ? liveIp
+      : configuredIp && IPV4_RE.test(configuredIp) ? configuredIp : null;
+    return {
       uuid: cellStr(row, "uuid") ?? name,
       name,
       interfaceName: cellStr(row, "interface"),
@@ -382,8 +383,9 @@ export function parseGatewayRows(
       isDefault: truthy((cellStr(row, "defaultgw") ?? "0") as string),
       online: translated ? translated.includes("online") : null,
       raw: row,
-    });
-  }
+    };
+  };
+  const out = rows.map(parseRow).filter((item): item is OpnGateway => item !== null);
   if (out.length > 0 && !out.some((gw) => gw.isDefault)) {
     const byPriority = [...out].sort((a, b) => {
       const pa = Number(cellStr(a.raw, "priority") ?? "255");
@@ -445,57 +447,52 @@ export async function fetchOptionalFeature<T>(
 
 // ---------- snapshot ----------
 
-/** Fetch a full normalized snapshot from a live OPNsense box. */
-export async function fetchOpnsenseSnapshotFromApi(cfg: DriverConfig): Promise<OpnsenseSnapshot> {
-  const errors: string[] = [];
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
-  let hostname = cfg.name;
+async function fetchDeviceIdentity(cfg: DriverConfig, errors: string[]) {
   let version: string | null = null;
   let reportedName: string | null = null;
   try {
     const info = await fetchSystemInfo(cfg);
     version = info.version;
     reportedName = info.hostname;
-  } catch (err) {
-    errors.push(`system information: ${err instanceof Error ? err.message : err}`);
+  } catch (error) {
+    errors.push(`system information: ${errorText(error)}`);
   }
-  if (reportedName) {
-    hostname = reportedName;
-  } else {
-    try {
-      const host = new URL(cfg.baseUrl).hostname;
-      if (host) hostname = host;
-    } catch {
-      // keep integration name as the device name
-    }
-  }
-
-  // Interfaces
-  let interfaces: OpnInterface[] = [];
+  if (reportedName) return { hostname: reportedName, version };
   try {
-    const raw = await opnGet<unknown>(cfg, "/api/interfaces/overview/export");
-    interfaces = parseInterfaces(raw);
-  } catch (err) {
-    errors.push(`interfaces: ${err instanceof Error ? err.message : err}`);
+    return { hostname: new URL(cfg.baseUrl).hostname || cfg.name, version };
+  } catch {
+    return { hostname: cfg.name, version };
   }
-  const ifaceName = new Map(interfaces.map((i) => [i.key, i.description]));
+}
 
-  // Firewall rules
-  const rules: OpnRule[] = [];
+async function fetchInterfaces(cfg: DriverConfig, errors: string[]): Promise<OpnInterface[]> {
   try {
-    const res = await opnPost<SearchResponse<RawRuleRow>>(cfg, "/api/firewall/filter/search_rule", {
-      current: 1,
-      rowCount: -1,
-    });
-    for (const row of res.rows ?? []) {
-      if (!row.uuid) continue;
+    return parseInterfaces(await opnGet<unknown>(cfg, "/api/interfaces/overview/export"));
+  } catch (error) {
+    errors.push(`interfaces: ${errorText(error)}`);
+    return [];
+  }
+}
+
+async function fetchRules(
+  cfg: DriverConfig,
+  names: Map<string, string>,
+  errors: string[],
+): Promise<OpnRule[]> {
+  try {
+    const response = await opnPost<SearchResponse<RawRuleRow>>(cfg, "/api/firewall/filter/search_rule", { current: 1, rowCount: -1 });
+    return (response.rows ?? []).filter((row) => Boolean(row.uuid)).map((row) => {
       const ifaceKey = (row.interface ?? "").split(",")[0];
-      const seq = Number(row.sequence);
-      rules.push({
-        uuid: row.uuid,
-        sequence: Number.isFinite(seq) ? seq : null,
+      const sequence = Number(row.sequence);
+      return {
+        uuid: row.uuid!,
+        sequence: Number.isFinite(sequence) ? sequence : null,
         action: mapAction(row.action),
-        interfaceName: ifaceName.get(ifaceKey) ?? (ifaceKey || null),
+        interfaceName: names.get(ifaceKey) ?? (ifaceKey || null),
         direction: row.direction ?? null,
         protocol: row.protocol ?? null,
         sourceSpec: row.source_net ?? null,
@@ -504,82 +501,86 @@ export async function fetchOpnsenseSnapshotFromApi(cfg: DriverConfig): Promise<O
         description: row.description ?? null,
         enabled: truthy(row.enabled),
         raw: row as Record<string, unknown>,
-      });
-    }
-  } catch (err) {
-    errors.push(`firewall rules: ${err instanceof Error ? err.message : err}`);
+      };
+    });
+  } catch (error) {
+    errors.push(`firewall rules: ${errorText(error)}`);
+    return [];
   }
+}
 
-  // Aliases: prefer the export endpoint, fall back to search_item
-  let aliases: OpnAlias[] = [];
+function aliasFromSearch(row: RawAliasEntry & { uuid?: string }): OpnAlias {
+  return {
+    uuid: row.uuid ?? row.name!,
+    name: row.name!,
+    aliasType: row.type ?? null,
+    content: (row.content ?? "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+    description: row.description ?? null,
+    enabled: row.enabled === undefined ? true : truthy(row.enabled),
+  };
+}
+
+async function fetchAliases(cfg: DriverConfig, errors: string[]): Promise<OpnAlias[]> {
   try {
-    const raw = await opnGet<{ aliases?: { alias?: Record<string, RawAliasEntry> } }>(
-      cfg,
-      "/api/firewall/alias/export",
-    );
-    aliases = parseAliasExport(raw);
+    const raw = await opnGet<{ aliases?: { alias?: Record<string, RawAliasEntry> } }>(cfg, "/api/firewall/alias/export");
+    return parseAliasExport(raw);
   } catch {
     try {
-      const res = await opnPost<SearchResponse<RawAliasEntry & { uuid?: string }>>(
-        cfg,
-        "/api/firewall/alias/search_item",
-        { current: 1, rowCount: -1 },
+      const response = await opnPost<SearchResponse<RawAliasEntry & { uuid?: string }>>(
+        cfg, "/api/firewall/alias/search_item", { current: 1, rowCount: -1 },
       );
-      aliases = (res.rows ?? [])
-        .filter((r) => r.name)
-        .map((r) => ({
-          uuid: r.uuid ?? (r.name as string),
-          name: r.name as string,
-          aliasType: r.type ?? null,
-          content: (r.content ?? "")
-            .split(/[\n,]/)
-            .map((s) => s.trim())
-            .filter(Boolean),
-          description: r.description ?? null,
-          enabled: r.enabled === undefined ? true : truthy(r.enabled),
-        }));
-    } catch (err) {
-      errors.push(`aliases: ${err instanceof Error ? err.message : err}`);
+      return (response.rows ?? []).filter((row) => Boolean(row.name)).map(aliasFromSearch);
+    } catch (error) {
+      errors.push(`aliases: ${errorText(error)}`);
+      return [];
     }
   }
+}
 
-  // DHCP leases — OPNsense can serve DHCP via ISC dhcpd, dnsmasq or Kea, each
-  // with its own API. Query all three, skip the ones that aren't installed or
-  // that this API key can't reach (403/404), and merge what responds.
+function appendLease(row: RawLeaseRow, leases: OpnLease[], seen: Set<string>): void {
+  if (!row.address) return;
+  const mac = (row.hwaddr ?? row.mac ?? null)?.toUpperCase() ?? null;
+  const key = `${row.address}|${mac ?? ""}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  const reserved = Array.isArray(row.is_reserved) ? row.is_reserved.length > 0 : Boolean(row.is_reserved);
+  leases.push({
+    ip: row.address,
+    mac,
+    hostname: row.hostname || null,
+    isStatic: (row.type ?? "").toLowerCase() === "static" || reserved,
+  });
+}
+
+async function fetchLeases(cfg: DriverConfig, errors: string[]): Promise<OpnLease[]> {
   const leases: OpnLease[] = [];
-  const seenLeases = new Set<string>();
-  const leaseEndpoints = [
+  const seen = new Set<string>();
+  const endpoints = [
     { provider: "isc-dhcpv4", path: "/api/dhcpv4/leases/search_lease" },
     { provider: "dnsmasq", path: "/api/dnsmasq/leases/search" },
     { provider: "kea", path: "/api/kea/leases4/search" },
   ];
-  for (const { provider, path } of leaseEndpoints) {
-    let rows: RawLeaseRow[];
+  for (const endpoint of endpoints) {
     try {
-      const res = await opnPost<SearchResponse<RawLeaseRow>>(cfg, path, { current: 1, rowCount: -1 });
-      rows = res.rows ?? [];
-    } catch (err) {
-      if (err instanceof HttpError && (err.status === 403 || err.status === 404)) {
-        continue; // service not installed / not permitted — try the next one
-      }
-      errors.push(`dhcp leases (${provider}): ${err instanceof Error ? err.message : err}`);
-      continue;
-    }
-    for (const row of rows) {
-      if (!row.address) continue;
-      const mac = (row.hwaddr ?? row.mac ?? null)?.toUpperCase() ?? null;
-      const dedupeKey = `${row.address}|${mac ?? ""}`;
-      if (seenLeases.has(dedupeKey)) continue;
-      seenLeases.add(dedupeKey);
-      const reserved = Array.isArray(row.is_reserved) ? row.is_reserved.length > 0 : Boolean(row.is_reserved);
-      leases.push({
-        ip: row.address,
-        mac,
-        hostname: row.hostname || null,
-        isStatic: (row.type ?? "").toLowerCase() === "static" || reserved,
-      });
+      const response = await opnPost<SearchResponse<RawLeaseRow>>(cfg, endpoint.path, { current: 1, rowCount: -1 });
+      (response.rows ?? []).forEach((row) => appendLease(row, leases, seen));
+    } catch (error) {
+      if (error instanceof HttpError && (error.status === 403 || error.status === 404)) continue;
+      errors.push(`dhcp leases (${endpoint.provider}): ${errorText(error)}`);
     }
   }
+  return leases;
+}
+
+/** Fetch a full normalized snapshot from a live OPNsense box. */
+export async function fetchOpnsenseSnapshotFromApi(cfg: DriverConfig): Promise<OpnsenseSnapshot> {
+  const errors: string[] = [];
+  const { hostname, version } = await fetchDeviceIdentity(cfg, errors);
+  const interfaces = await fetchInterfaces(cfg, errors);
+  const ifaceName = new Map(interfaces.map((i) => [i.key, i.description]));
+  const [rules, aliases, leases] = await Promise.all([
+    fetchRules(cfg, ifaceName, errors), fetchAliases(cfg, errors), fetchLeases(cfg, errors),
+  ]);
 
   // Footprint features — optional endpoints the API key may not be allowed to
   // read yet; each 403 is a skip (with the privilege to grant), not an error.

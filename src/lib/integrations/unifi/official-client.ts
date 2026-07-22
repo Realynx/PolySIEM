@@ -237,14 +237,18 @@ function normalizedWords(values: string[] | undefined): string[] {
   return (values ?? []).map((value) => value.trim()).filter(Boolean);
 }
 
+function officialDeviceKind(searchable: string): "firewall" | "switch" | "device" {
+  if (searchable.includes("gateway") || searchable.includes("routing")) return "firewall";
+  if (searchable.includes("switching") || searchable.includes("ports")) return "switch";
+  return "device";
+}
+
 export function mapOfficialDevice(device: RawOfficialDevice, siteId: string): UnifiManagedDevice {
   const features = normalizedWords(device.features);
   const interfaces = normalizedWords(device.interfaces);
   const searchable = [...features, ...interfaces].join(" ").toLowerCase().replace(/[^a-z0-9]+/g, "");
   const model = device.model?.trim().toUpperCase() ?? "";
   const isAccessPoint = searchable.includes("accesspoint") || searchable.includes("radios") || /^(?:UAP|UAL|U6|U7)/.test(model);
-  const isGateway = searchable.includes("gateway") || searchable.includes("routing");
-  const isSwitch = searchable.includes("switching") || searchable.includes("ports");
   return {
     externalId: scopedId(siteId, device.id ?? ""),
     siteId,
@@ -257,7 +261,7 @@ export function mapOfficialDevice(device: RawOfficialDevice, siteId: string): Un
     features,
     interfaces,
     isAccessPoint,
-    kind: isGateway ? "firewall" : isSwitch ? "switch" : "device",
+    kind: officialDeviceKind(searchable),
   };
 }
 
@@ -299,18 +303,26 @@ export function officialWifiSecurity(type: string | null | undefined): {
   return { security: type.toLowerCase(), wpaMode: null };
 }
 
+function officialWlanDetails(wlan: RawOfficialWifiBroadcast) {
+  return {
+    networkId: wlan.network?.networkId,
+    networkType: wlan.network?.type?.toUpperCase(),
+    securityType: wlan.securityConfiguration?.type,
+    broadcastingDeviceIds: wlan.broadcastingDeviceFilter?.deviceIds,
+  };
+}
+
 export function mapOfficialWlan(
   wlan: RawOfficialWifiBroadcast,
   networks: UnifiNetwork[],
   siteId: string,
 ): UnifiWlan {
-  const networkExternalId = wlan.network?.networkId
-    ? scopedId(siteId, wlan.network.networkId)
-    : null;
-  const linked = networkExternalId
-    ? networks.find((network) => network.externalId === networkExternalId)
-    : undefined;
-  const security = officialWifiSecurity(wlan.securityConfiguration?.type);
+  const details = officialWlanDetails(wlan);
+  const networkId = details.networkId;
+  const networkExternalId = networkId ? scopedId(siteId, networkId) : null;
+  const linked = networkExternalId ? networks.find((network) => network.externalId === networkExternalId) : undefined;
+  const security = officialWifiSecurity(details.securityType);
+  const hotspot = Boolean(wlan.hotspotConfiguration);
   return {
     externalId: scopedId(siteId, wlan.id ?? ""),
     name: wlan.name ?? "WiFi broadcast",
@@ -319,10 +331,10 @@ export function mapOfficialWlan(
     wpaMode: security.wpaMode,
     band: wifiBand(wlan.broadcastingFrequenciesGHz),
     hidden: wlan.hideName ?? false,
-    isGuest: Boolean(wlan.hotspotConfiguration) || wlan.network?.type?.toUpperCase() === "GUEST",
+    isGuest: hotspot || details.networkType === "GUEST",
     vlanId: linked?.vlanId ?? null,
     networkExternalId,
-    apCount: wlan.broadcastingDeviceFilter?.deviceIds?.length ?? null,
+    apCount: details.broadcastingDeviceIds ? details.broadcastingDeviceIds.length : null,
   };
 }
 

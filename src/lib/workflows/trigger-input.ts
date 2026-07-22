@@ -1,5 +1,4 @@
-import type { TriggerParam } from "./types";
-import { isTriggerParamType } from "./types";
+import { isTriggerParamType, type TriggerParam } from "./types";
 
 export function validateTriggerParams(raw: unknown): { params: TriggerParam[]; errors: string[] } {
   const errors: string[] = [];
@@ -54,7 +53,23 @@ export function validateRunInput(
       continue;
     }
 
-    switch (param.type) {
+    validateRunValue(param, raw, values, errors);
+  }
+
+  const known = new Set(params.map((param) => param.key));
+  for (const key of Object.keys(input)) {
+    if (!known.has(key)) errors.push(`Unknown input "${key}" (not a trigger param)`);
+  }
+  return { values, errors };
+}
+
+function validateRunValue(
+  param: TriggerParam,
+  raw: unknown,
+  values: Record<string, unknown>,
+  errors: string[],
+): void {
+  switch (param.type) {
       case "number": {
         const value = typeof raw === "number" ? raw : Number(String(raw).trim());
         if (Number.isNaN(value)) {
@@ -75,12 +90,5 @@ export function validateRunInput(
         } else {
           values[param.key] = raw;
         }
-    }
   }
-
-  const known = new Set(params.map((param) => param.key));
-  for (const key of Object.keys(input)) {
-    if (!known.has(key)) errors.push(`Unknown input "${key}" (not a trigger param)`);
-  }
-  return { values, errors };
 }

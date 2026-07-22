@@ -203,6 +203,15 @@ export interface HostedAiConfigInput {
   model?: string;
 }
 
+function configText<T extends object>(source: T | undefined, key: keyof T): string | undefined {
+  const value = source?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function firstConfigText(...values: Array<string | undefined>): string {
+  return values.find((value) => value !== undefined) ?? "";
+}
+
 /**
  * Merge an incoming Azure block with the stored one, encrypting a freshly
  * supplied key and otherwise preserving the existing ciphertext. Returns
@@ -213,20 +222,22 @@ function mergeAzureBlock(
   existing: AzureAiConfig | undefined,
 ): AzureAiConfig | undefined {
   if (!input && !existing) return undefined;
-  const freshKey = input?.apiKey?.trim();
+  const freshKey = configText(input, "apiKey")?.trim();
+  const endpoint = firstConfigText(configText(input, "endpoint"), configText(existing, "endpoint"));
+  const deployment = firstConfigText(configText(input, "deployment"), configText(existing, "deployment"));
+  const apiVersion = firstConfigText(
+    configText(input, "apiVersion"),
+    configText(existing, "apiVersion"),
+    DEFAULT_AZURE_API_VERSION,
+  );
   return {
-    endpoint: (input?.endpoint ?? existing?.endpoint ?? "").trim(),
+    endpoint: endpoint.trim(),
     // Blank/absent key => keep the stored ciphertext (write-only secret pattern).
     apiKeyEncrypted: freshKey
       ? encryptSecret(freshKey)
-      : (existing?.apiKeyEncrypted ?? ""),
-    deployment: (input?.deployment ?? existing?.deployment ?? "").trim(),
-    apiVersion:
-      (
-        input?.apiVersion ??
-        existing?.apiVersion ??
-        DEFAULT_AZURE_API_VERSION
-      ).trim() || DEFAULT_AZURE_API_VERSION,
+      : firstConfigText(configText(existing, "apiKeyEncrypted")),
+    deployment: deployment.trim(),
+    apiVersion: apiVersion.trim() || DEFAULT_AZURE_API_VERSION,
   };
 }
 
@@ -236,18 +247,18 @@ function mergeHostedBlock(
   existing: HostedAiConfig | undefined,
 ): HostedAiConfig | undefined {
   if (!input && !existing) return undefined;
-  const freshKey = input?.apiKey?.trim();
+  const freshKey = configText(input, "apiKey")?.trim();
+  const baseUrl = firstConfigText(
+    configText(input, "baseUrl"),
+    configText(existing, "baseUrl"),
+    DEFAULT_PROVIDER_BASE_URLS[provider],
+  );
   return {
-    baseUrl:
-      (
-        input?.baseUrl ??
-        existing?.baseUrl ??
-        DEFAULT_PROVIDER_BASE_URLS[provider]
-      ).trim() || DEFAULT_PROVIDER_BASE_URLS[provider],
+    baseUrl: baseUrl.trim() || DEFAULT_PROVIDER_BASE_URLS[provider],
     apiKeyEncrypted: freshKey
       ? encryptSecret(freshKey)
-      : (existing?.apiKeyEncrypted ?? ""),
-    model: (input?.model ?? existing?.model ?? "").trim(),
+      : firstConfigText(configText(existing, "apiKeyEncrypted")),
+    model: firstConfigText(configText(input, "model"), configText(existing, "model")).trim(),
   };
 }
 
@@ -384,7 +395,7 @@ export async function getDeveloperModeConfig(): Promise<DeveloperModeConfig> {
           enabled: stored?.enabled ?? DEFAULT_DEVELOPER_MODE_CONFIG.enabled,
           features: {
             ...DEFAULT_DEVELOPER_MODE_CONFIG.features,
-            ...(stored?.features ?? {}),
+            ...stored?.features,
           },
         };
   if (process.env.POLYSIEM_DEMO_MODE === "true") {
@@ -451,7 +462,7 @@ export async function getAiScanConfig(): Promise<AiScanConfig> {
     null,
   );
   const assistant = await getOllamaConfig();
-  const merged = { ...DEFAULT_AI_SCAN_CONFIG, ...(stored ?? {}) };
+  const merged = { ...DEFAULT_AI_SCAN_CONFIG, ...stored };
   if (assistant.provider === "azure") {
     return {
       ...merged,

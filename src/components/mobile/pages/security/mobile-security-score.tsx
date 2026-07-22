@@ -1,12 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, EyeOff, RefreshCw, ShieldCheck, Undo2, Wrench } from "lucide-react";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { apiFetch } from "@/components/shared/api-client";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -26,6 +23,8 @@ import { MobilePageHeader } from "@/components/mobile/ui/mobile-page-header";
 import { MobilePage, MobileSection } from "@/components/mobile/ui/mobile-page";
 import { MobileEmpty, MobileList, MobileListRow } from "@/components/mobile/ui/mobile-list";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
+import { affectedHref } from "@/components/security/finding-card";
+import { useSecurityReport } from "@/components/security/use-security-report";
 
 const GRADE_HEADLINE: Record<ScoreGrade, string> = {
   excellent: "Excellent posture",
@@ -52,75 +51,101 @@ const SEVERITY_DOT: Record<SecuritySeverity, string> = {
 
 const CATEGORY_LABELS = new Map(SECURITY_CATEGORIES.map((c) => [c.id, c.label]));
 
-/** Deep link for an affected entity, when PolySIEM has a page for it (mirrors the desktop FindingCard map). */
-function affectedHref(entity: AffectedEntity): string | null {
-  switch (entity.kind) {
-    case "device":
-      return entity.id ? `/inventory/hosts/${entity.id}` : "/inventory/hosts";
-    case "vm":
-      return entity.id ? `/inventory/vms/${entity.id}` : "/inventory/vms";
-    case "container":
-      return entity.id ? `/inventory/containers/${entity.id}` : "/inventory/containers";
-    case "rule":
-      return "/firewall/rules";
-    case "port-forward":
-    case "dyndns":
-      return "/firewall";
-    case "integration":
-      return "/settings/integrations";
-    case "user":
-      return "/settings/users";
-    case "api-token":
-      return "/settings/api-tokens";
-    case "ssh-key":
-      return entity.id ? `/keys/${entity.id}` : "/keys";
-    case "wireless":
-      return "/network/wifi";
-    default:
-      return null;
-  }
+function categoryScoreTone(score: number): string {
+  if (score >= 90) return "text-success";
+  if (score >= 60) return "text-warning";
+  return "text-destructive";
+}
+
+function findingCountLabel(count: number): string {
+  if (count === 0) return "No findings";
+  return `${count} finding${count === 1 ? "" : "s"}`;
+}
+
+function deductionLabel(deducted: number, ceiling: number): string {
+  if (deducted === 0) return "";
+  return ` — ${deducted} of ${ceiling} deduction points`;
+}
+
+function selectedFinding(report: SecurityReport | undefined, id: string | null): SecurityFinding | null {
+  if (!id || !report) return null;
+  return report.findings.find((finding) => finding.id === id)
+    ?? report.dismissed.find((finding) => finding.id === id)
+    ?? null;
+}
+
+function isDismissed(report: SecurityReport | undefined, finding: SecurityFinding | null): boolean {
+  if (!report || !finding) return false;
+  return report.dismissed.some((candidate) => candidate.id === finding.id);
+}
+
+function SeverityBadges({ report }: { report: SecurityReport }) {
+  const badges = SECURITY_SEVERITIES.flatMap((severity) => {
+    const count = report.bySeverity[severity];
+    return count > 0
+      ? [<FindingSeverityBadge key={severity} severity={severity} count={count} className="text-[0.65rem]" />]
+      : [];
+  });
+  if (badges.length > 0) return badges;
+  return <span className="text-xs text-muted-foreground">No open findings.</span>;
+}
+
+function SelectedFindingContent({
+  finding,
+  dismissed,
+  isAdmin,
+  pending,
+  onToggle,
+}: {
+  finding: SecurityFinding;
+  dismissed: boolean;
+  isAdmin: boolean;
+  pending: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="space-y-4 pb-2">
+      <div className="space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <FindingSeverityBadge severity={finding.severity} />
+          <span className="text-xs text-muted-foreground">{CATEGORY_LABELS.get(finding.category) ?? finding.category}</span>
+        </div>
+        <h3 className="text-[15px] leading-snug font-semibold">{finding.title}</h3>
+      </div>
+      <p className="text-sm leading-relaxed text-muted-foreground">{finding.detail}</p>
+      <div className="flex gap-2 rounded-lg border bg-muted/40 p-3 text-sm">
+        <Wrench className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        <p className="text-muted-foreground"><span className="font-medium text-foreground">How to fix: </span>{finding.remediation}</p>
+      </div>
+      {finding.affected.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">Affected · {finding.affected.length}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {finding.affected.map((entity, index) => <AffectedChip key={`${entity.kind}:${entity.id ?? entity.name}:${index}`} entity={entity} />)}
+          </div>
+        </div>
+      )}
+      {isAdmin && (
+        <Button variant="outline" className="w-full" disabled={pending} onClick={onToggle}>
+          {dismissed ? <><Undo2 className="size-4" /> Restore finding</> : <><EyeOff className="size-4" /> Dismiss finding</>}
+        </Button>
+      )}
+    </div>
+  );
 }
 
 /** Phone security-advisor page: score hero, category subscores, findings with dismissals. */
 export function MobileSecurityScore({ isAdmin }: { isAdmin: boolean }) {
-  const queryClient = useQueryClient();
   const [showDismissed, setShowDismissed] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  const reportQuery = useQuery({
-    queryKey: ["security-report"],
-    queryFn: () => apiFetch<SecurityReport>("/api/security"),
-  });
-
-  const dismissMutation = useMutation({
-    mutationFn: (input: { action: "dismiss" | "undismiss"; findingId: string }) =>
-      apiFetch<SecurityReport>("/api/security", { method: "POST", body: JSON.stringify(input) }),
-    onSuccess: (report, input) => {
-      queryClient.setQueryData(["security-report"], report);
-      toast.success(input.action === "dismiss" ? "Finding dismissed." : "Finding restored.");
-    },
-    onError: (err: Error) => toast.error(err.message),
-  });
+  const { reportQuery, dismissMutation, findingsBySeverity } = useSecurityReport();
 
   const report = reportQuery.data;
   const grade = report ? scoreGrade(report.score) : null;
 
-  const findingsBySeverity = useMemo(() => {
-    const groups = new Map<SecuritySeverity, SecurityFinding[]>();
-    for (const finding of report?.findings ?? []) {
-      const list = groups.get(finding.severity) ?? [];
-      list.push(finding);
-      groups.set(finding.severity, list);
-    }
-    return groups;
-  }, [report?.findings]);
-
   // The sheet target can live in the open or the dismissed list.
-  const selected =
-    report?.findings.find((f) => f.id === selectedId) ??
-    report?.dismissed.find((f) => f.id === selectedId) ??
-    null;
-  const selectedDismissed = selected != null && (report?.dismissed.some((f) => f.id === selected.id) ?? false);
+  const selected = selectedFinding(report, selectedId);
+  const selectedDismissed = isDismissed(report, selected);
 
   return (
     <>
@@ -173,24 +198,10 @@ export function MobileSecurityScore({ isAdmin }: { isAdmin: boolean }) {
                 <h2 className="text-[15px] font-semibold tracking-tight">{GRADE_HEADLINE[grade]}</h2>
                 <p className="text-[11px] text-muted-foreground">
                   Evaluated {formatRelative(new Date(report.generatedAt))}
-                  {report.deducted > 0 ? ` — ${report.deducted} of ${report.ceiling} deduction points` : ""}
+                  {deductionLabel(report.deducted, report.ceiling)}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center justify-center gap-1.5">
-                {SECURITY_SEVERITIES.map((severity) =>
-                  report.bySeverity[severity] > 0 ? (
-                    <FindingSeverityBadge
-                      key={severity}
-                      severity={severity}
-                      count={report.bySeverity[severity]}
-                      className="text-[0.65rem]"
-                    />
-                  ) : null,
-                )}
-                {report.findings.length === 0 && (
-                  <span className="text-xs text-muted-foreground">No open findings.</span>
-                )}
-              </div>
+              <div className="flex flex-wrap items-center justify-center gap-1.5"><SeverityBadges report={report} /></div>
             </div>
 
             {/* Category subscores */}
@@ -203,7 +214,7 @@ export function MobileSecurityScore({ isAdmin }: { isAdmin: boolean }) {
                       <span
                         className={cn(
                           "text-lg leading-tight font-semibold tabular-nums",
-                          cat.score >= 90 ? "text-success" : cat.score >= 60 ? "text-warning" : "text-destructive",
+                          categoryScoreTone(cat.score),
                         )}
                       >
                         {cat.score}
@@ -215,9 +226,7 @@ export function MobileSecurityScore({ isAdmin }: { isAdmin: boolean }) {
                       aria-label={`${cat.label} subscore ${cat.score} out of 100`}
                     />
                     <p className="text-[11px] text-muted-foreground">
-                      {cat.findingCount === 0
-                        ? "No findings"
-                        : `${cat.findingCount} finding${cat.findingCount === 1 ? "" : "s"}`}
+                      {findingCountLabel(cat.findingCount)}
                     </p>
                   </div>
                 ))}
@@ -283,69 +292,16 @@ export function MobileSecurityScore({ isAdmin }: { isAdmin: boolean }) {
         title={selected?.title ?? "Finding"}
         hideHeader
       >
-        {selected && (
-          <div className="space-y-4 pb-2">
-            <div className="space-y-1.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <FindingSeverityBadge severity={selected.severity} />
-                <span className="text-xs text-muted-foreground">
-                  {CATEGORY_LABELS.get(selected.category) ?? selected.category}
-                </span>
-              </div>
-              <h3 className="text-[15px] leading-snug font-semibold">{selected.title}</h3>
-            </div>
-
-            <p className="text-sm leading-relaxed text-muted-foreground">{selected.detail}</p>
-
-            <div className="flex gap-2 rounded-lg border bg-muted/40 p-3 text-sm">
-              <Wrench className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-              <p className="text-muted-foreground">
-                <span className="font-medium text-foreground">How to fix: </span>
-                {selected.remediation}
-              </p>
-            </div>
-
-            {selected.affected.length > 0 && (
-              <div className="space-y-1.5">
-                <p className="font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
-                  Affected · {selected.affected.length}
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {selected.affected.map((entity, i) => (
-                    <AffectedChip key={`${entity.kind}:${entity.id ?? entity.name}:${i}`} entity={entity} />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {isAdmin && (
-              <Button
-                variant="outline"
-                className="w-full"
-                disabled={dismissMutation.isPending}
-                onClick={() =>
-                  dismissMutation.mutate(
-                    {
-                      action: selectedDismissed ? "undismiss" : "dismiss",
-                      findingId: selected.id,
-                    },
-                    { onSuccess: () => setSelectedId(null) },
-                  )
-                }
-              >
-                {selectedDismissed ? (
-                  <>
-                    <Undo2 className="size-4" /> Restore finding
-                  </>
-                ) : (
-                  <>
-                    <EyeOff className="size-4" /> Dismiss finding
-                  </>
-                )}
-              </Button>
-            )}
-          </div>
-        )}
+        {selected && <SelectedFindingContent
+          finding={selected}
+          dismissed={selectedDismissed}
+          isAdmin={isAdmin}
+          pending={dismissMutation.isPending}
+          onToggle={() => dismissMutation.mutate(
+            { action: selectedDismissed ? "undismiss" : "dismiss", findingId: selected.id },
+            { onSuccess: () => setSelectedId(null) },
+          )}
+        />}
       </BottomSheet>
     </>
   );

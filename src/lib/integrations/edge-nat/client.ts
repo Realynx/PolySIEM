@@ -9,39 +9,63 @@ function connectionError(stderr: string): string {
   return value || "SSH connection failed";
 }
 
+interface EdgeNatStatusFields {
+  hostname: string;
+  kernel: string;
+  ipForwarding: boolean;
+  managedRules: number;
+  appliedRevision: number;
+  appliedHash: string | null;
+  iptablesHash: string | null;
+  rulesetDrift: boolean;
+  addresses: string[];
+  routes: string[];
+}
+
+function applyStatusLine(status: EdgeNatStatusFields, line: string): void {
+  const [kind, ...rest] = line.split("\t");
+  const value = rest.join("\t").trim();
+  if (applyIdentityStatus(status, kind, value)) return;
+  applyRuleStatus(status, kind, value);
+}
+
+function applyIdentityStatus(status: EdgeNatStatusFields, kind: string, value: string): boolean {
+  switch (kind) {
+    case "HOSTNAME": status.hostname = value.slice(0, 253) || status.hostname; return true;
+    case "KERNEL": status.kernel = value.slice(0, 512) || status.kernel; return true;
+    case "ADDRESS": if (value) status.addresses.push(value.slice(0, 128)); return true;
+    case "ROUTE": if (value) status.routes.push(value.slice(0, 1024)); return true;
+    case "IP_FORWARD": status.ipForwarding = value === "1"; return true;
+    default: return false;
+  }
+}
+
+function applyRuleStatus(status: EdgeNatStatusFields, kind: string, value: string): void {
+  switch (kind) {
+    case "MANAGED_RULES": status.managedRules = Math.max(0, Number.parseInt(value, 10) || 0); break;
+    case "APPLIED_REVISION": status.appliedRevision = Math.max(0, Number.parseInt(value, 10) || 0); break;
+    case "APPLIED_HASH": if (/^[0-9a-f]{64}$/.test(value)) status.appliedHash = value; break;
+    case "IPTABLES_HASH": if (/^[0-9a-f]{64}$/.test(value)) status.iptablesHash = value; break;
+    case "RULESET_DRIFT": status.rulesetDrift = value === "1"; break;
+  }
+}
+
 export function parseEdgeNatStatus(stdout: string, baseUrl: string) {
   const lines = stdout.split(/\r?\n/);
   if (lines.shift() !== "POLYSIEM_EDGE_STATUS_V1") throw new Error("Edge helper returned an unsupported status response");
-  let hostname = "edge-nat";
-  let kernel = "unknown";
-  let ipForwarding = false;
-  let managedRules = 0;
-  let appliedRevision = 0;
-  let appliedHash: string | null = null;
-  let iptablesHash: string | null = null;
-  let rulesetDrift = false;
-  const addresses: string[] = [];
-  const routes: string[] = [];
-  for (const line of lines) {
-    const [kind, ...rest] = line.split("\t");
-    const value = rest.join("\t").trim();
-    if (kind === "HOSTNAME") hostname = value.slice(0, 253) || hostname;
-    else if (kind === "KERNEL") kernel = value.slice(0, 512) || kernel;
-    else if (kind === "ADDRESS" && value) addresses.push(value.slice(0, 128));
-    else if (kind === "ROUTE" && value) routes.push(value.slice(0, 1024));
-    else if (kind === "IP_FORWARD") ipForwarding = value === "1";
-    else if (kind === "MANAGED_RULES") managedRules = Math.max(0, Number.parseInt(value, 10) || 0);
-    else if (kind === "APPLIED_REVISION") appliedRevision = Math.max(0, Number.parseInt(value, 10) || 0);
-    else if (kind === "APPLIED_HASH" && /^[0-9a-f]{64}$/.test(value)) appliedHash = value;
-    else if (kind === "IPTABLES_HASH" && /^[0-9a-f]{64}$/.test(value)) iptablesHash = value;
-    else if (kind === "RULESET_DRIFT") rulesetDrift = value === "1";
-  }
+  const status: EdgeNatStatusFields = {
+    hostname: "edge-nat", kernel: "unknown", ipForwarding: false, managedRules: 0,
+    appliedRevision: 0, appliedHash: null, iptablesHash: null, rulesetDrift: false,
+    addresses: [], routes: [],
+  };
+  lines.forEach((line) => applyStatusLine(status, line));
   const { host } = parseEdgeSshUrl(baseUrl);
   return edgeNatSnapshotSchema.parse({
-    capturedAt: new Date().toISOString(), hostname, kernel,
+    capturedAt: new Date().toISOString(), hostname: status.hostname, kernel: status.kernel,
     publicIp: isIP(host) ? host : null,
-    addresses, routes, ipForwarding, managedRules, appliedRevision, appliedHash,
-    iptablesHash, rulesetDrift,
+    addresses: status.addresses, routes: status.routes, ipForwarding: status.ipForwarding,
+    managedRules: status.managedRules, appliedRevision: status.appliedRevision,
+    appliedHash: status.appliedHash, iptablesHash: status.iptablesHash, rulesetDrift: status.rulesetDrift,
   });
 }
 

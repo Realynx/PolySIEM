@@ -26,6 +26,31 @@ function enabled(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === "true";
 }
 
+function validateDemoCredentials(
+  username: string,
+  password: string,
+  installerCredentialAllowed: boolean,
+): void {
+  if (!SAFE_USERNAME.test(username)) {
+    throw new Error(
+      "POLYSIEM_DEMO_USERNAME must be 3-32 letters, numbers, dots, dashes, or underscores",
+    );
+  }
+  if ((!installerCredentialAllowed && password.length < 8) || password.length > 128) {
+    throw new Error(
+      "POLYSIEM_DEMO_PASSWORD must be 8-128 characters (except the built-in locked demo credential)",
+    );
+  }
+}
+
+function validateDemoScenario(profile: string, seed: string, size: number): asserts profile is ScenarioProfile {
+  if (!isScenarioProfile(profile)) throw new Error(`Unknown POLYSIEM_DEMO_PROFILE: ${profile}`);
+  if (!SAFE_SEED.test(seed)) {
+    throw new Error("POLYSIEM_DEMO_SEED must be 1-64 letters, numbers, dots, dashes, or underscores");
+  }
+  if (!isLabSize(size)) throw new Error("POLYSIEM_DEMO_SIZE must be an integer from 1 to 5");
+}
+
 /** Parse the server environment used by the dedicated public-demo launcher. */
 export function getPublicDemoConfig(
   env: DemoEnvironment = process.env,
@@ -39,29 +64,10 @@ export function getPublicDemoConfig(
   const seed = (env.POLYSIEM_DEMO_SEED ?? "github-public-demo").trim();
   const sizeInput = Number(env.POLYSIEM_DEMO_SIZE ?? DEFAULT_LAB_SIZE);
 
-  if (!SAFE_USERNAME.test(username)) {
-    throw new Error(
-      "POLYSIEM_DEMO_USERNAME must be 3-32 letters, numbers, dots, dashes, or underscores",
-    );
-  }
   const isInstallerDemoCredential =
     password === "demo" && demoEnabled && demoLocked && demoAutoSetup;
-  if ((!isInstallerDemoCredential && password.length < 8) || password.length > 128) {
-    throw new Error(
-      "POLYSIEM_DEMO_PASSWORD must be 8-128 characters (except the built-in locked demo credential)",
-    );
-  }
-  if (!isScenarioProfile(profileInput)) {
-    throw new Error(`Unknown POLYSIEM_DEMO_PROFILE: ${profileInput}`);
-  }
-  if (!SAFE_SEED.test(seed)) {
-    throw new Error(
-      "POLYSIEM_DEMO_SEED must be 1-64 letters, numbers, dots, dashes, or underscores",
-    );
-  }
-  if (!isLabSize(sizeInput)) {
-    throw new Error("POLYSIEM_DEMO_SIZE must be an integer from 1 to 5");
-  }
+  validateDemoCredentials(username, password, isInstallerDemoCredential);
+  validateDemoScenario(profileInput, seed, sizeInput);
 
   return {
     enabled: demoEnabled,
@@ -71,7 +77,7 @@ export function getPublicDemoConfig(
     password,
     profile: profileInput,
     seed,
-    size: sizeInput,
+    size: sizeInput as LabSize,
   };
 }
 

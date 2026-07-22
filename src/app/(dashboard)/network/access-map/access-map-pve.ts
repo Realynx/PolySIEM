@@ -52,18 +52,25 @@ export function buildAccessMapPveData(
   networks: PveNetworkInput[],
 ): AccessMapPveData {
   const observedIpsByOwner = new Map<string, string[]>();
+  const indexObservedIps = () => {
   for (const observation of observations) {
     const list = observedIpsByOwner.get(observation.ownerId) ?? [];
     if (!list.includes(observation.address)) list.push(observation.address);
     observedIpsByOwner.set(observation.ownerId, list);
   }
+  };
+  indexObservedIps();
 
   const guestInputs = new Map<string, PveGuestInput>();
   const guestIdByExternalId = new Map<string, string>();
+  const guestOwner = (iface: GuestInterfaceInput) => ({
+    owner: iface.container ?? iface.vm,
+    kind: iface.container ? ("container" as const) : ("vm" as const),
+  });
+  const collectGuests = () => {
   for (const iface of guestInterfaces) {
-    const owner = iface.container ?? iface.vm;
+    const { owner, kind } = guestOwner(iface);
     if (!owner) continue;
-    const kind = iface.container ? ("container" as const) : ("vm" as const);
     const meta = (owner.metadata ?? {}) as GuestMeta;
     const existing = guestInputs.get(owner.id);
     if (existing) {
@@ -88,9 +95,12 @@ export function buildAccessMapPveData(
       groups: meta.firewall?.groups ?? [],
     });
   }
+  };
+  collectGuests();
   const guests = [...guestInputs.values()];
 
   const groupRules: PveGroupRuleInput[] = [];
+  const collectGroupRules = () => {
   for (const rule of rules) {
     const meta = (rule.metadata ?? {}) as {
       scope?: string;
@@ -131,8 +141,11 @@ export function buildAccessMapPveData(
       comment: rule.descriptionText,
     });
   }
+  };
+  collectGroupRules();
 
   const homeVotes = new Map<string, number>();
+  const collectHomeVotes = () => {
   for (const guest of guests) {
     if (!guest.firewallEnabled) continue;
     for (const ip of guest.ips) {
@@ -142,6 +155,8 @@ export function buildAccessMapPveData(
       }
     }
   }
+  };
+  collectHomeVotes();
   const homeNetworkId =
     [...homeVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 

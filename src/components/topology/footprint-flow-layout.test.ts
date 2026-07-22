@@ -7,6 +7,19 @@ import {
 } from "./footprint-flow-builder";
 import { buildFootprintLayout } from "./footprint-flow-layout";
 
+function segmentEntersBox(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  box: { left: number; right: number; top: number; bottom: number },
+): boolean {
+  if (a.y === b.y) {
+    return a.y > box.top && a.y < box.bottom &&
+      Math.min(a.x, b.x) < box.right && Math.max(a.x, b.x) > box.left;
+  }
+  return a.x > box.left && a.x < box.right &&
+    Math.min(a.y, b.y) < box.bottom && Math.max(a.y, b.y) > box.top;
+}
+
 describe("footprint switch layout", () => {
   it("places a switch between the firewall and VLAN shelves without blocking the trace corridor", () => {
     const graph = deriveFootprint(input());
@@ -605,6 +618,7 @@ describe("footprint switch layout", () => {
       Math.ceil(services.length * 0.5),
     );
 
+    const assertRibbonTrackSpacing = () => {
     for (const side of ["left", "right"] as const) {
       const ribbonTracks = ribbonMembers
         .filter((route) => route.traceGroupEntrySide === side)
@@ -617,6 +631,8 @@ describe("footprint switch layout", () => {
         expect(laneGap % 6).toBe(0);
       }
     }
+    };
+    assertRibbonTrackSpacing();
 
     const destination = built.nodes.find(
       (node) => node.id === services[0].target,
@@ -644,6 +660,7 @@ describe("footprint switch layout", () => {
     expect(
       new Set(ribbonMembers.map((route) => route.traceHighway)).size,
     ).toBe(entrySides.size);
+    const assertServiceRoutes = () => {
     for (const edge of services) {
       const route = edge.data as (typeof data)[number];
       const source = built.nodes.find((node) => node.id === edge.source)!;
@@ -746,6 +763,9 @@ describe("footprint switch layout", () => {
         edge.id,
       ).toBe(true);
     }
+    };
+    assertServiceRoutes();
+    const assertTargetOffsets = () => {
     for (const targetId of new Set(services.map((edge) => edge.target))) {
       const offsets = services
         .filter((edge) => edge.target === targetId)
@@ -758,11 +778,14 @@ describe("footprint switch layout", () => {
       for (let index = 1; index < offsets.length; index += 1)
         expect(offsets[index] - offsets[index - 1]).toBe(6);
     }
+    };
+    assertTargetOffsets();
     const plannedTracks = data
       .map((route) => ({
         side: route.traceGroupEntrySide!,
         x: route.tracePlannedTrackX!,
       }));
+    const assertPlannedTracks = () => {
     for (const track of plannedTracks) {
       expect(
         track.side === "left" ? track.x < laneLeft : track.x > laneRight,
@@ -779,6 +802,8 @@ describe("footprint switch layout", () => {
       expect(nearestGroupClearance).toBeGreaterThanOrEqual(8);
       expect(nearestGroupClearance).toBeLessThanOrEqual(20);
     }
+    };
+    assertPlannedTracks();
 
     const segments = ribbonMembers.flatMap((route, routeIndex) =>
       route.waypoints!.slice(1).map((point, pointIndex) => ({
@@ -787,6 +812,7 @@ describe("footprint switch layout", () => {
         b: point,
       })),
     );
+    const assertNoRibbonOverlap = () => {
     for (let left = 0; left < segments.length; left += 1) {
       for (let right = left + 1; right < segments.length; right += 1) {
         if (segments[left].owner === segments[right].owner) continue;
@@ -820,7 +846,10 @@ describe("footprint switch layout", () => {
         expect(horizontalOverlap || verticalOverlap).toBe(false);
       }
     }
+    };
+    assertNoRibbonOverlap();
 
+    const assertBoundedDetours = () => {
     for (const route of ribbonMembers) {
       expect(route.waypoints).toBeDefined();
       const direct =
@@ -841,6 +870,8 @@ describe("footprint switch layout", () => {
         ),
       );
     }
+    };
+    assertBoundedDetours();
   });
 
   it("keeps every tunnel-to-hostname hop routed after obstacle detours", () => {
@@ -951,16 +982,7 @@ describe("footprint switch layout", () => {
         for (let index = 1; index < waypoints.length; index += 1) {
           const a = waypoints[index - 1];
           const b = waypoints[index];
-          const entersInterior =
-            a.y === b.y
-              ? a.y > top &&
-                a.y < bottom &&
-                Math.min(a.x, b.x) < right &&
-                Math.max(a.x, b.x) > left
-              : a.x > left &&
-                a.x < right &&
-                Math.min(a.y, b.y) < bottom &&
-                Math.max(a.y, b.y) > top;
+          const entersInterior = segmentEntersBox(a, b, { left, right, top, bottom });
           expect(
             entersInterior,
             `${edge.id} crosses behind ${obstacle.id}`,

@@ -89,6 +89,13 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.905 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --success: oklch(0.627 0.194 149.214);
+  --warning: oklch(0.681 0.162 75.834);
+  --info: oklch(0.623 0.188 259.815);
+  /* Scrollbar thumb: a step darker than --border so it stays legible against
+     both the white page background and the tinted card surfaces. */
+  --scrollbar-thumb: oklch(0.86 0 0);
+  --scrollbar-thumb-hover: oklch(0.72 0 0);
 }
 
 .dark {
@@ -123,6 +130,11 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --success: oklch(0.723 0.219 149.579);
+  --warning: oklch(0.795 0.184 86.047);
+  --info: oklch(0.707 0.165 254.624);
+  --scrollbar-thumb: oklch(0.34 0 0);
+  --scrollbar-thumb-hover: oklch(0.45 0 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -265,24 +277,6 @@
   --chart-5: oklch(0.702 0.183 293.541);
 }
 
-/* Semantic status colors (theme-independent) */
-:root {
-  --success: oklch(0.627 0.194 149.214);
-  --warning: oklch(0.681 0.162 75.834);
-  --info: oklch(0.623 0.188 259.815);
-  /* Scrollbar thumb: a step darker than --border so it stays legible against
-     both the white page background and the tinted card surfaces. */
-  --scrollbar-thumb: oklch(0.86 0 0);
-  --scrollbar-thumb-hover: oklch(0.72 0 0);
-}
-.dark {
-  --success: oklch(0.723 0.219 149.579);
-  --warning: oklch(0.795 0.184 86.047);
-  --info: oklch(0.707 0.165 254.624);
-  --scrollbar-thumb: oklch(0.34 0 0);
-  --scrollbar-thumb-hover: oklch(0.45 0 0);
-}
-
 @theme inline {
   --color-success: var(--success);
   --color-warning: var(--warning);
@@ -380,6 +374,8 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
   }
   body {
     @apply bg-background text-foreground;
@@ -394,10 +390,6 @@
    * the Radix ScrollArea thumb, so every scrolling surface looks the same in
    * both themes. Firefox/standards first, then the WebKit pseudo-elements.
    */
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) transparent;
-  }
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;

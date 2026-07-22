@@ -2,8 +2,7 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { handleApi, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guards";
-import { SCENARIO_PROFILE_IDS } from "@/lib/demo/catalog";
-import { DEFAULT_LAB_SIZE } from "@/lib/demo/catalog";
+import { DEFAULT_LAB_SIZE, SCENARIO_PROFILE_IDS } from "@/lib/demo/catalog";
 import { provisionDemoEnvironment } from "@/lib/demo/provision";
 
 const requestSchema = z.object({

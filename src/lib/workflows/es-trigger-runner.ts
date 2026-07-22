@@ -49,6 +49,42 @@ export interface EsEvaluation {
   payload: EsTriggerPayload;
 }
 
+async function evaluateMetricTrigger(
+  node: WorkflowNodeSpec,
+  state: EsTriggerState,
+  baseQuery: Record<string, unknown>,
+  windowMinutes: number,
+  now: Date,
+): Promise<EsEvaluation> {
+  const config = esMetricConfigSchema.parse(node.config);
+  const query = logsQuerySchema.parse({ ...baseQuery, limit: 1 });
+  const { value, count, source } = await logMetric(query, config.field, config.aggregation);
+  const decision = decideMetric({ value, comparison: config.comparison, threshold: config.threshold, state });
+  return { decision, payload: {
+    matchCount: count, metricValue: value ?? "", windowMinutes, firstMessage: "", firstTimestamp: "",
+    sourceName: source.name, reason: decision.reason, firedAt: now.toISOString(),
+  } };
+}
+
+function countDecision(node: WorkflowNodeSpec, count: number, newestTs: string | null, state: EsTriggerState): Decision {
+  if (node.kind === ES_ABSENCE_KIND) return decideAbsence({ count, state });
+  const required = node.kind === ES_THRESHOLD_KIND
+    ? esThresholdConfigSchema.parse(node.config).threshold
+    : esMatchConfigSchema.parse(node.config).minCount;
+  return decideCount({ count, required, newestTs, state });
+}
+
+function baseLogQuery(config: ReturnType<typeof parseConfig>, from: Date, now: Date): Record<string, unknown> {
+  return {
+    integrationId: config.integrationId?.trim() || undefined,
+    q: config.query?.trim() || undefined,
+    level: config.level === "any" ? undefined : config.level,
+    host: config.host?.trim() || undefined,
+    from: from.toISOString(),
+    to: now.toISOString(),
+  };
+}
+
 /**
  * Evaluate one Elasticsearch trigger node. Returns the fire/no-fire decision,
  * the state to persist, and the payload the run would receive. Does not write
@@ -64,38 +100,10 @@ export async function evaluateEsTrigger(
   const config = parseConfig(node);
   const from = windowStart(kind, state, config.windowMinutes, now);
 
-  const baseQuery = {
-    integrationId: config.integrationId?.trim() || undefined,
-    q: config.query?.trim() || undefined,
-    level: config.level === "any" ? undefined : config.level,
-    host: config.host?.trim() || undefined,
-    from: from.toISOString(),
-    to: now.toISOString(),
-  };
+  const baseQuery = baseLogQuery(config, from, now);
 
   if (kind === ES_METRIC_KIND) {
-    const metricConfig = esMetricConfigSchema.parse(node.config);
-    const query = logsQuerySchema.parse({ ...baseQuery, limit: 1 });
-    const { value, count, source } = await logMetric(query, metricConfig.field, metricConfig.aggregation);
-    const decision = decideMetric({
-      value,
-      comparison: metricConfig.comparison,
-      threshold: metricConfig.threshold,
-      state,
-    });
-    return {
-      decision,
-      payload: {
-        matchCount: count,
-        metricValue: value ?? "",
-        windowMinutes: config.windowMinutes,
-        firstMessage: "",
-        firstTimestamp: "",
-        sourceName: source.name,
-        reason: decision.reason,
-        firedAt: now.toISOString(),
-      },
-    };
+    return evaluateMetricTrigger(node, state, baseQuery, config.windowMinutes, now);
   }
 
   // The remaining three all rest on "how many documents matched the window".
@@ -103,18 +111,7 @@ export async function evaluateEsTrigger(
   const { entries, total, source } = await searchLogs(query);
   const newest = entries[0] ?? null;
 
-  const decision =
-    kind === ES_ABSENCE_KIND
-      ? decideAbsence({ count: total, state })
-      : decideCount({
-          count: total,
-          required:
-            kind === ES_THRESHOLD_KIND
-              ? esThresholdConfigSchema.parse(node.config).threshold
-              : esMatchConfigSchema.parse(node.config).minCount,
-          newestTs: newest?.timestamp ?? null,
-          state,
-        });
+  const decision = countDecision(node, total, newest?.timestamp ?? null, state);
 
   return {
     decision,

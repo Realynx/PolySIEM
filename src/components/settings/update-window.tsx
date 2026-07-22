@@ -35,6 +35,71 @@ async function apiData<T>(url: string, init?: RequestInit): Promise<T> {
 
 const STEPS = ["Review", "Back up & install", "Finish"];
 
+function CompletedUpdate({ request, onReturn }: { request: UpdateRequest; onReturn: () => void }) {
+  return <><CardHeader className="text-center"><div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-success/10 text-success"><Check className="size-6" /></div><CardTitle>Update complete</CardTitle><CardDescription>PolySIEM v{request.targetVersion} is online and passed its health check.</CardDescription></CardHeader><CardContent><Progress value={100} /></CardContent><CardFooter><Button className="w-full" onClick={onReturn}>Return to PolySIEM</Button></CardFooter></>;
+}
+
+function FailedUpdate({ request, starting, onReturn, onRetry }: { request: UpdateRequest; starting: boolean; onReturn: () => void; onRetry: () => void }) {
+  return <><CardHeader><CardTitle>Update rolled back</CardTitle><CardDescription>The previous release was restored and your pre-update backup was retained.</CardDescription></CardHeader><CardContent className="space-y-4"><Progress value={100} className="[&_[data-slot=progress-indicator]]:bg-destructive" /><Alert variant="destructive"><CircleAlert /><AlertTitle>The update did not complete</AlertTitle><AlertDescription>{request.message ?? "Inspect the host updater logs before retrying."}</AlertDescription></Alert></CardContent><CardFooter className="gap-2"><Button variant="outline" onClick={onReturn}><ArrowLeft /> Return</Button><Button onClick={onRetry} disabled={starting}>{starting && <Loader2 className="animate-spin" />}Retry update</Button></CardFooter></>;
+}
+
+function ActiveUpdate({ request, progress, offline }: { request: UpdateRequest; progress: number; offline: boolean }) {
+  const queued = request.status === "queued";
+  return <><CardHeader><CardTitle>{queued ? "Update queued" : "Installing the update"}</CardTitle><CardDescription>{queued ? "The isolated host service will claim this request shortly." : "Keep this window open. Brief connection interruptions are expected while PolySIEM restarts."}</CardDescription></CardHeader><CardContent className="space-y-5"><Progress value={progress} className="transition-all" /><div className="grid gap-3 text-sm sm:grid-cols-3"><div className="flex items-center gap-2"><DatabaseBackup className="size-4 text-primary" /> Back up data</div><div className="flex items-center gap-2"><RefreshCw className={cn("size-4 text-primary", !queued && "animate-spin")} /> Replace release</div><div className="flex items-center gap-2"><ShieldCheck className="size-4 text-primary" /> Verify health</div></div>{offline && <Alert><RefreshCw className="animate-spin" /><AlertTitle>Reconnecting…</AlertTitle><AlertDescription>The application is restarting. This window will resume automatically.</AlertDescription></Alert>}</CardContent></>;
+}
+
+function ReviewUpdate({ release, capable, error, currentVersion, starting, onReturn, onStart }: { release: UpdateCheckResult | null; capable: boolean; error: string | null; currentVersion: string; starting: boolean; onReturn: () => void; onStart: () => void }) {
+  const available = release?.updateAvailable === true;
+  return <><CardHeader><CardTitle>{available ? `Install PolySIEM v${release.latestVersion}` : "No update available"}</CardTitle><CardDescription>Currently running v{currentVersion}. Release artifacts are fetched from the configured GitHub repository.</CardDescription></CardHeader><CardContent className="space-y-4">{!capable && <Alert variant="destructive"><CircleAlert /><AlertTitle>Website updates are unavailable</AlertTitle><AlertDescription>This installation is not connected to the isolated host update service. Use the update command shown on Settings → About.</AlertDescription></Alert>}{error && <Alert variant="destructive"><CircleAlert /><AlertTitle>Could not start the update</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}{available && capable && <Alert><ShieldCheck /><AlertTitle>Safe update workflow</AlertTitle><AlertDescription>A configuration and PostgreSQL backup is created first. If the new release fails its health check, PolySIEM automatically restores the previous database and application image.</AlertDescription></Alert>}{release && !available && <Alert><Check /><AlertTitle>PolySIEM is up to date</AlertTitle><AlertDescription>No installation is needed.</AlertDescription></Alert>}</CardContent><CardFooter className="justify-between gap-2"><Button variant="outline" onClick={onReturn}><ArrowLeft /> Back</Button>{available && capable && <Button onClick={onStart} disabled={starting}>{starting ? <Loader2 className="animate-spin" /> : <ShieldCheck />}Back up and install</Button>}</CardFooter></>;
+}
+
+function UpdateCard({ loading, request, active, progress, offline, release, capable, error, currentVersion, starting, onReturn, onStart }: { loading: boolean; request: UpdateRequest | null; active: boolean; progress: number; offline: boolean; release: UpdateCheckResult | null; capable: boolean; error: string | null; currentVersion: string; starting: boolean; onReturn: () => void; onStart: () => void }) {
+  if (loading) return <Card><CardContent className="flex min-h-64 items-center justify-center gap-2 text-muted-foreground"><Loader2 className="size-5 animate-spin" /> Checking the latest verified release…</CardContent></Card>;
+  if (request?.status === "completed") return <Card><CompletedUpdate request={request} onReturn={onReturn} /></Card>;
+  if (request?.status === "failed") return <Card><FailedUpdate request={request} starting={starting} onReturn={onReturn} onRetry={onStart} /></Card>;
+  if (active && request) return <Card><ActiveUpdate request={request} progress={progress} offline={offline} /></Card>;
+  return <Card><ReviewUpdate {...{ release, capable, error, currentVersion, starting, onReturn, onStart }} /></Card>;
+}
+
+function updateDisplayState(
+  request: UpdateRequest | null,
+  release: UpdateCheckResult | null,
+  loadError: string | null,
+) {
+  const staleTerminal = isStaleTerminalRequest(request, release, loadError);
+  const visibleRequest = staleTerminal ? null : request;
+  const active = isActiveRequest(visibleRequest);
+  const finished = isFinishedRequest(visibleRequest);
+  const stage = finished ? 2 : active ? 1 : 0;
+  const progress = updateProgress(visibleRequest, finished);
+  return { visibleRequest, active, stage, progress };
+}
+
+function isStaleTerminalRequest(
+  request: UpdateRequest | null,
+  release: UpdateCheckResult | null,
+  loadError: string | null,
+): boolean {
+  if (!isFinishedRequest(request)) return false;
+  if (!release) return Boolean(loadError);
+  return release.updateAvailable === true
+    && request?.targetVersion !== release.latestVersion;
+}
+
+function isActiveRequest(request: UpdateRequest | null): boolean {
+  return request?.status === "queued" || request?.status === "installing";
+}
+
+function isFinishedRequest(request: UpdateRequest | null): boolean {
+  return request?.status === "completed" || request?.status === "failed";
+}
+
+function updateProgress(request: UpdateRequest | null, finished: boolean): number {
+  if (request?.status === "queued") return 20;
+  if (request?.status === "installing") return 65;
+  return finished ? 100 : 0;
+}
+
 export function UpdateWindow({
   currentVersion,
   capable,
@@ -78,14 +143,7 @@ export function UpdateWindow({
     };
   }, [loadRequest]);
 
-  const requestIsTerminal = request?.status === "completed" || request?.status === "failed";
-  const visibleRequest =
-    requestIsTerminal &&
-    ((release?.updateAvailable && request.targetVersion !== release.latestVersion) ||
-      (!release && error))
-      ? null
-      : request;
-  const active = visibleRequest?.status === "queued" || visibleRequest?.status === "installing";
+  const { visibleRequest, active, stage, progress } = updateDisplayState(request, release, error);
   useEffect(() => {
     if (!active) return;
     const timer = window.setInterval(() => {
@@ -119,9 +177,6 @@ export function UpdateWindow({
     window.location.assign("/settings/about");
   }
 
-  const stage = visibleRequest?.status === "completed" || visibleRequest?.status === "failed" ? 2 : active ? 1 : 0;
-  const progress = visibleRequest?.status === "queued" ? 20 : visibleRequest?.status === "installing" ? 65 : stage === 2 ? 100 : 0;
-
   return (
     <main className="flex min-h-svh items-center justify-center bg-muted/40 p-4 py-8">
       <div className="w-full max-w-2xl space-y-6">
@@ -148,70 +203,7 @@ export function UpdateWindow({
           ))}
         </ol>
 
-        <Card>
-          {loading ? (
-            <CardContent className="flex min-h-64 items-center justify-center gap-2 text-muted-foreground">
-              <Loader2 className="size-5 animate-spin" /> Checking the latest verified release…
-            </CardContent>
-          ) : visibleRequest?.status === "completed" ? (
-            <>
-              <CardHeader className="text-center">
-                <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-success/10 text-success"><Check className="size-6" /></div>
-                <CardTitle>Update complete</CardTitle>
-                <CardDescription>PolySIEM v{visibleRequest.targetVersion} is online and passed its health check.</CardDescription>
-              </CardHeader>
-              <CardContent><Progress value={100} /></CardContent>
-              <CardFooter><Button className="w-full" onClick={returnToPolySIEM}>Return to PolySIEM</Button></CardFooter>
-            </>
-          ) : visibleRequest?.status === "failed" ? (
-            <>
-              <CardHeader>
-                <CardTitle>Update rolled back</CardTitle>
-                <CardDescription>The previous release was restored and your pre-update backup was retained.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <Progress value={100} className="[&_[data-slot=progress-indicator]]:bg-destructive" />
-                <Alert variant="destructive"><CircleAlert /><AlertTitle>The update did not complete</AlertTitle><AlertDescription>{visibleRequest.message ?? "Inspect the host updater logs before retrying."}</AlertDescription></Alert>
-              </CardContent>
-              <CardFooter className="gap-2"><Button variant="outline" onClick={returnToPolySIEM}><ArrowLeft /> Return</Button><Button onClick={() => void startUpdate()} disabled={starting}>{starting && <Loader2 className="animate-spin" />}Retry update</Button></CardFooter>
-            </>
-          ) : active ? (
-            <>
-              <CardHeader>
-                <CardTitle>{visibleRequest?.status === "queued" ? "Update queued" : "Installing the update"}</CardTitle>
-                <CardDescription>
-                  {visibleRequest?.status === "queued" ? "The isolated host service will claim this request shortly." : "Keep this window open. Brief connection interruptions are expected while PolySIEM restarts."}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-5">
-                <Progress value={progress} className="transition-all" />
-                <div className="grid gap-3 text-sm sm:grid-cols-3">
-                  <div className="flex items-center gap-2"><DatabaseBackup className="size-4 text-primary" /> Back up data</div>
-                  <div className="flex items-center gap-2"><RefreshCw className={cn("size-4 text-primary", visibleRequest?.status === "installing" && "animate-spin")} /> Replace release</div>
-                  <div className="flex items-center gap-2"><ShieldCheck className="size-4 text-primary" /> Verify health</div>
-                </div>
-                {offline && <Alert><RefreshCw className="animate-spin" /><AlertTitle>Reconnecting…</AlertTitle><AlertDescription>The application is restarting. This window will resume automatically.</AlertDescription></Alert>}
-              </CardContent>
-            </>
-          ) : (
-            <>
-              <CardHeader>
-                <CardTitle>{release?.updateAvailable ? `Install PolySIEM v${release.latestVersion}` : "No update available"}</CardTitle>
-                <CardDescription>Currently running v{currentVersion}. Release artifacts are fetched from the configured GitHub repository.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {!capable && <Alert variant="destructive"><CircleAlert /><AlertTitle>Website updates are unavailable</AlertTitle><AlertDescription>This installation is not connected to the isolated host update service. Use the update command shown on Settings → About.</AlertDescription></Alert>}
-                {error && <Alert variant="destructive"><CircleAlert /><AlertTitle>Could not start the update</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
-                {release?.updateAvailable && capable && <Alert><ShieldCheck /><AlertTitle>Safe update workflow</AlertTitle><AlertDescription>A configuration and PostgreSQL backup is created first. If the new release fails its health check, PolySIEM automatically restores the previous database and application image.</AlertDescription></Alert>}
-                {release && !release.updateAvailable && <Alert><Check /><AlertTitle>PolySIEM is up to date</AlertTitle><AlertDescription>No installation is needed.</AlertDescription></Alert>}
-              </CardContent>
-              <CardFooter className="justify-between gap-2">
-                <Button variant="outline" onClick={returnToPolySIEM}><ArrowLeft /> Back</Button>
-                {release?.updateAvailable && capable && <Button onClick={() => void startUpdate()} disabled={starting}>{starting ? <Loader2 className="animate-spin" /> : <ShieldCheck />}Back up and install</Button>}
-              </CardFooter>
-            </>
-          )}
-        </Card>
+        <UpdateCard {...{ loading, request: visibleRequest, active, progress, offline, release, capable, error, currentVersion, starting, onReturn: returnToPolySIEM, onStart: () => void startUpdate() }} />
       </div>
     </main>
   );

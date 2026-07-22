@@ -69,7 +69,7 @@ export function MobileNatRuleSheet({
     });
   };
 
-  return (
+  const sheet = () => (
     <BottomSheet
       open
       onOpenChange={onOpenChange}
@@ -154,4 +154,5 @@ export function MobileNatRuleSheet({
       </form>
     </BottomSheet>
   );
+  return sheet();
 }

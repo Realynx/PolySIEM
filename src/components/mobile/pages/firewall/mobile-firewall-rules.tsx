@@ -10,6 +10,7 @@ import { MobileSearchBar } from "@/components/mobile/ui/mobile-search-bar";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import type { FirewallAliasDto, FirewallRuleDto } from "@/components/integrations-sync/rules-explorer";
 import { cn } from "@/lib/utils";
+import { filterFirewallRules, firewallInterfaceNames, referencedFirewallAliases } from "@/components/integrations-sync/firewall-rule-model";
 
 const ACTION_STYLES: Record<FirewallRuleDto["action"], string> = {
   PASS: "border-success/40 bg-success/10 text-success",
@@ -76,17 +77,7 @@ function RuleDetailSheet({
   aliases: Map<string, FirewallAliasDto>;
   onOpenChange: (open: boolean) => void;
 }) {
-  const referencedAliases: { label: string; alias: FirewallAliasDto }[] = [];
-  if (rule) {
-    for (const [label, spec] of [
-      ["Source", rule.sourceSpec],
-      ["Destination", rule.destSpec],
-      ["Port", rule.destPort],
-    ] as const) {
-      const alias = spec ? aliases.get(spec) : undefined;
-      if (alias) referencedAliases.push({ label, alias });
-    }
-  }
+  const referencedAliases = referencedFirewallAliases(rule, aliases);
   return (
     <BottomSheet
       open={rule !== null}
@@ -165,25 +156,14 @@ export function MobileFirewallRules({
 
   const aliasMap = useMemo(() => new Map(aliases.map((a) => [a.name, a])), [aliases]);
   const interfaceNames = useMemo(
-    () => [...new Set(rules.map((r) => r.interfaceName ?? "Unassigned"))].sort(),
+    () => firewallInterfaceNames(rules),
     [rules],
   );
 
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return rules.filter((r) => {
-      if (iface !== "all" && (r.interfaceName ?? "Unassigned") !== iface) return false;
-      if (action !== "all" && r.action !== action) return false;
-      if (needle) {
-        const haystack = [r.descriptionText, r.sourceSpec, r.destSpec, r.destPort, r.protocol, r.annotation]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(needle)) return false;
-      }
-      return true;
-    });
-  }, [rules, iface, action, q]);
+  const filtered = useMemo(
+    () => filterFirewallRules(rules, { iface, action, query: q }),
+    [rules, iface, action, q],
+  );
 
   const groups = useMemo(() => {
     const map = new Map<string, FirewallRuleDto[]>();

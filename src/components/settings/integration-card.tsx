@@ -61,6 +61,33 @@ interface CensysCreditStatusView {
   checkedAt: string;
 }
 
+function IntegrationDetails({
+  integration, mockScenario, sourceDiscovery, securityTrailsLimit, credits, historyOpen, setHistoryOpen,
+}: {
+  integration: IntegrationView;
+  mockScenario: ReturnType<typeof parseMockIntegrationUrl>;
+  sourceDiscovery: ReturnType<typeof sourceDiscoveryFromSettings>;
+  securityTrailsLimit: number | null;
+  credits: ReturnType<typeof useQuery<CensysCreditStatusView>>;
+  historyOpen: boolean;
+  setHistoryOpen: (open: boolean) => void;
+}) {
+  return <>
+    <IntegrationOverview integration={integration} />
+    {integration.lastSyncError && <div className="flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/[0.05] p-3 text-xs text-destructive"><TriangleAlert className="mt-0.5 size-4 shrink-0" /><div className="min-w-0"><p className="font-medium">Last operation needs attention</p><p className="mt-0.5 break-words text-destructive/80">{integration.lastSyncError}</p></div></div>}
+    {mockScenario && <div className="flex items-center gap-3 rounded-lg border border-dashed bg-muted/25 p-3"><FlaskConical className="size-4 text-muted-foreground" /><div><p className="text-xs font-medium">Mock scenario</p><p className="text-xs text-muted-foreground">{MOCK_SCENARIO_PROFILES[mockScenario.profile].label}</p></div></div>}
+    {integration.type === "ELASTICSEARCH" && <ElasticsearchDiscoveryPanel discovery={sourceDiscovery} />}
+    {securityTrailsLimit !== null && <SecurityTrailsSummary integration={integration} limit={securityTrailsLimit} />}
+    {integration.type === "CENSYS" && integration.enabled && <CensysCreditPanel status={credits.data} loading={credits.isLoading || credits.isFetching} error={credits.isError ? (credits.error as Error).message : null} onRefresh={() => void credits.refetch()} />}
+    {!isLiveQueryType(integration.type) && (
+      <Collapsible className="mt-auto" open={historyOpen} onOpenChange={setHistoryOpen}>
+        <CollapsibleTrigger asChild><Button variant="ghost" size="sm" className="-ml-2 gap-1.5 text-muted-foreground"><History className="size-4" />Sync history<ChevronDown className={cn("size-4 transition-transform", historyOpen && "rotate-180")} /></Button></CollapsibleTrigger>
+        <CollapsibleContent><SyncHistory integrationId={integration.id} enabled={historyOpen} /></CollapsibleContent>
+      </Collapsible>
+    )}
+  </>;
+}
+
 export function IntegrationCard({
   integration,
   onEdit,
@@ -150,53 +177,7 @@ export function IntegrationCard({
         </div>
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-4 py-4">
-        <IntegrationOverview integration={integration} />
-
-        {integration.lastSyncError && (
-          <div className="flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/[0.05] p-3 text-xs text-destructive">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-            <div className="min-w-0"><p className="font-medium">Last operation needs attention</p><p className="mt-0.5 break-words text-destructive/80">{integration.lastSyncError}</p></div>
-          </div>
-        )}
-
-        {mockScenario && (
-          <div className="flex items-center gap-3 rounded-lg border border-dashed bg-muted/25 p-3">
-            <FlaskConical className="size-4 text-muted-foreground" />
-            <div><p className="text-xs font-medium">Mock scenario</p><p className="text-xs text-muted-foreground">{MOCK_SCENARIO_PROFILES[mockScenario.profile].label}</p></div>
-          </div>
-        )}
-
-        {integration.type === "ELASTICSEARCH" && (
-          <ElasticsearchDiscoveryPanel discovery={sourceDiscovery} />
-        )}
-
-        {securityTrailsLimit !== null && (
-          <SecurityTrailsSummary integration={integration} limit={securityTrailsLimit} />
-        )}
-
-        {integration.type === "CENSYS" && integration.enabled && (
-          <CensysCreditPanel
-            status={censysCredits.data}
-            loading={censysCredits.isLoading || censysCredits.isFetching}
-            error={censysCredits.isError ? (censysCredits.error as Error).message : null}
-            onRefresh={() => void censysCredits.refetch()}
-          />
-        )}
-
-        {!isLiveQueryType(integration.type) && (
-          <Collapsible className="mt-auto" open={historyOpen} onOpenChange={setHistoryOpen}>
-            <CollapsibleTrigger asChild>
-              <Button variant="ghost" size="sm" className="-ml-2 gap-1.5 text-muted-foreground">
-                <History className="size-4" />
-                Sync history
-                <ChevronDown className={cn("size-4 transition-transform", historyOpen && "rotate-180")} />
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <SyncHistory integrationId={integration.id} enabled={historyOpen} />
-            </CollapsibleContent>
-          </Collapsible>
-        )}
+        <IntegrationDetails {...{ integration, mockScenario, sourceDiscovery, securityTrailsLimit, credits: censysCredits, historyOpen, setHistoryOpen }} />
       </CardContent>
       <CardFooter className="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-2 bg-muted/25">
         <Button variant="outline" size="sm" className="w-full bg-background" disabled={testConnection.isPending} onClick={() => testConnection.mutate()}>
@@ -348,12 +329,23 @@ function CensysCreditPanel({
         </Button>
       </div>
 
-      {error ? (
-        <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-2 text-xs text-amber-800 dark:text-amber-200">Credit balance unavailable: {error}</p>
-      ) : !status ? (
-        <div className="mt-3 h-12 animate-pulse rounded-md bg-muted" />
-      ) : (
-        <div className="mt-3 space-y-3">
+      <CensysCreditBody {...{ status, error, provider, hasLimit, used, percentage }} />
+    </div>
+  );
+}
+
+function CensysCreditBody({ status, error, provider, hasLimit, used, percentage }: {
+  status?: CensysCreditStatusView;
+  error: string | null;
+  provider: CensysCreditStatusView["provider"] | undefined;
+  hasLimit: boolean;
+  used: number | null;
+  percentage: number;
+}) {
+  if (error) return <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-2.5 py-2 text-xs text-amber-800 dark:text-amber-200">Credit balance unavailable: {error}</p>;
+  if (!status) return <div className="mt-3 h-12 animate-pulse rounded-md bg-muted" />;
+  const total = provider?.limit?.toLocaleString() ?? "unknown";
+  return <div className="mt-3 space-y-3">
           <div>
             <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
               <span className="font-semibold">
@@ -361,7 +353,7 @@ function CensysCreditPanel({
               </span>
               <span className="text-xs text-muted-foreground">
                 {hasLimit && used != null
-                  ? `${used.toLocaleString()} used / ${provider.limit!.toLocaleString()} total`
+                  ? `${used.toLocaleString()} used / ${total} total`
                   : `${provider?.scope === "organization" ? "Organization" : "Personal"} wallet`}
               </span>
             </div>
@@ -377,10 +369,7 @@ function CensysCreditPanel({
               <p className="mt-0.5 font-medium">{status.ai.used} / {status.ai.limit} in rolling 24h</p>
             </div>
           </div>
-        </div>
-      )}
-    </div>
-  );
+        </div>;
 }
 
 function summarizeStats(stats: SyncRunStats | null): string | null {

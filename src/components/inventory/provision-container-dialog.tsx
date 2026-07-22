@@ -58,7 +58,11 @@ interface Result {
 
 const NO_KEY = "__none";
 
-export function ProvisionContainerDialog() {
+function provisionReady(fields: string[], ipv4Mode: "dhcp" | "static", ipv4Address: string, gateway: string): boolean {
+  return fields.every(Boolean) && (ipv4Mode === "dhcp" || Boolean(ipv4Address.trim() && gateway.trim()));
+}
+
+function useProvisionContainerForm() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [integrationId, setIntegrationId] = useState("");
@@ -119,15 +123,11 @@ export function ProvisionContainerDialog() {
   }, [options.data]);
 
   const selectedTarget = targets.data?.find((item) => item.integrationId === integrationId);
-  const canSubmit = Boolean(
-    integrationId &&
-      node &&
-      vmid &&
-      hostname.trim() &&
-      template &&
-      rootStorage &&
-      bridge &&
-      (ipv4Mode === "dhcp" || (ipv4Address.trim() && gateway.trim())),
+  const canSubmit = provisionReady(
+    [integrationId, node, vmid, hostname.trim(), template, rootStorage, bridge],
+    ipv4Mode,
+    ipv4Address,
+    gateway,
   );
 
   const create = useMutation({
@@ -169,6 +169,24 @@ export function ProvisionContainerDialog() {
     setNode(target?.nodes.find((candidate) => candidate.online)?.id ?? target?.nodes[0]?.id ?? "");
     setVmid("");
   }
+
+  return {
+    open, setOpen, integrationId, node, setNode, vmid, setVmid, hostname, setHostname, template, setTemplate,
+    rootStorage, setRootStorage, diskGiB, setDiskGiB, cores, setCores, memoryMiB, setMemoryMiB, swapMiB,
+    setSwapMiB, bridge, setBridge, ipv4Mode, setIpv4Mode, ipv4Address, setIpv4Address, gateway, setGateway,
+    vlanTag, setVlanTag, sshKeyId, setSshKeyId, unprivileged, setUnprivileged, start, setStart, firewall,
+    setFirewall, targets, keys, options, selectedTarget, canSubmit, create, changeIntegration,
+  };
+}
+
+export function ProvisionContainerDialog() {
+  const {
+    open, setOpen, integrationId, node, setNode, vmid, setVmid, hostname, setHostname, template, setTemplate,
+    rootStorage, setRootStorage, diskGiB, setDiskGiB, cores, setCores, memoryMiB, setMemoryMiB, swapMiB,
+    setSwapMiB, bridge, setBridge, ipv4Mode, setIpv4Mode, ipv4Address, setIpv4Address, gateway, setGateway,
+    vlanTag, setVlanTag, sshKeyId, setSshKeyId, unprivileged, setUnprivileged, start, setStart, firewall,
+    setFirewall, targets, keys, options, selectedTarget, canSubmit, create, changeIntegration,
+  } = useProvisionContainerForm();
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -236,12 +254,10 @@ export function ProvisionContainerDialog() {
               </Field>
             </div>
 
-            {selectedTarget?.error && (
-              <Alert variant="destructive"><Info /><AlertTitle>Provider discovery failed</AlertTitle><AlertDescription>{selectedTarget.error}</AlertDescription></Alert>
-            )}
-            {options.isError && (
-              <Alert variant="destructive"><Info /><AlertTitle>Could not load node options</AlertTitle><AlertDescription>{options.error.message}</AlertDescription></Alert>
-            )}
+            <ProvisionErrors
+              targetError={selectedTarget?.error ?? null}
+              optionsError={options.error?.message ?? null}
+            />
 
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Hostname" htmlFor="provision-hostname">
@@ -315,15 +331,44 @@ export function ProvisionContainerDialog() {
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={create.isPending}>Cancel</Button>
-              <Button type="submit" disabled={!canSubmit || options.isLoading || create.isPending}>
-                {create.isPending ? <Loader2 className="animate-spin" /> : <Rocket />}
-                {create.isPending ? "Provisioning…" : "Create container"}
-              </Button>
+              <ProvisionSubmitButton
+                ready={canSubmit}
+                loadingOptions={options.isLoading}
+                pending={create.isPending}
+              />
             </DialogFooter>
           </form>
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ProvisionErrors({
+  targetError,
+  optionsError,
+}: {
+  targetError: string | null;
+  optionsError: string | null;
+}) {
+  return (
+    <>
+      {targetError && (
+        <Alert variant="destructive"><Info /><AlertTitle>Provider discovery failed</AlertTitle><AlertDescription>{targetError}</AlertDescription></Alert>
+      )}
+      {optionsError && (
+        <Alert variant="destructive"><Info /><AlertTitle>Could not load node options</AlertTitle><AlertDescription>{optionsError}</AlertDescription></Alert>
+      )}
+    </>
+  );
+}
+
+function ProvisionSubmitButton({ ready, loadingOptions, pending }: { ready: boolean; loadingOptions: boolean; pending: boolean }) {
+  return (
+    <Button type="submit" disabled={!ready || loadingOptions || pending}>
+      {pending ? <Loader2 className="animate-spin" /> : <Rocket />}
+      {pending ? "Provisioning…" : "Create container"}
+    </Button>
   );
 }
 

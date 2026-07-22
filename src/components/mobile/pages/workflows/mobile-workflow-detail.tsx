@@ -74,6 +74,21 @@ function orderedSteps(graph: WorkflowGraph): WorkflowNodeSpec[] {
   return [...ordered, ...graph.nodes.filter((n) => !seen.has(n.id))];
 }
 
+function workflowTrigger(graph: WorkflowGraph): WorkflowNodeSpec | undefined {
+  return graph.nodes.find((node) => node.kind === "trigger.manual")
+    ?? graph.nodes.find((node) => isTriggerKind(node.kind));
+}
+
+function workflowLoadError(error: unknown): string {
+  return error instanceof Error ? error.message : "The workflow engine may still be starting.";
+}
+
+function WorkflowStatus({ enabled }: { enabled: boolean }) {
+  return enabled
+    ? <span className="text-success">Enabled</span>
+    : <span className="text-muted-foreground">Disabled</span>;
+}
+
 /**
  * Phone workflow view: the builder is a desktop surface, so the phone gets a
  * read/run companion — meta, the ordered step list derived from the same
@@ -104,9 +119,7 @@ export function MobileWorkflowDetailPage({
     () => (workflow ? orderedSteps(workflow.graph) : []),
     [workflow],
   );
-  const triggerNode =
-    workflow?.graph.nodes.find((n) => n.kind === "trigger.manual") ??
-    workflow?.graph.nodes.find((n) => isTriggerKind(n.kind));
+  const triggerNode = workflow ? workflowTrigger(workflow.graph) : undefined;
   const triggerParams = useMemo(
     () => parseTriggerParams(triggerNode?.config),
     [triggerNode],
@@ -133,11 +146,7 @@ export function MobileWorkflowDetailPage({
           <MobileEmpty
             icon={<TriangleAlert />}
             title="Could not load this workflow"
-            description={
-              workflowQuery.error instanceof Error
-                ? workflowQuery.error.message
-                : "The workflow engine may still be starting."
-            }
+            description={workflowLoadError(workflowQuery.error)}
             action={
               <Button variant="outline" onClick={() => workflowQuery.refetch()}>
                 Retry
@@ -161,11 +170,7 @@ export function MobileWorkflowDetailPage({
 
         <MobileList>
           <MobileKeyRow label="Status">
-            {workflow.enabled ? (
-              <span className="text-success">Enabled</span>
-            ) : (
-              <span className="text-muted-foreground">Disabled</span>
-            )}
+            <WorkflowStatus enabled={workflow.enabled} />
           </MobileKeyRow>
           <MobileKeyRow label="Trigger">
             {triggerNode ? (

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunContext } from "../registry";
+import { getAction, type RunContext } from "../registry";
 
 const { provisionContainerMock } = vi.hoisted(() => ({
   provisionContainerMock: vi.fn(),
@@ -10,7 +10,6 @@ vi.mock("@/lib/services/provisioning", () => ({
 }));
 
 import { proxmoxCreateContainer } from "./provision-container";
-import { getAction } from "../registry";
 
 const baseConfig = {
   integrationId: "integration-pve",

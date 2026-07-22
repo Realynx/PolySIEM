@@ -1,7 +1,6 @@
 import "server-only";
 
-import { tool } from "@langchain/core/tools";
-import type { DynamicStructuredTool } from "@langchain/core/tools";
+import { tool, type DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api";

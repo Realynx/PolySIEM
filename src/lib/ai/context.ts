@@ -63,96 +63,90 @@ function tagLine(tags: TagFacts[]): string | null {
   return line("Tags", tags.map((t) => t.tag.name).join(", "));
 }
 
+type DeviceDetails = Awaited<ReturnType<typeof getDevice>>;
+type VmDetails = Awaited<ReturnType<typeof getVm>>;
+type ContainerDetails = Awaited<ReturnType<typeof getContainer>>;
+type NetworkDetails = Awaited<ReturnType<typeof getNetwork>>;
+type ServiceDetails = Awaited<ReturnType<typeof getService>>;
+
+function deviceCpu(device: DeviceDetails): string | null {
+  if (device.cpuModel) return `${device.cpuModel}${device.cpuCores ? ` (${device.cpuCores} cores)` : ""}`;
+  return device.cpuCores ? `${device.cpuCores} cores` : null;
+}
+
+function deviceHosts(device: DeviceDetails): string | null {
+  if (device.vms.length === 0 && device.containers.length === 0) return null;
+  const names = device.vms.map((vm) => vm.name).join(", ") || "none";
+  return `${device.vms.length} VM(s) (${names}), ${device.containers.length} container(s)`;
+}
+
+function deviceFactSheet(device: DeviceDetails): string {
+  const pools = device.storagePools.map((pool) =>
+    `${pool.name}${pool.totalBytes != null ? ` (${formatBytes(pool.totalBytes)})` : ""}`,
+  );
+  return joinLines([
+    "Fact sheet for a homelab device:", line("Name", device.name), line("Kind", device.kind),
+    line("Manufacturer / model", [device.manufacturer, device.model].filter(Boolean).join(" ") || null),
+    line("CPU", deviceCpu(device)), line("Memory", device.memoryBytes != null ? formatBytes(device.memoryBytes) : null),
+    line("OS", [device.osName, device.osVersion].filter(Boolean).join(" ") || null), line("Location", device.location),
+    line("Hosts", deviceHosts(device)), line("Storage pools", pools.join(", ") || null),
+    interfaceLines(device.interfaces), serviceLines(device.services), tagLine(device.tags),
+    line("Existing description", device.description),
+  ]);
+}
+
+function vmFactSheet(vm: VmDetails): string {
+  return joinLines([
+    "Fact sheet for a homelab virtual machine:", line("Name", vm.name), line("Host", vm.host?.name),
+    line("Power state", vm.powerState), line("CPU cores", vm.cpuCores),
+    line("Memory", vm.memoryBytes != null ? formatBytes(vm.memoryBytes) : null),
+    line("Disk", vm.diskBytes != null ? formatBytes(vm.diskBytes) : null), line("OS", vm.osName),
+    line("Containers inside", vm.containers.map((container) => container.name).join(", ") || null),
+    interfaceLines(vm.interfaces), serviceLines(vm.services), tagLine(vm.tags), line("Existing description", vm.description),
+  ]);
+}
+
+function containerFactSheet(container: ContainerDetails): string {
+  return joinLines([
+    "Fact sheet for a homelab container:", line("Name", container.name), line("Runtime", container.runtime),
+    line("Host", container.host?.name), line("Parent VM", container.vm?.name), line("Power state", container.powerState),
+    line("CPU cores", container.cpuCores),
+    line("Memory", container.memoryBytes != null ? formatBytes(container.memoryBytes) : null), line("OS", container.osName),
+    interfaceLines(container.interfaces), serviceLines(container.services), tagLine(container.tags),
+    line("Existing description", container.description),
+  ]);
+}
+
+function networkFactSheet(network: NetworkDetails): string {
+  const attached = network.interfaces
+    .map((item) => item.device?.name ?? item.vm?.name ?? item.container?.name)
+    .filter((name): name is string => Boolean(name));
+  return joinLines([
+    "Fact sheet for a homelab network:", line("Name", network.name), line("VLAN ID", network.vlanId),
+    line("CIDR", network.cidr), line("Gateway", network.gateway), line("Domain", network.domain),
+    line("Purpose", network.purpose), line("Known IP addresses", network.ipAddresses.length || null),
+    line("Attached hosts", attached.join(", ") || null), line("DHCP leases", network.dhcpLeases.length || null),
+    tagLine(network.tags), line("Existing description", network.description),
+  ]);
+}
+
+function serviceFactSheet(service: ServiceDetails): string {
+  const endpoint = service.port ? `${service.port}${service.protocol ? `/${service.protocol}` : ""}` : null;
+  return joinLines([
+    "Fact sheet for a homelab service:", line("Name", service.name), line("URL", service.url), line("Port", endpoint),
+    line("Runs on", service.device?.name ?? service.vm?.name ?? service.container?.name),
+    tagLine(service.tags), line("Existing description", service.description),
+  ]);
+}
+
 /** Build a plain-text fact sheet for an inventory entity, for use as prompt context. */
 export async function buildEntityFactSheet(entityType: DescribableEntityType, entityId: string): Promise<string> {
   switch (entityType) {
-    case "device": {
-      const d = await getDevice(entityId);
-      return joinLines([
-        `Fact sheet for a homelab device:`,
-        line("Name", d.name),
-        line("Kind", d.kind),
-        line("Manufacturer / model", [d.manufacturer, d.model].filter(Boolean).join(" ") || null),
-        line("CPU", d.cpuModel ? `${d.cpuModel}${d.cpuCores ? ` (${d.cpuCores} cores)` : ""}` : d.cpuCores ? `${d.cpuCores} cores` : null),
-        line("Memory", d.memoryBytes != null ? formatBytes(d.memoryBytes) : null),
-        line("OS", [d.osName, d.osVersion].filter(Boolean).join(" ") || null),
-        line("Location", d.location),
-        line("Hosts", d.vms.length || d.containers.length ? `${d.vms.length} VM(s) (${d.vms.map((v) => v.name).join(", ") || "none"}), ${d.containers.length} container(s)` : null),
-        line("Storage pools", d.storagePools.length ? d.storagePools.map((p) => `${p.name}${p.totalBytes != null ? ` (${formatBytes(p.totalBytes)})` : ""}`).join(", ") : null),
-        interfaceLines(d.interfaces),
-        serviceLines(d.services),
-        tagLine(d.tags),
-        line("Existing description", d.description),
-      ]);
-    }
-    case "vm": {
-      const v = await getVm(entityId);
-      return joinLines([
-        `Fact sheet for a homelab virtual machine:`,
-        line("Name", v.name),
-        line("Host", v.host?.name),
-        line("Power state", v.powerState),
-        line("CPU cores", v.cpuCores),
-        line("Memory", v.memoryBytes != null ? formatBytes(v.memoryBytes) : null),
-        line("Disk", v.diskBytes != null ? formatBytes(v.diskBytes) : null),
-        line("OS", v.osName),
-        line("Containers inside", v.containers.length ? v.containers.map((c) => c.name).join(", ") : null),
-        interfaceLines(v.interfaces),
-        serviceLines(v.services),
-        tagLine(v.tags),
-        line("Existing description", v.description),
-      ]);
-    }
-    case "container": {
-      const c = await getContainer(entityId);
-      return joinLines([
-        `Fact sheet for a homelab container:`,
-        line("Name", c.name),
-        line("Runtime", c.runtime),
-        line("Host", c.host?.name),
-        line("Parent VM", c.vm?.name),
-        line("Power state", c.powerState),
-        line("CPU cores", c.cpuCores),
-        line("Memory", c.memoryBytes != null ? formatBytes(c.memoryBytes) : null),
-        line("OS", c.osName),
-        interfaceLines(c.interfaces),
-        serviceLines(c.services),
-        tagLine(c.tags),
-        line("Existing description", c.description),
-      ]);
-    }
-    case "network": {
-      const n = await getNetwork(entityId);
-      const attached = n.interfaces
-        .map((i) => i.device?.name ?? i.vm?.name ?? i.container?.name)
-        .filter((name): name is string => Boolean(name));
-      return joinLines([
-        `Fact sheet for a homelab network:`,
-        line("Name", n.name),
-        line("VLAN ID", n.vlanId),
-        line("CIDR", n.cidr),
-        line("Gateway", n.gateway),
-        line("Domain", n.domain),
-        line("Purpose", n.purpose),
-        line("Known IP addresses", n.ipAddresses.length || null),
-        line("Attached hosts", attached.length ? attached.join(", ") : null),
-        line("DHCP leases", n.dhcpLeases.length || null),
-        tagLine(n.tags),
-        line("Existing description", n.description),
-      ]);
-    }
-    case "service": {
-      const s = await getService(entityId);
-      return joinLines([
-        `Fact sheet for a homelab service:`,
-        line("Name", s.name),
-        line("URL", s.url),
-        line("Port", s.port ? `${s.port}${s.protocol ? `/${s.protocol}` : ""}` : null),
-        line("Runs on", s.device?.name ?? s.vm?.name ?? s.container?.name),
-        tagLine(s.tags),
-        line("Existing description", s.description),
-      ]);
-    }
+    case "device": return deviceFactSheet(await getDevice(entityId));
+    case "vm": return vmFactSheet(await getVm(entityId));
+    case "container": return containerFactSheet(await getContainer(entityId));
+    case "network": return networkFactSheet(await getNetwork(entityId));
+    case "service": return serviceFactSheet(await getService(entityId));
   }
 }
 

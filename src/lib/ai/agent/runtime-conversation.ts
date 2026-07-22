@@ -205,6 +205,10 @@ export interface DocInterviewOptions extends AgentRunOptions {
   goal: DocInterviewGoal;
 }
 
+function interviewPrompt(opts: DocInterviewOptions): string {
+  return opts.mode === "services" ? DOC_SERVICE_PLAN_SYSTEM_PROMPT : docInterviewSystemPrompt(opts.goal);
+}
+
 /**
  * Interview turns often need to inspect inventory and several documentation
  * pages before writing and asking a question. LangGraph's default of 25
@@ -302,10 +306,7 @@ export async function* runDocInterview(
   const ctx = newContext("doc-interview", opts.role, opts);
   const state: RunState = { ctx, toolCalls: [], transcript: [], finalText: "" };
   const chat = buildChatModel(resolved);
-  const systemPrompt =
-    opts.mode === "services"
-      ? DOC_SERVICE_PLAN_SYSTEM_PROMPT
-      : docInterviewSystemPrompt(opts.goal);
+  const systemPrompt = interviewPrompt(opts);
 
   const contextWindowTokens = await contextWindowFor(resolved);
   const prepared = compactInterviewMessages(messages, {

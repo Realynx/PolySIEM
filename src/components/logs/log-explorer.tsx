@@ -238,6 +238,23 @@ function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void 
   );
 }
 
+function StreamStatus({ stats, errors }: { stats: StatsResponse | undefined; errors: number }) {
+  if (!stats) return "Loading level breakdown…";
+  if (errors === 0) return <><CircleCheck className="size-3.5" aria-hidden />Stream is healthy</>;
+  return <><ShieldAlert className="size-3.5" aria-hidden />{errors.toLocaleString()} {errors === 1 ? "error" : "errors"}</>;
+}
+
+function streamTone(stats: StatsResponse | undefined, errors: number, warnings: number) {
+  if (!stats) return "neutral" as const;
+  if (errors > 0) return "destructive" as const;
+  if (warnings > 0) return "warning" as const;
+  return "success" as const;
+}
+
+function countDetail(count: number, active: string, empty: string): string {
+  return count > 0 ? active : empty;
+}
+
 function StatsHeader({
   stats,
   total,
@@ -265,22 +282,8 @@ function StatsHeader({
         icon={<Activity className="size-5" aria-hidden />}
         title="Live log stream"
         description={`${rangeLabel} from ${sourceName}`}
-        status={
-          !stats ? (
-            "Loading level breakdown…"
-          ) : errors > 0 ? (
-            <>
-              <ShieldAlert className="size-3.5" aria-hidden />
-              {errors.toLocaleString()} {errors === 1 ? "error" : "errors"}
-            </>
-          ) : (
-            <>
-              <CircleCheck className="size-3.5" aria-hidden />
-              Stream is healthy
-            </>
-          )
-        }
-        statusTone={!stats ? "neutral" : errors > 0 ? "destructive" : warnings > 0 ? "warning" : "success"}
+        status={<StreamStatus stats={stats} errors={errors} />}
+        statusTone={streamTone(stats, errors, warnings)}
         metrics={[
           {
             icon: <Database />,
@@ -300,14 +303,14 @@ function StatsHeader({
             icon: <ShieldAlert />,
             label: "Errors",
             value: stats ? errors.toLocaleString() : "—",
-            detail: errors > 0 ? "Needs investigation" : "No errors in range",
+            detail: countDetail(errors, "Needs investigation", "No errors in range"),
             tone: errors > 0 ? "destructive" : "success",
           },
           {
             icon: <AlertTriangle />,
             label: "Warnings",
             value: stats ? warnings.toLocaleString() : "—",
-            detail: warnings > 0 ? "Potential issues" : "No warnings in range",
+            detail: countDetail(warnings, "Potential issues", "No warnings in range"),
             tone: warnings > 0 ? "warning" : "neutral",
           },
           {

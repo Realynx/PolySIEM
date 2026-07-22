@@ -113,27 +113,28 @@ export interface ResolvedModel {
   ready: boolean;
 }
 
+function hostedResolvedModel(cfg: AiConfig): ResolvedModel {
+  const { ready } = resolveProvider(cfg);
+  const block = cfg.provider === "openai"
+    ? cfg.openai
+    : cfg.provider === "deepseek"
+      ? cfg.deepseek
+      : cfg.provider === "anthropic"
+        ? cfg.anthropic
+        : undefined;
+  return {
+    provider: cfg.provider,
+    cfg,
+    baseUrl: cfg.provider === "azure" ? (cfg.azure?.endpoint ?? "") : (block?.baseUrl ?? ""),
+    model: cfg.provider === "azure" ? (cfg.azure?.deployment ?? "") : (block?.model ?? ""),
+    enabled: cfg.enabled,
+    ready,
+  };
+}
+
 export async function resolveModel(): Promise<ResolvedModel> {
   const cfg = await getOllamaConfig();
-  if (cfg.provider !== "ollama") {
-    const { ready } = resolveProvider(cfg);
-    const hostedBlock =
-      cfg.provider === "azure" ? undefined : cfg[cfg.provider];
-    return {
-      provider: cfg.provider,
-      cfg,
-      baseUrl:
-        cfg.provider === "azure"
-          ? (cfg.azure?.endpoint ?? "")
-          : (hostedBlock?.baseUrl ?? ""),
-      model:
-        cfg.provider === "azure"
-          ? (cfg.azure?.deployment ?? "")
-          : (hostedBlock?.model ?? ""),
-      enabled: cfg.enabled,
-      ready,
-    };
-  }
+  if (cfg.provider !== "ollama") return hostedResolvedModel(cfg);
   let { baseUrl, model } = cfg;
   if (!model || !baseUrl) {
     const scan = await getAiScanConfig();
@@ -299,6 +300,35 @@ interface AgentStreamOptions {
   timeoutMs?: number;
 }
 
+function streamSignal(contextSignal: AbortSignal | undefined, timeoutMs?: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs ?? AGENT_TIMEOUT_MS);
+  return contextSignal ? AbortSignal.any([contextSignal, timeout]) : timeout;
+}
+
+function streamedText(chunk: unknown): string {
+  const content = (chunk as { content?: unknown } | undefined)?.content;
+  return typeof content === "string" ? content : "";
+}
+
+function completedToolCall(
+  event: { run_id: string; name: string; data: { output?: unknown } },
+  started: AgentToolCall | undefined,
+  state: RunState,
+): AgentToolCall {
+  const raw = outputText(event.data.output);
+  const args = started?.args ?? {};
+  state.transcript.push({ tool: event.name, args, output: raw.slice(0, 2_000) });
+  return {
+    id: event.run_id,
+    kind: toKind(event.name),
+    name: event.name,
+    args,
+    label: started?.label ?? labelFor(event.name, {}),
+    status: /"error"\s*:/.test(raw) ? "error" : "success",
+    resultPreview: toResultPreview(raw, 600, state.ctx.secrets),
+  };
+}
+
 /**
  * Drive the agent and map LangChain stream events to AgentStreamEvent. Mutates
  * `state` (toolCalls, transcript, finalText) so the caller can build a report.
@@ -317,10 +347,7 @@ export async function* runAgentStream(
   });
   const inFlight = new Map<string, AgentToolCall>();
 
-  const timeout = AbortSignal.timeout(opts.timeoutMs ?? AGENT_TIMEOUT_MS);
-  const signal = state.ctx.signal
-    ? AbortSignal.any([state.ctx.signal, timeout])
-    : timeout;
+  const signal = streamSignal(state.ctx.signal, opts.timeoutMs);
   const stream = agent.streamEvents(
     { messages },
     {
@@ -336,8 +363,7 @@ export async function* runAgentStream(
         state.finalText = "";
         break;
       case "on_chat_model_stream": {
-        const chunk = event.data.chunk as { content?: unknown } | undefined;
-        const text = typeof chunk?.content === "string" ? chunk.content : "";
+        const text = streamedText(event.data.chunk);
         if (text) {
           state.finalText += text;
           yield { type: "token", text };
@@ -359,23 +385,7 @@ export async function* runAgentStream(
         break;
       }
       case "on_tool_end": {
-        const started = inFlight.get(event.run_id);
-        const raw = outputText(event.data.output);
-        state.transcript.push({
-          tool: event.name,
-          args: started?.args ?? {},
-          output: raw.slice(0, 2_000),
-        });
-        const isError = /"error"\s*:/.test(raw);
-        const call: AgentToolCall = {
-          id: event.run_id,
-          kind: toKind(event.name),
-          name: event.name,
-          args: started?.args ?? {},
-          label: started?.label ?? labelFor(event.name, {}),
-          status: isError ? "error" : "success",
-          resultPreview: toResultPreview(raw, 600, state.ctx.secrets),
-        };
+        const call = completedToolCall(event, inFlight.get(event.run_id), state);
         inFlight.delete(event.run_id);
         state.toolCalls.push(call);
         yield { type: "tool_result", call };

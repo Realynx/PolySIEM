@@ -1,11 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import Link from "next/link";
-import { FileSearch, FileText, Lightbulb, Pencil, RotateCcw, ShieldCheck, Sparkles, UserRound } from "lucide-react";
+import { FileText, Pencil, RotateCcw, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { toast } from "sonner";
-import { apiFetch } from "@/components/shared/api-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,14 +23,28 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
-import { formatDateTime, formatRelative } from "@/lib/format";
+import { formatRelative } from "@/lib/format";
 import type { SecurityTicketDto, TicketSeverityValue } from "@/lib/types";
 import { SEVERITIES } from "./constants";
-import { EvidenceRow } from "./evidence-row";
 import { InvestigationBadge } from "./investigation-badge";
 import { InvestigationPanel } from "./investigation-panel";
 import { SeverityBadge, TicketStatusBadge } from "./severity-badge";
-import { TicketIpIndicator } from "./ticket-ip-indicator";
+import { useTicketDetails } from "./use-ticket-details";
+import { SuggestedResponse, TicketEvidence, TicketIndicators } from "./ticket-sections";
+
+function TicketResolutionControls({
+  isClosed, pending, resolution, setResolution, close, reopen,
+}: {
+  isClosed: boolean;
+  pending: boolean;
+  resolution: string;
+  setResolution: (value: string) => void;
+  close: () => void;
+  reopen: () => void;
+}) {
+  if (isClosed) return <Button variant="outline" onClick={reopen} disabled={pending}><RotateCcw data-icon="inline-start" />{pending ? "Reopening…" : "Reopen ticket"}</Button>;
+  return <div className="w-full space-y-2"><Label htmlFor="ticket-resolution" className="text-xs text-muted-foreground">Closure rationale (required; used by the AI scanner)</Label><Textarea id="ticket-resolution" value={resolution} onChange={(event) => setResolution(event.target.value)} placeholder="Say whether this was benign or handled and why, e.g. Benign backup traffic from NAS-01." rows={2} /><Button className="w-full" onClick={close} disabled={pending || resolution.trim().length < 3}><ShieldCheck data-icon="inline-start" />{pending ? "Closing…" : "Close ticket"}</Button></div>;
+}
 
 /** Detail drawer for a single ticket: narrative, AI investigation, evidence, and open/close actions. */
 export function TicketSheet({
@@ -47,8 +58,7 @@ export function TicketSheet({
   onOpenChange: (open: boolean) => void;
   onUpdated: (ticket: SecurityTicketDto) => void;
 }) {
-  const queryClient = useQueryClient();
-  const [resolution, setResolution] = useState("");
+  const { resolution, setResolution, patch, refGroups, close, reopen } = useTicketDetails(ticket, onUpdated);
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editSummary, setEditSummary] = useState("");
@@ -56,7 +66,6 @@ export function TicketSheet({
 
   // Reset transient state whenever a different ticket is shown.
   useEffect(() => {
-    setResolution("");
     setEditing(false);
     if (ticket) {
       setEditTitle(ticket.title);
@@ -65,34 +74,8 @@ export function TicketSheet({
     }
   }, [ticket?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const patch = useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
-      apiFetch<SecurityTicketDto>(`/api/logs/tickets/${ticket!.id}`, {
-        method: "PATCH",
-        body: JSON.stringify(body),
-      }),
-    onSuccess: (updated) => {
-      void queryClient.invalidateQueries({ queryKey: ["tickets"] });
-      onUpdated(updated);
-    },
-    onError: (err: Error) => toast.error(err.message),
-  });
-
   if (!ticket) return null;
   const isClosed = ticket.status === "CLOSED";
-  const refGroups = [
-    { label: "Source IPs", kind: "ip", values: ticket.refs?.srcIps ?? [] },
-    { label: "Destination IPs", kind: "ip", values: ticket.refs?.destIps ?? [] },
-    { label: "Signatures", kind: "signature", values: ticket.refs?.signatures ?? [] },
-    { label: "Hosts", kind: "host", values: ticket.refs?.hosts ?? [] },
-  ].filter((g) => g.values.length > 0);
-
-  const close = () =>
-    patch.mutate(
-      { status: "CLOSED", resolution: resolution.trim() },
-      { onSuccess: () => toast.success("Ticket closed") },
-    );
-  const reopen = () => patch.mutate({ status: "OPEN" }, { onSuccess: () => toast.success("Ticket reopened") });
   const saveEdits = () =>
     patch.mutate(
       { title: editTitle.trim(), summary: editSummary.trim(), severity: editSeverity },
@@ -198,17 +181,7 @@ export function TicketSheet({
             <p className="text-sm leading-relaxed whitespace-pre-wrap">{ticket.summary}</p>
           </section>
 
-          {ticket.suggestions && (
-            <section className="space-y-1.5">
-              <h3 className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                <Lightbulb className="size-3.5" aria-hidden />
-                Suggested response
-              </h3>
-              <div className="rounded-xl bg-info/5 p-4 ring-1 ring-info/25">
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">{ticket.suggestions}</p>
-              </div>
-            </section>
-          )}
+          <SuggestedResponse suggestions={ticket.suggestions} />
 
           <InvestigationPanel
             ticket={ticket}
@@ -227,48 +200,9 @@ export function TicketSheet({
             }}
           />
 
-          {refGroups.length > 0 && (
-            <section className="space-y-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10">
-              <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Indicators</h3>
-              <div className="space-y-2.5">
-                {refGroups.map((group) => (
-                  <div key={group.label} className="flex flex-wrap items-baseline gap-1.5">
-                    <span className="w-28 shrink-0 text-xs text-muted-foreground">{group.label}</span>
-                    {group.values.map((value) => {
-                      if (group.kind === "ip") return <TicketIpIndicator key={value} value={value} />;
-                      return group.kind === "host" ? (
-                        <Badge key={value} variant="secondary" className="font-mono text-xs" asChild>
-                          <Link href={`/security/research?subject=${encodeURIComponent(value)}`} title={`Research ${value}`}>
-                            {value}<FileSearch className="size-3" />
-                          </Link>
-                        </Badge>
-                      ) : (
-                        <Badge key={value} variant="secondary" className="font-mono text-xs">{value}</Badge>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
+          <TicketIndicators groups={refGroups} />
 
-          {ticket.evidence && ticket.evidence.samples.length > 0 && (
-            <section className="space-y-2">
-              <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                Evidence
-                {ticket.evidence.timeRange && (
-                  <span className="ml-2 font-normal normal-case">
-                    {formatDateTime(ticket.evidence.timeRange.from)} — {formatDateTime(ticket.evidence.timeRange.to)}
-                  </span>
-                )}
-              </h3>
-              <div className="divide-y overflow-hidden rounded-xl ring-1 ring-foreground/10">
-                {ticket.evidence.samples.map((sample, i) => (
-                  <EvidenceRow key={i} sample={sample} scope={ticket.evidence?.scope} />
-                ))}
-              </div>
-            </section>
-          )}
+          <TicketEvidence ticket={ticket} />
 
           {isClosed && (
             <section className="space-y-2 rounded-xl bg-success/5 p-4 ring-1 ring-success/20">
@@ -287,31 +221,7 @@ export function TicketSheet({
           )}
         </div>
 
-        <SheetFooter className="border-t bg-muted/20">
-          {isClosed ? (
-            <Button variant="outline" onClick={reopen} disabled={patch.isPending}>
-              <RotateCcw data-icon="inline-start" />
-              {patch.isPending ? "Reopening…" : "Reopen ticket"}
-            </Button>
-          ) : (
-            <div className="w-full space-y-2">
-              <Label htmlFor="ticket-resolution" className="text-xs text-muted-foreground">
-                Closure rationale (required; used by the AI scanner)
-              </Label>
-              <Textarea
-                id="ticket-resolution"
-                value={resolution}
-                onChange={(e) => setResolution(e.target.value)}
-                placeholder="Say whether this was benign or handled and why, e.g. Benign backup traffic from NAS-01."
-                rows={2}
-              />
-              <Button className="w-full" onClick={close} disabled={patch.isPending || resolution.trim().length < 3}>
-                <ShieldCheck data-icon="inline-start" />
-                {patch.isPending ? "Closing…" : "Close ticket"}
-              </Button>
-            </div>
-          )}
-        </SheetFooter>
+        <SheetFooter className="border-t bg-muted/20"><TicketResolutionControls {...{ isClosed, resolution, setResolution, close, reopen }} pending={patch.isPending} /></SheetFooter>
       </SheetContent>
     </Sheet>
   );

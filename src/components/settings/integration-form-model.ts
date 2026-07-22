@@ -75,24 +75,42 @@ export interface FormState {
   edgeEnableIpForwarding: boolean;
 }
 
-export function emptyForm(integration: IntegrationView | null): FormState {
-  const es = { ...ES_SETTINGS_DEFAULTS, ...(integration?.settings ?? {}) };
-  const unifiSite = (integration?.settings?.site as string | undefined) ?? "default";
-  const mock = integration ? parseMockIntegrationUrl(integration.baseUrl) : null;
+function setting<T>(settings: Record<string, unknown>, key: string, fallback: T): T {
+  return (settings[key] as T | undefined) ?? fallback;
+}
+
+function integrationBasics(integration: IntegrationView | null) {
+  if (!integration) return {
+    type: "PROXMOX" as const, name: "", baseUrl: "", verifyTls: true, syncIntervalMinutes: 15,
+  };
   return {
-    type: integration?.type ?? "PROXMOX",
-    name: integration?.name ?? "",
-    baseUrl: integration?.baseUrl ?? "",
-    verifyTls: integration?.verifyTls ?? true,
-    syncIntervalMinutes: String(integration?.syncIntervalMinutes ?? 15),
+    type: integration.type,
+    name: integration.name,
+    baseUrl: integration.baseUrl,
+    verifyTls: integration.verifyTls,
+    syncIntervalMinutes: integration.syncIntervalMinutes,
+  };
+}
+
+export function emptyForm(integration: IntegrationView | null): FormState {
+  const settings = integration?.settings ?? {};
+  const es = { ...ES_SETTINGS_DEFAULTS, ...settings };
+  const mock = integration ? parseMockIntegrationUrl(integration.baseUrl) : null;
+  const basics = integrationBasics(integration);
+  return {
+    type: basics.type,
+    name: basics.name,
+    baseUrl: basics.baseUrl,
+    verifyTls: basics.verifyTls,
+    syncIntervalMinutes: String(basics.syncIntervalMinutes),
     mockProfile: mock?.profile ?? DEFAULT_MOCK_SCENARIO_PROFILE,
     mockSeed: mock?.seed ?? DEFAULT_MOCK_SCENARIO_SEED,
     tokenId: "",
     tokenSecret: "",
     apiKey: "",
     apiSecret: "",
-    bandwidthPolling: (integration?.settings?.bandwidthPolling as boolean | undefined) ?? false,
-    bandwidthPollMinutes: String(integration?.settings?.bandwidthPollMinutes ?? 2),
+    bandwidthPolling: setting(settings, "bandwidthPolling", false),
+    bandwidthPollMinutes: String(setting(settings, "bandwidthPollMinutes", 2)),
     esAuthMode: "apiKey",
     esApiKey: "",
     esUsername: "",
@@ -106,29 +124,26 @@ export function emptyForm(integration: IntegrationView | null): FormState {
     unifiApiKey: "",
     unifiUsername: "",
     unifiPassword: "",
-    unifiSite,
+    unifiSite: setting(settings, "site", "default"),
     otxApiKey: "",
-    otxFeed: (integration?.settings?.feed as OtxFeedValue | undefined) ?? "activity",
+    otxFeed: setting<OtxFeedValue>(settings, "feed", "activity"),
     cloudflareApiToken: "",
-    cloudflareAccountId: (integration?.settings?.accountId as string | undefined) ?? "",
-    cloudflareIncludeDns: (integration?.settings?.includeDnsRecords as boolean | undefined) ?? true,
-    cloudflareIncludeConnections:
-      (integration?.settings?.includeTunnelConnections as boolean | undefined) ?? true,
+    cloudflareAccountId: setting(settings, "accountId", ""),
+    cloudflareIncludeDns: setting(settings, "includeDnsRecords", true),
+    cloudflareIncludeConnections: setting(settings, "includeTunnelConnections", true),
     tailscaleAccessToken: "",
-    tailscaleTailnet: (integration?.settings?.tailnet as string | undefined) ?? "-",
-    tailscaleIncludeRoutes: (integration?.settings?.includeRoutes as boolean | undefined) ?? true,
-    tailscaleIncludeDns: (integration?.settings?.includeDns as boolean | undefined) ?? true,
-    tailscaleIncludePolicy: (integration?.settings?.includePolicy as boolean | undefined) ?? true,
+    tailscaleTailnet: setting(settings, "tailnet", "-"),
+    tailscaleIncludeRoutes: setting(settings, "includeRoutes", true),
+    tailscaleIncludeDns: setting(settings, "includeDns", true),
+    tailscaleIncludePolicy: setting(settings, "includePolicy", true),
     censysAccessToken: "",
-    censysOrganizationId: (integration?.settings?.organizationId as string | undefined) ?? "",
-    censysAiDailyCallLimit: (integration?.settings?.aiDailyCallLimit as number | undefined) ?? 10,
+    censysOrganizationId: setting(settings, "organizationId", ""),
+    censysAiDailyCallLimit: setting(settings, "aiDailyCallLimit", 10),
     securityTrailsApiKey: "",
-    securityTrailsAiDailyCallLimit: securityTrailsAiDailyLimit(integration?.settings),
-    edgePublicInterface: (integration?.settings?.publicInterface as string | undefined) ?? "eth0",
-    edgeOutboundInterface: integration
-      ? (integration.settings?.outboundInterface as string | undefined) ?? "tailscale0"
-      : "eth0",
-    edgeEnableIpForwarding: (integration?.settings?.enableIpForwarding as boolean | undefined) ?? true,
+    securityTrailsAiDailyCallLimit: securityTrailsAiDailyLimit(settings),
+    edgePublicInterface: setting(settings, "publicInterface", "eth0"),
+    edgeOutboundInterface: setting(settings, "outboundInterface", integration ? "tailscale0" : "eth0"),
+    edgeEnableIpForwarding: setting(settings, "enableIpForwarding", true),
   };
 }
 
@@ -174,33 +189,21 @@ export function buildCredentials(form: FormState): Record<string, string> {
   }
 }
 
+const CREDENTIAL_CHECKS: Record<IntegrationTypeValue, (form: FormState) => boolean> = {
+  PROXMOX: (form) => Boolean(form.tokenId.trim() && form.tokenSecret.trim()),
+  OPNSENSE: (form) => Boolean(form.apiKey.trim() && form.apiSecret.trim()),
+  ELASTICSEARCH: (form) => form.esAuthMode === "apiKey" ? Boolean(form.esApiKey.trim()) : Boolean(form.esUsername.trim() && form.esPassword),
+  UNIFI: (form) => form.unifiAuthMode === "apiKey" ? Boolean(form.unifiApiKey.trim()) : Boolean(form.unifiUsername.trim() && form.unifiPassword),
+  OTX: (form) => Boolean(form.otxApiKey.trim()),
+  CLOUDFLARE: (form) => Boolean(form.cloudflareApiToken.trim() && form.cloudflareAccountId.trim()),
+  TAILSCALE: (form) => Boolean(form.tailscaleAccessToken.trim() && form.tailscaleTailnet.trim()),
+  CENSYS: (form) => Boolean(form.censysAccessToken.trim()),
+  SECURITYTRAILS: (form) => Boolean(form.securityTrailsApiKey.trim()),
+  EDGE_NAT_SERVER: () => true,
+};
+
 export function credentialsFilled(form: FormState): boolean {
-  switch (form.type) {
-    case "PROXMOX":
-      return Boolean(form.tokenId.trim() && form.tokenSecret.trim());
-    case "OPNSENSE":
-      return Boolean(form.apiKey.trim() && form.apiSecret.trim());
-    case "ELASTICSEARCH":
-      return form.esAuthMode === "apiKey"
-        ? Boolean(form.esApiKey.trim())
-        : Boolean(form.esUsername.trim() && form.esPassword);
-    case "UNIFI":
-      return form.unifiAuthMode === "apiKey"
-        ? Boolean(form.unifiApiKey.trim())
-        : Boolean(form.unifiUsername.trim() && form.unifiPassword);
-    case "OTX":
-      return Boolean(form.otxApiKey.trim());
-    case "CLOUDFLARE":
-      return Boolean(form.cloudflareApiToken.trim() && form.cloudflareAccountId.trim());
-    case "TAILSCALE":
-      return Boolean(form.tailscaleAccessToken.trim() && form.tailscaleTailnet.trim());
-    case "CENSYS":
-      return Boolean(form.censysAccessToken.trim());
-    case "SECURITYTRAILS":
-      return Boolean(form.securityTrailsApiKey.trim());
-    case "EDGE_NAT_SERVER":
-      return true;
-  }
+  return CREDENTIAL_CHECKS[form.type](form);
 }
 
 export interface IntegrationPayloadOptions {
@@ -232,54 +235,47 @@ export function buildIntegrationPayload(
   return body;
 }
 
-function buildIntegrationSettings(form: FormState): Record<string, unknown> | null {
-  switch (form.type) {
-    case "ELASTICSEARCH":
-      return {
+const SETTINGS_BUILDERS: Record<IntegrationTypeValue, (form: FormState) => Record<string, unknown> | null> = {
+  ELASTICSEARCH: (form) => ({
         indexPattern: form.indexPattern.trim() || ES_SETTINGS_DEFAULTS.indexPattern,
         timestampField: form.timestampField.trim() || ES_SETTINGS_DEFAULTS.timestampField,
         levelField: form.levelField.trim(),
         messageField: form.messageField.trim(),
         hostField: form.hostField.trim(),
-      };
-    case "UNIFI":
-      return { site: form.unifiSite.trim() || "default" };
-    case "OPNSENSE": {
+      }),
+  UNIFI: (form) => ({ site: form.unifiSite.trim() || "default" }),
+  OPNSENSE: (form) => {
       const pollMinutes = Number.parseInt(form.bandwidthPollMinutes, 10);
       return {
         bandwidthPolling: form.bandwidthPolling,
         bandwidthPollMinutes: Number.isFinite(pollMinutes) ? Math.min(60, Math.max(1, pollMinutes)) : 2,
       };
-    }
-    case "OTX":
-      return { feed: form.otxFeed };
-    case "CLOUDFLARE":
-      return {
+    },
+  OTX: (form) => ({ feed: form.otxFeed }),
+  CLOUDFLARE: (form) => ({
         accountId: form.cloudflareAccountId.trim(),
         includeDnsRecords: form.cloudflareIncludeDns,
         includeTunnelConnections: form.cloudflareIncludeConnections,
-      };
-    case "TAILSCALE":
-      return {
+      }),
+  TAILSCALE: (form) => ({
         tailnet: form.tailscaleTailnet.trim() || "-",
         includeRoutes: form.tailscaleIncludeRoutes,
         includeDns: form.tailscaleIncludeDns,
         includePolicy: form.tailscaleIncludePolicy,
-      };
-    case "EDGE_NAT_SERVER":
-      return {
+      }),
+  EDGE_NAT_SERVER: (form) => ({
         publicInterface: form.edgePublicInterface.trim() || "eth0",
         outboundInterface: form.edgeOutboundInterface.trim() || form.edgePublicInterface.trim() || "eth0",
         enableIpForwarding: form.edgeEnableIpForwarding,
-      };
-    case "CENSYS":
-      return {
+      }),
+  CENSYS: (form) => ({
         organizationId: form.censysOrganizationId.trim(),
         aiDailyCallLimit: form.censysAiDailyCallLimit,
-      };
-    case "SECURITYTRAILS":
-      return { aiDailyCallLimit: form.securityTrailsAiDailyCallLimit };
-    case "PROXMOX":
-      return null;
-  }
+      }),
+  SECURITYTRAILS: (form) => ({ aiDailyCallLimit: form.securityTrailsAiDailyCallLimit }),
+  PROXMOX: () => null,
+};
+
+function buildIntegrationSettings(form: FormState): Record<string, unknown> | null {
+  return SETTINGS_BUILDERS[form.type](form);
 }

@@ -8,7 +8,7 @@ import {
   type ParsedPublicKey,
 } from "@/lib/ssh/keys";
 import { toDriverConfig } from "@/lib/integrations/config";
-import { isMock } from "@/lib/integrations/types";
+import { isMock, type DriverConfig } from "@/lib/integrations/types";
 import { HttpError } from "@/lib/integrations/http";
 import type {
   CreateDeploymentInput,
@@ -265,6 +265,40 @@ export interface ProxmoxInstallResult {
   note: string;
 }
 
+async function installMockVmKey(vmid: number, publicKey: string): Promise<boolean> {
+  const { mockGetVmSshKeys, mockHasQemuVm, mockSetVmSshKeys } = await import("@/lib/integrations/proxmox/mock");
+  if (!mockHasQemuVm(vmid)) throw new ApiError(404, "not_found", `Demo cluster has no QEMU VM ${vmid}`);
+  const current = mockGetVmSshKeys(vmid).split("\n").filter(Boolean);
+  if (current.includes(publicKey)) return true;
+  mockSetVmSshKeys(vmid, [...current, publicKey].join("\n"));
+  return false;
+}
+
+async function installLiveVmKey(cfg: DriverConfig, node: string, vmid: number, publicKey: string): Promise<boolean> {
+  const { getVmConfig, setVmCloudInitSshKeys } = await import("@/lib/integrations/proxmox/client");
+  try {
+    const config = await getVmConfig(cfg, node, vmid);
+    const currentRaw = typeof config.sshkeys === "string" ? config.sshkeys : "";
+    const current = (currentRaw ? decodeURIComponent(currentRaw) : "").split("\n").filter(Boolean);
+    if (current.includes(publicKey)) return true;
+    await setVmCloudInitSshKeys(cfg, node, vmid, [...current, publicKey].join("\n"));
+    return false;
+  } catch (error) {
+    if (error instanceof HttpError && (error.status === 403 || error.status === 401)) {
+      const tokenId = cfg.credentials.tokenId ?? "your API token";
+      throw new ApiError(
+        403,
+        "pve_permission",
+        `The Proxmox API token ${tokenId} is not allowed to edit VM ${vmid}'s cloud-init config. ` +
+          `It needs VM.Config.Cloudinit + VM.Audit on this VM — e.g. ` +
+          `pveum aclmod /vms/${vmid} -token '${tokenId}' -role PVEVMAdmin — ` +
+          `or add a second, privileged token for installs and keep the sync token read-only.`,
+      );
+    }
+    throw error;
+  }
+}
+
 /**
  * Append the key to a Proxmox VM's cloud-init `sshkeys` via the PVE API and
  * record a deployment. Works against mock://demo integrations too.
@@ -291,42 +325,9 @@ export async function installKeyOnProxmoxVm(
   const node = match[2];
   const cfg = toDriverConfig(vm.integration);
 
-  let alreadyPresent = false;
-  if (isMock(cfg)) {
-    const { mockGetVmSshKeys, mockHasQemuVm, mockSetVmSshKeys } = await import("@/lib/integrations/proxmox/mock");
-    if (!mockHasQemuVm(vmid)) throw new ApiError(404, "not_found", `Demo cluster has no QEMU VM ${vmid}`);
-    const current = mockGetVmSshKeys(vmid).split("\n").filter(Boolean);
-    if (current.includes(key.publicKey)) {
-      alreadyPresent = true;
-    } else {
-      mockSetVmSshKeys(vmid, [...current, key.publicKey].join("\n"));
-    }
-  } else {
-    const { getVmConfig, setVmCloudInitSshKeys } = await import("@/lib/integrations/proxmox/client");
-    try {
-      const config = await getVmConfig(cfg, node, vmid);
-      const currentRaw = typeof config.sshkeys === "string" ? config.sshkeys : "";
-      const current = (currentRaw ? decodeURIComponent(currentRaw) : "").split("\n").filter(Boolean);
-      if (current.includes(key.publicKey)) {
-        alreadyPresent = true;
-      } else {
-        await setVmCloudInitSshKeys(cfg, node, vmid, [...current, key.publicKey].join("\n"));
-      }
-    } catch (err) {
-      if (err instanceof HttpError && (err.status === 403 || err.status === 401)) {
-        const tokenId = cfg.credentials.tokenId ?? "your API token";
-        throw new ApiError(
-          403,
-          "pve_permission",
-          `The Proxmox API token ${tokenId} is not allowed to edit VM ${vmid}'s cloud-init config. ` +
-            `It needs VM.Config.Cloudinit + VM.Audit on this VM — e.g. ` +
-            `pveum aclmod /vms/${vmid} -token '${tokenId}' -role PVEVMAdmin — ` +
-            `or add a second, privileged token for installs and keep the sync token read-only.`,
-        );
-      }
-      throw err;
-    }
-  }
+  const alreadyPresent = isMock(cfg)
+    ? await installMockVmKey(vmid, key.publicKey)
+    : await installLiveVmKey(cfg, node, vmid, key.publicKey);
 
   // Record the deployment (idempotent per key+vm+username+method).
   const existing = await prisma.sshKeyDeployment.findFirst({

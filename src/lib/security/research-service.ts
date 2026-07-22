@@ -219,7 +219,7 @@ export async function collectSecurityResearch(
   const selected = new Set(providers);
 
   let dns: Awaited<ReturnType<typeof dnsEvidence>> | undefined;
-  if (selected.has("dns")) {
+  const collectDns = async (): Promise<void> => {
     await capture(drafts, "dns", "resolution", "Current DNS records", page.subject, async () => {
       dns = await dnsEvidence(page.subject, page.subjectType as "ip" | "domain");
       return dns;
@@ -228,16 +228,16 @@ export async function collectSecurityResearch(
       const count = Object.values(record).reduce<number>((total, item) => total + (Array.isArray(item) ? item.length : 0), 0);
       return `${count} DNS record${count === 1 ? "" : "s"} captured.`;
     });
-  }
+  };
 
-  if (selected.has("polysiem")) {
+  const collectInventory = async (): Promise<void> => {
     await capture(drafts, "polysiem", "inventory", "Lab inventory matches", page.subject,
       () => inventoryEvidence(page.subject, page.subjectType as "ip" | "domain"),
       (value) => `${JSON.stringify(value).length > 10 ? "Related inventory context captured." : "No matching inventory context found."}`,
     );
-  }
+  };
 
-  if (selected.has("elasticsearch")) {
+  const collectLogs = async (): Promise<void> => {
     await capture(drafts, "elasticsearch", "logs", `Log activity · last ${hours}h`, page.subject,
       () => queryLogsForTerm(page.subject, hours),
       (value) => {
@@ -245,9 +245,9 @@ export async function collectSecurityResearch(
         return `${total.toLocaleString()} matching log event${total === 1 ? "" : "s"}.`;
       },
     );
-  }
+  };
 
-  if (selected.has("censys")) {
+  const collectCensys = async (): Promise<void> => {
     if (!dns && page.subjectType === "domain") {
       try { dns = await dnsEvidence(page.subject, "domain"); } catch { /* Captured below as no resolved addresses. */ }
     }
@@ -279,12 +279,12 @@ export async function collectSecurityResearch(
         }, `https://search.censys.io/hosts/${encodeURIComponent(address)}`,
       );
     }
-  }
+  };
 
   // SecurityTrails is collected through the same provider boundary once the
   // integration is configured. Import lazily so the notebook still works on
   // deployments upgrading from a schema without that integration.
-  if (selected.has("securitytrails")) {
+  const collectSecurityTrails = async (): Promise<void> => {
     try {
       const provider = await import("@/lib/services/securitytrails");
       if (page.subjectType === "domain") {
@@ -316,7 +316,13 @@ export async function collectSecurityResearch(
         query: page.subject, status: "unavailable", summary: errorMessage(error), data: { error: errorMessage(error) },
       });
     }
-  }
+  };
+
+  if (selected.has("dns")) await collectDns();
+  if (selected.has("polysiem")) await collectInventory();
+  if (selected.has("elasticsearch")) await collectLogs();
+  if (selected.has("censys")) await collectCensys();
+  if (selected.has("securitytrails")) await collectSecurityTrails();
 
   const capturedAt = new Date();
   await prisma.$transaction([

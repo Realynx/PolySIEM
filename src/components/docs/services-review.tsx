@@ -27,6 +27,28 @@ interface EditableServiceCandidate extends InterviewServiceCandidate {
   selected: boolean;
 }
 
+function validService(row: EditableServiceCandidate): boolean {
+  const validPort = row.port === null || (Number.isInteger(row.port) && row.port >= 1 && row.port <= 65535);
+  const validUrl = !row.url?.trim() || /^https?:\/\/[^\s]+$/i.test(row.url.trim());
+  return Boolean(row.name.trim()) && validPort && validUrl;
+}
+
+function servicePayload(row: EditableServiceCandidate) {
+  const owner = row.target.kind === "device"
+    ? { deviceId: row.target.id }
+    : row.target.kind === "vm"
+      ? { vmId: row.target.id }
+      : { containerId: row.target.id };
+  return {
+    name: row.name.trim(),
+    url: row.url?.trim() || null,
+    port: row.port,
+    protocol: row.protocol,
+    description: row.description?.trim() || null,
+    ...owner,
+  };
+}
+
 export interface ServicesReviewProps {
   plan: InterviewServicePlan;
   onBack: () => void;
@@ -96,14 +118,7 @@ export function ServicesReview({
 
   const createSelected = async () => {
     if (selected.length === 0) return;
-    const invalid = selected.find(
-      (row) =>
-        !row.name.trim() ||
-        (row.port !== null &&
-          (!Number.isInteger(row.port) || row.port < 1 || row.port > 65535)) ||
-        (Boolean(row.url?.trim()) &&
-          !/^https?:\/\/[^\s]+$/i.test(row.url!.trim())),
-    );
+    const invalid = selected.find((row) => !validService(row));
     if (invalid) {
       toast.error(
         "Every selected service needs a name, a valid port, and an HTTP(S) URL when provided.",
@@ -116,18 +131,7 @@ export function ServicesReview({
     const failures: string[] = [];
     for (const row of selected) {
       try {
-        await apiSend("/api/inventory/services", "POST", {
-          name: row.name.trim(),
-          url: row.url?.trim() || null,
-          port: row.port,
-          protocol: row.protocol,
-          description: row.description?.trim() || null,
-          ...(row.target.kind === "device" ? { deviceId: row.target.id } : {}),
-          ...(row.target.kind === "vm" ? { vmId: row.target.id } : {}),
-          ...(row.target.kind === "container"
-            ? { containerId: row.target.id }
-            : {}),
-        });
+        await apiSend("/api/inventory/services", "POST", servicePayload(row));
         createdKeys.add(row.key);
       } catch (error) {
         failures.push(

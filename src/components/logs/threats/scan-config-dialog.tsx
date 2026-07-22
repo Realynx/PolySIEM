@@ -68,6 +68,31 @@ const PROVIDER_LABELS = {
   azure: "Azure OpenAI",
 } as const;
 
+function ModelField({
+  form, isOllama, listingFailed, models, pending, fetching, onRefresh, setModel,
+}: {
+  form: AiScanConfigDto;
+  isOllama: boolean;
+  listingFailed: boolean;
+  models: string[];
+  pending: boolean;
+  fetching: boolean;
+  onRefresh: () => void;
+  setModel: (model: string) => void;
+}) {
+  let control: React.ReactNode;
+  if (!isOllama) control = <Input id="scan-model" value={form.model} disabled />;
+  else if (listingFailed) control = <><Input id="scan-model" value={form.model} onChange={(event) => setModel(event.target.value)} placeholder="e.g. qwen2.5:14b" /><p className="text-xs text-muted-foreground">Could not list models from Ollama — enter the model name manually.</p></>;
+  else control = <Select value={form.model || undefined} onValueChange={setModel}><SelectTrigger id="scan-model" disabled={pending}><SelectValue placeholder={pending ? "Loading models…" : "Select a model"} /></SelectTrigger><SelectContent>{models.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}</SelectContent></Select>;
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between"><Label htmlFor="scan-model">Model</Label>{isOllama && <Button type="button" variant="ghost" size="xs" onClick={onRefresh} disabled={fetching}><RefreshCw data-icon="inline-start" className={cn(fetching && "animate-spin")} />Refresh</Button>}</div>
+      {control}
+      <p className="text-xs text-muted-foreground">{isOllama ? "A capable local model (7B+) gives noticeably better analysis than tiny ones." : `${PROVIDER_LABELS[form.provider ?? "ollama"]} and its model are configured under Settings → AI assistant.`}</p>
+    </div>
+  );
+}
+
 /** Admin dialog configuring the active AI provider and scheduled scan scope. */
 export function ScanConfigDialog({
   open,
@@ -200,72 +225,13 @@ export function ScanConfigDialog({
               />
             </div>
 
-            <div className="grid gap-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="scan-model">Model</Label>
-                {isOllama && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    onClick={() => void modelsQuery.refetch()}
-                    disabled={modelsQuery.isFetching}
-                  >
-                    <RefreshCw
-                      data-icon="inline-start"
-                      className={cn(modelsQuery.isFetching && "animate-spin")}
-                    />
-                    Refresh
-                  </Button>
-                )}
-              </div>
-              {!isOllama ? (
-                <Input id="scan-model" value={form.model} disabled />
-              ) : listingFailed ? (
-                <>
-                  <Input
-                    id="scan-model"
-                    value={form.model}
-                    onChange={(e) => set("model", e.target.value)}
-                    placeholder="e.g. qwen2.5:14b"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Could not list models from Ollama — enter the model name
-                    manually.
-                  </p>
-                </>
-              ) : (
-                <Select
-                  value={form.model || undefined}
-                  onValueChange={(v) => set("model", v)}
-                >
-                  <SelectTrigger
-                    id="scan-model"
-                    disabled={modelsQuery.isPending}
-                  >
-                    <SelectValue
-                      placeholder={
-                        modelsQuery.isPending
-                          ? "Loading models…"
-                          : "Select a model"
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {m}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              <p className="text-xs text-muted-foreground">
-                {isOllama
-                  ? "A capable local model (7B+) gives noticeably better analysis than tiny ones."
-                  : `${PROVIDER_LABELS[form.provider ?? "ollama"]} and its model are configured under Settings → AI assistant.`}
-              </p>
-            </div>
+            <ModelField
+              {...{ form, isOllama, listingFailed, models }}
+              pending={modelsQuery.isPending}
+              fetching={modelsQuery.isFetching}
+              onRefresh={() => void modelsQuery.refetch()}
+              setModel={(model) => set("model", model)}
+            />
 
             <div className="grid gap-2">
               <Label htmlFor="scan-source">Log source</Label>

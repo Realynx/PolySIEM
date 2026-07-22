@@ -14,6 +14,15 @@ function isEmptyValue(value: unknown): boolean {
   return value === null || value === undefined || String(value).trim() === "";
 }
 
+function compareNumeric(op: "gt" | "lt", left: unknown, right: unknown): boolean {
+  const numericLeft = Number(left);
+  const numericRight = Number(right);
+  if (Number.isNaN(numericLeft) || Number.isNaN(numericRight)) {
+    throw new Error(`Cannot compare non-numeric values ("${String(left)}" ${op} "${String(right)}")`);
+  }
+  return op === "gt" ? numericLeft > numericRight : numericLeft < numericRight;
+}
+
 export function evaluateCondition(op: ConditionOp, left: unknown, right: unknown): boolean {
   switch (op) {
     case "empty":
@@ -27,15 +36,7 @@ export function evaluateCondition(op: ConditionOp, left: unknown, right: unknown
     case "contains":
       return String(left ?? "").includes(String(right ?? ""));
     case "gt":
-    case "lt": {
-      const numericLeft = Number(left);
-      const numericRight = Number(right);
-      if (Number.isNaN(numericLeft) || Number.isNaN(numericRight)) {
-        throw new Error(
-          `Cannot compare non-numeric values ("${String(left)}" ${op} "${String(right)}")`,
-        );
-      }
-      return op === "gt" ? numericLeft > numericRight : numericLeft < numericRight;
-    }
+    case "lt":
+      return compareNumeric(op, left, right);
   }
 }

@@ -21,6 +21,39 @@ export interface AiStartOptions {
 
 const IDLE: AiStreamState = { status: "idle", text: "", error: null };
 
+function requestBody(task: AiTask, opts: AiStartOptions): string {
+  return JSON.stringify({
+    task,
+    ...(opts.entity ? { entityType: opts.entity.type, entityId: opts.entity.id } : {}),
+    ...(opts.text !== undefined ? { text: opts.text } : {}),
+  });
+}
+
+async function responseError(response: Response): Promise<Error> {
+  let message = `AI request failed (HTTP ${response.status})`;
+  try {
+    const body = (await response.json()) as { error?: { message?: string } };
+    if (body.error?.message) message = body.error.message;
+  } catch { /* Keep the HTTP fallback. */ }
+  return new Error(message);
+}
+
+async function readResponse(
+  body: ReadableStream<Uint8Array>,
+  onText: (text: string) => void,
+): Promise<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+    onText(text);
+  }
+  return text + decoder.decode();
+}
+
 /**
  * Stream text from POST /api/ai/generate. `start` resolves with the full text
  * (or null on error/cancel); progressive chunks land in `text` as they arrive.
@@ -54,36 +87,13 @@ export function useAiStream() {
       const res = await fetch("/api/ai/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          task,
-          ...(opts.entity ? { entityType: opts.entity.type, entityId: opts.entity.id } : {}),
-          ...(opts.text !== undefined ? { text: opts.text } : {}),
-        }),
+        body: requestBody(task, opts),
         signal: controller.signal,
       });
 
-      if (!res.ok) {
-        let message = `AI request failed (HTTP ${res.status})`;
-        try {
-          const body = (await res.json()) as { error?: { message?: string } };
-          if (body?.error?.message) message = body.error.message;
-        } catch {
-          // keep the fallback message
-        }
-        throw new Error(message);
-      }
+      if (!res.ok) throw await responseError(res);
       if (!res.body) throw new Error("The AI response had no body");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let text = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        text += decoder.decode(value, { stream: true });
-        setState({ status: "streaming", text, error: null });
-      }
-      text += decoder.decode();
+      const text = await readResponse(res.body, (value) => setState({ status: "streaming", text: value, error: null }));
       setState({ status: "done", text, error: null });
       return text;
     } catch (err) {

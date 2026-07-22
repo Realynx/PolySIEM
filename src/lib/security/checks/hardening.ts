@@ -54,17 +54,14 @@ export function checkHardening(snap: SecuritySnapshot): SecurityFinding[] {
   // Only judge machines where the verdict is fair: hosts that are ACTIVE, and
   // guests that are ACTIVE *and* RUNNING (a stopped VM tells us nothing about
   // its auth posture). Zero documented keys == presumed password auth.
-  const passwordAuthMachines: AffectedEntity[] = [];
-  for (const h of snap.hosts) {
-    if (h.status === "ACTIVE" && h.sshKeyCount === 0) {
-      passwordAuthMachines.push({ kind: "device", id: h.id, name: h.name });
-    }
-  }
-  for (const g of snap.guests) {
-    if (g.status === "ACTIVE" && g.powerState === "RUNNING" && g.sshKeyCount === 0) {
-      passwordAuthMachines.push({ kind: g.kind, id: g.id, name: g.name });
-    }
-  }
+  const passwordAuthMachines: AffectedEntity[] = [
+    ...snap.hosts
+      .filter((host) => host.status === "ACTIVE" && host.sshKeyCount === 0)
+      .map((host) => ({ kind: "device" as const, id: host.id, name: host.name })),
+    ...snap.guests
+      .filter((guest) => guest.status === "ACTIVE" && guest.powerState === "RUNNING" && guest.sshKeyCount === 0)
+      .map((guest) => ({ kind: guest.kind, id: guest.id, name: guest.name })),
+  ];
   if (passwordAuthMachines.length > 0) {
     const n = passwordAuthMachines.length;
     findings.push({

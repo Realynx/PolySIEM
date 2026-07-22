@@ -101,6 +101,49 @@ function fallbackScope(ip: string): IpScope {
   return isPrivateAddress(ip) ? "internal" : "external";
 }
 
+function scopeFromResult(identity: Record<string, unknown> | null, ip: string): IpScope {
+  const scope = asString(identity?.scope);
+  return scope === "internal" || scope === "external" || scope === "unknown" ? scope : fallbackScope(ip);
+}
+
+function asnFromResult(whois: Record<string, unknown> | null): string | null {
+  if (!whois) return null;
+  const joined = [asString(whois.org), asString(whois.asn), asString(whois.country)].filter(Boolean).join(" · ");
+  return asString(whois.summary) ?? (joined || null);
+}
+
+function reputationFromResults(
+  intel: Record<string, unknown> | null,
+  reputationResult: Record<string, unknown> | null,
+): string | null {
+  const parts: string[] = [];
+  if (intel?.isKnownIoc === true) {
+    const pulses = Array.isArray(intel.pulses)
+      ? intel.pulses.map(asString).filter((pulse): pulse is string => Boolean(pulse))
+      : [];
+    parts.push(pulses.length ? `known IOC (${pulses.slice(0, 3).join(", ")})` : "known IOC");
+  }
+  const summary = asString(asObject(reputationResult?.reputation)?.summary)
+    ?? (reputationResult ? asString(reputationResult.note) : null);
+  if (summary && !/no reputation provider/i.test(summary)) parts.push(summary);
+  return parts.length ? parts.join("; ") : null;
+}
+
+function activityFromLogs(logs: Record<string, unknown> | null): string | null {
+  if (!logs) return null;
+  const total = asNumber(logs.totalMatches);
+  if (total === 0) return "No matching log events in the investigation window.";
+  const signatures = topValues(logs.signatures, 3);
+  const ports = topValues(logs.topPorts, 3);
+  const events = topValues(logs.topEventTypes, 2);
+  const parts: string[] = [];
+  if (total !== null) parts.push(`${total} log event${total === 1 ? "" : "s"}`);
+  if (signatures.length) parts.push(`signatures: ${signatures.join("; ")}`);
+  else if (events.length) parts.push(`event types: ${events.join(", ")}`);
+  if (ports.length) parts.push(`ports: ${ports.join(", ")}`);
+  return parts.length ? parts.join(" — ") : null;
+}
+
 /* ------------------------------ per-IP extract ---------------------------- */
 
 function findingsForIp(ip: string, results: RawToolResult[]): IpFindings {
@@ -111,61 +154,16 @@ function findingsForIp(ip: string, results: RawToolResult[]): IpFindings {
   const rep = asObject(resultFor(results, "ip_reputation", ip));
   const logs = asObject(resultFor(results, "query_logs", ip));
 
-  const scopeFromIdentity = asString(identity?.scope);
-  const scope: IpScope =
-    scopeFromIdentity === "internal" || scopeFromIdentity === "external" || scopeFromIdentity === "unknown"
-      ? scopeFromIdentity
-      : fallbackScope(ip);
-
-  // Reverse DNS
-  const reverseDns = rdns ? asString(rdns.hostname) : null;
-
-  // ASN / owner
-  let asn: string | null = null;
-  if (whois) {
-    const joined = [asString(whois.org), asString(whois.asn), asString(whois.country)].filter(Boolean).join(" · ");
-    asn = asString(whois.summary) ?? (joined || null);
-  }
-
-  // Reputation (threat intel + external reputation, combined into one line)
-  const repParts: string[] = [];
-  if (intel?.isKnownIoc === true) {
-    const pulses = Array.isArray(intel.pulses)
-      ? (intel.pulses as unknown[]).map(asString).filter((p): p is string => Boolean(p))
-      : [];
-    repParts.push(pulses.length ? `known IOC (${pulses.slice(0, 3).join(", ")})` : "known IOC");
-  }
-  const repSummary = asString(asObject(rep?.reputation)?.summary) ?? (rep ? asString(rep.note) : null);
-  if (repSummary && !/no reputation provider/i.test(repSummary)) repParts.push(repSummary);
-  const reputation = repParts.length ? repParts.join("; ") : null;
-
-  // Activity (what the logs saw)
-  let activity: string | null = null;
-  if (logs) {
-    const total = asNumber(logs.totalMatches);
-    if (total === 0) {
-      activity = "No matching log events in the investigation window.";
-    } else {
-      const sigs = topValues(logs.signatures, 3);
-      const ports = topValues(logs.topPorts, 3);
-      const events = topValues(logs.topEventTypes, 2);
-      const bits: string[] = [];
-      if (total !== null) bits.push(`${total} log event${total === 1 ? "" : "s"}`);
-      if (sigs.length) bits.push(`signatures: ${sigs.join("; ")}`);
-      else if (events.length) bits.push(`event types: ${events.join(", ")}`);
-      if (ports.length) bits.push(`ports: ${ports.join(", ")}`);
-      activity = bits.length ? bits.join(" — ") : null;
-    }
-  }
+  const scope = scopeFromResult(identity, ip);
 
   return {
     ip,
     scope,
     identity: identity ? asString(identity.identity) : null,
-    reverseDns,
-    asn,
-    reputation,
-    activity,
+    reverseDns: rdns ? asString(rdns.hostname) : null,
+    asn: asnFromResult(whois),
+    reputation: reputationFromResults(intel, rep),
+    activity: activityFromLogs(logs),
   };
 }
 

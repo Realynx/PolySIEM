@@ -56,10 +56,8 @@ export function tailscaleSelectorDevices(
   if (!selector || visited.has(selector)) return [];
   visited.add(selector);
   const devices = tailnet.devices;
-  if (selector === "*" || selector === "autogroup:member") return devices;
-  if (selector === "autogroup:tagged") return devices.filter((device) => device.tags.length > 0);
-  if (selector === "autogroup:shared") return devices.filter((device) => device.isExternal);
-  if (selector === "autogroup:self" || selector.startsWith("autogroup:")) return [];
+  const autogroup = autogroupDevices(selector, devices);
+  if (autogroup) return autogroup;
   if (selector.startsWith("group:")) {
     return [...new Map(
       (tailnet.policy?.groups[selector] ?? []).flatMap((member) =>
@@ -81,6 +79,14 @@ export function tailscaleSelectorDevices(
       (addressSpec.includes("/") && cidrContains(addressSpec, address)),
     );
   });
+}
+
+function autogroupDevices(selector: string, devices: TailscaleMapDevice[]): TailscaleMapDevice[] | null {
+  if (selector === "*" || selector === "autogroup:member") return devices;
+  if (selector === "autogroup:tagged") return devices.filter((device) => device.tags.length > 0);
+  if (selector === "autogroup:shared") return devices.filter((device) => device.isExternal);
+  if (selector === "autogroup:self" || selector.startsWith("autogroup:")) return [];
+  return null;
 }
 
 export function tailscaleConnectivitySummary(device: TailscaleMapDevice): string | null {

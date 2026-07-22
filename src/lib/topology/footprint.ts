@@ -133,12 +133,37 @@ export function serviceTargetIp(
   return host.split(".").every((part) => Number(part) <= 255) ? host : null;
 }
 
+function natSecondaryDetail(pf: FpPortForward): string {
+  return [
+    `wan:${pf.wanPort || "any"} → ${pf.targetIp}:${pf.targetPort || pf.wanPort || "any"}`,
+    pf.proto.trim() || "any",
+    pf.sourceRestricted ? "source-restricted" : null,
+    pf.enabled ? null : "disabled",
+  ].filter(Boolean).join(" · ");
+}
+
+function footprintNatEdge(pf: FpPortForward, targetId: string, label: string): FootprintInboundEdge {
+  return {
+    id: `nat:${pf.id}`, type: "nat", targetId, label,
+    enabled: pf.enabled, sourceRestricted: pf.sourceRestricted,
+    nat: {
+      protocol: pf.proto.trim() || "any",
+      publicPort: pf.wanPort.trim() || "any",
+      targetPort: pf.targetPort?.trim() || pf.wanPort.trim() || "any",
+      sourceSpec: pf.sourceSpec?.trim() || null,
+      destinationSpec: pf.destinationSpec?.trim() || null,
+    },
+    detail: [{ primary: pf.description?.trim() || "(no description)", secondary: natSecondaryDetail(pf) }],
+  };
+}
+
 // ---------- main derivation ----------
 
 export function deriveFootprint(input: FootprintInput): FootprintGraph {
   const machineById = new Map(input.machines.map((m) => [m.id, m]));
   const ipToMachine = new Map<string, FpMachine>();
   const nameToMachine = new Map<string, FpMachine | null>();
+  (() => {
   for (const machine of input.machines) {
     for (const ip of machine.ips) {
       if (!ipToMachine.has(ip)) ipToMachine.set(ip, machine);
@@ -153,6 +178,7 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
       }
     }
   }
+  })();
   const firewallMachine =
     input.machines.find((m) => m.kind === "firewall") ?? null;
   const machineForServiceHost = (host: string): FpMachine | undefined => {
@@ -181,43 +207,19 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
     return id;
   };
 
+  (() => {
   for (const pf of input.portForwards) {
     const label = natLabel(pf);
     const targetId = resolveTarget(pf.targetIp, label);
-    inbound.push({
-      id: `nat:${pf.id}`,
-      type: "nat",
-      targetId,
-      label,
-      enabled: pf.enabled,
-      sourceRestricted: pf.sourceRestricted,
-      nat: {
-        protocol: pf.proto.trim() || "any",
-        publicPort: pf.wanPort.trim() || "any",
-        targetPort: pf.targetPort?.trim() || pf.wanPort.trim() || "any",
-        sourceSpec: pf.sourceSpec?.trim() || null,
-        destinationSpec: pf.destinationSpec?.trim() || null,
-      },
-      detail: [
-        {
-          primary: pf.description?.trim() || "(no description)",
-          secondary: [
-            `wan:${pf.wanPort || "any"} → ${pf.targetIp}:${pf.targetPort || pf.wanPort || "any"}`,
-            pf.proto.trim() || "any",
-            pf.sourceRestricted ? "source-restricted" : null,
-            pf.enabled ? null : "disabled",
-          ]
-            .filter(Boolean)
-            .join(" · "),
-        },
-      ],
-    });
+    inbound.push(footprintNatEdge(pf, targetId, label));
     if (pf.enabled) natCounts.set(targetId, (natCounts.get(targetId) ?? 0) + 1);
   }
+  })();
 
   const footprintTunnels: FootprintTunnel[] = [];
   const routes: FootprintRoute[] = [];
   let exposedHostnames = 0;
+  (() => {
   for (const tunnel of input.tunnels) {
     const connectorMachine = tunnel.originIp
       ? undefined
@@ -260,7 +262,7 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
     // machine that serves it (documented service target, else the tunnel
     // origin). Service targets match a synced machine by IP or an unambiguous
     // machine/DNS name; unmatched targets fall back to the connector origin.
-    for (const h of hostnames) {
+    hostnames.forEach((h) => {
       const serviceIp = serviceTargetIp(h.serviceTarget);
       const serviceHost = serviceTargetHost(h.serviceTarget);
       const serviceMachine = serviceIp
@@ -279,12 +281,13 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
         serviceTarget: h.serviceTarget ?? null,
         targetId: serviceMachine?.id ?? originTargetId,
       });
-    }
+    });
     tunnelCounts.set(
       originTargetId,
       (tunnelCounts.get(originTargetId) ?? 0) + 1,
     );
   }
+  })();
 
   // ----- machines -> lanes -----
 
@@ -302,6 +305,7 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
   const laneMachines = new Map<string, FootprintMachine[]>();
   const firewalls: FootprintMachine[] = [];
   const switches: FootprintMachine[] = [];
+  (() => {
   for (const machine of input.machines) {
     const homes = machineHomes(machine, input.networks);
     const fp = toFootprintMachine(machine, homes);
@@ -318,6 +322,7 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
     list.push(fp);
     laneMachines.set(laneId, list);
   }
+  })();
 
   // Client devices (DHCP/ARP) attach to their network. Defensively drop any
   // client already drawn as a synced machine (same IP) and de-dup within a
@@ -372,6 +377,7 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
       peerGroups,
     };
   };
+  (() => {
   for (const net of input.networks) {
     const machines = laneMachines.get(net.id) ?? [];
     const clients = laneClients(net.id);
@@ -388,7 +394,9 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
       workloadPolicy: lanePolicy(machines),
     });
   }
+  })();
   const unassigned = laneMachines.get(UNASSIGNED_LANE_ID);
+  (() => {
   if (unassigned && unassigned.length > 0) {
     lanes.push({
       id: UNASSIGNED_LANE_ID,
@@ -401,6 +409,7 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
       workloadPolicy: lanePolicy(unassigned),
     });
   }
+  })();
   lanes.sort(
     (a, b) =>
       CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category] ||
@@ -423,6 +432,7 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
   // ----- reachability (lane <-> lane / internet), from the access graph -----
 
   const reachability: FootprintReachEdge[] = [];
+  (() => {
   for (const edge of input.accessGraph.edges) {
     const source =
       edge.source === INTERNET_NODE_ID ? INTERNET_NODE_ID : edge.source;
@@ -439,11 +449,13 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
       rules: edge.rules,
     });
   }
+  })();
 
   // ----- physical layer -----
 
   const switchLinks: FootprintSwitchLink[] = [];
   const switchIds = new Set(switches.map((sw) => sw.id));
+  (() => {
   for (const uplink of input.uplinks) {
     if (!switchIds.has(uplink.switchId)) continue;
     const target = machineById.get(uplink.deviceId);
@@ -456,6 +468,8 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
       label: uplink.label,
     });
   }
+  })();
+  (() => {
   for (const carried of input.carriage ?? []) {
     if (!switchIds.has(carried.switchId) || !laneIds.has(carried.networkId))
       continue;
@@ -467,6 +481,7 @@ export function deriveFootprint(input: FootprintInput): FootprintGraph {
       label: `${carried.ports} port${carried.ports === 1 ? "" : "s"}`,
     });
   }
+  })();
 
   // ----- summary -----
 

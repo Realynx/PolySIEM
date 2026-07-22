@@ -231,7 +231,7 @@ function notFound(): ApiError {
 
 export async function getBackupConfig(): Promise<BackupConfigDto> {
   const stored = await getSetting<Partial<BackupConfigDto> | null>(SETTING_KEYS.backupConfig, null);
-  return { ...DEFAULT_CONFIG, ...(stored ?? {}) };
+  return { ...DEFAULT_CONFIG, ...stored };
 }
 
 export async function setBackupConfig(config: BackupConfigDto): Promise<BackupConfigDto> {

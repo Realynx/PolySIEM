@@ -159,6 +159,47 @@ function fallbackPoints(
 
 export type RoutedEdgeType = Edge<RoutedEdgeData, "routed">;
 
+function routedStrokeWidth(style: React.CSSProperties | undefined): number {
+  if (typeof style?.strokeWidth === "number") return style.strokeWidth;
+  return Number.parseFloat(String(style?.strokeWidth ?? 1.5)) || 1.5;
+}
+
+function routedCasingStyle(
+  data: RoutedEdgeData | undefined,
+  numericStrokeWidth: number,
+  opacity: number,
+): React.CSSProperties {
+  return {
+    stroke: "var(--topology-edge-casing)",
+    strokeWidth: numericStrokeWidth + (typeof data?.casingGap === "number" ? data.casingGap : 3),
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    strokeDasharray: "none",
+    animation: "none",
+    opacity: opacity >= 0.3 ? 1 : 0,
+    pointerEvents: "none",
+  };
+}
+
+function routedEdgePresentation(
+  data: RoutedEdgeData | undefined,
+  style: React.CSSProperties | undefined,
+) {
+  const sourceOffset = data?.sourceOffset ?? 0;
+  const targetOffset = data?.targetOffset ?? 0;
+  const midpointOffset = data?.midpointOffset ?? 0;
+  const bundleCount = data?.bundleCount ?? 1;
+  const opacity = (style?.opacity as number | undefined) ?? 1;
+  const numericStrokeWidth = routedStrokeWidth(style);
+  const routeStyle = {
+    ...style,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+  } as React.CSSProperties;
+  const casingStyle = routedCasingStyle(data, numericStrokeWidth, opacity);
+  return { sourceOffset, targetOffset, midpointOffset, bundleCount, opacity, routeStyle, casingStyle };
+}
+
 /**
  * A custom React Flow edge that renders dagre's corridor as a strict Manhattan
  * polyline, deforms it to follow moved nodes, and separates crowded handles.
@@ -197,9 +238,8 @@ function RoutedEdgeComponent({
 
   const sourceSide = sourcePosition ?? Position.Bottom;
   const targetSide = targetPosition ?? Position.Top;
-  const sourceOffset = data?.sourceOffset ?? 0;
-  const targetOffset = data?.targetOffset ?? 0;
-  const midpointOffset = data?.midpointOffset ?? 0;
+  const { sourceOffset, targetOffset, midpointOffset, bundleCount, opacity, routeStyle, casingStyle } =
+    routedEdgePresentation(data, style);
 
   const [path, labelX, labelY] = useMemo<[string, number, number]>(() => {
     const sourceHandle = { x: sourceX, y: sourceY };
@@ -279,35 +319,6 @@ function RoutedEdgeComponent({
     targetOffset,
     midpointOffset,
   ]);
-
-  const bundleCount = data?.bundleCount ?? 1;
-  const opacity = (style?.opacity as number | undefined) ?? 1;
-  const numericStrokeWidth =
-    typeof style?.strokeWidth === "number"
-      ? style.strokeWidth
-      : Number.parseFloat(String(style?.strokeWidth ?? 1.5)) || 1.5;
-  const routeStyle = {
-    ...style,
-    // Rounded copper runs keep dense, parallel Manhattan tracks readable at
-    // corners without making them look like a single heavy bundle.
-    strokeLinecap: "round",
-    strokeLinejoin: "round",
-  } as React.CSSProperties;
-  // Use a binary casing opacity: translucent underlays compound into dark
-  // patches wherever several routes overlap. Fully opaque separators remain a
-  // stable canvas color, while deliberately dimmed edges get no casing at all.
-  const casingOpacity = opacity >= 0.3 ? 1 : 0;
-  const casingStyle = {
-    stroke: "var(--topology-edge-casing)",
-    strokeWidth: numericStrokeWidth +
-      (typeof data?.casingGap === "number" ? data.casingGap : 3),
-    strokeLinecap: "round",
-    strokeLinejoin: "round",
-    strokeDasharray: "none",
-    animation: "none",
-    opacity: casingOpacity,
-    pointerEvents: "none",
-  } as React.CSSProperties;
 
   return (
     <>

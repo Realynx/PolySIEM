@@ -6,6 +6,25 @@ import { usePathname } from "next/navigation";
 /** Auto-hide the bar if a navigation never completes (aborted, error page…). */
 const SAFETY_TIMEOUT_MS = 15_000;
 
+function modifiedClick(event: MouseEvent): boolean {
+  return event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+}
+
+function navigationTarget(event: MouseEvent): URL | null {
+  if (event.defaultPrevented || event.button !== 0) return null;
+  if (modifiedClick(event)) return null;
+  const anchor = (event.target as Element | null)?.closest?.("a[href]");
+  if (!(anchor instanceof HTMLAnchorElement)) return null;
+  if ((anchor.target && anchor.target !== "_self") || anchor.hasAttribute("download")) return null;
+  try {
+    const url = new URL(anchor.href, window.location.href);
+    if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Slim indeterminate progress bar shown at the top of the content area during
  * client-side route transitions. Starts on any left-click of a same-origin
@@ -29,22 +48,7 @@ export function NavigationProgress() {
 
   useEffect(() => {
     function onClick(event: MouseEvent) {
-      // Only plain left-clicks that will trigger an in-app navigation.
-      if (event.defaultPrevented || event.button !== 0) return;
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      const target = event.target as Element | null;
-      const anchor = target?.closest?.("a[href]");
-      if (!(anchor instanceof HTMLAnchorElement)) return;
-      if ((anchor.target && anchor.target !== "_self") || anchor.hasAttribute("download")) return;
-
-      let url: URL;
-      try {
-        url = new URL(anchor.href, window.location.href);
-      } catch {
-        return;
-      }
-      if (url.origin !== window.location.origin) return;
-      if (url.pathname === window.location.pathname) return;
+      if (!navigationTarget(event)) return;
 
       setNavigating(true);
       if (safetyTimer.current !== null) clearTimeout(safetyTimer.current);

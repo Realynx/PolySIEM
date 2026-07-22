@@ -236,6 +236,12 @@ function CreateUserSheet({
   );
 }
 
+function userSheetDescription(user: AdminUser | null): string {
+  if (!user) return "";
+  const role = user.role === "ADMIN" ? "Administrator" : "User";
+  return `${role} · created ${formatRelative(user.createdAt)}`;
+}
+
 function UserActionsSheet({
   user,
   isSelf,
@@ -322,9 +328,7 @@ function UserActionsSheet({
           }
         }}
         title={user?.username ?? ""}
-        description={`${user?.role === "ADMIN" ? "Administrator" : "User"} · created ${
-          user ? formatRelative(user.createdAt) : ""
-        }`}
+        description={userSheetDescription(user)}
       >
         {user && (
           <div className="flex flex-col gap-5 pt-1">

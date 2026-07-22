@@ -79,6 +79,11 @@ function SectionCount({ panel }: { panel: InsightPanel<unknown> }) {
   );
 }
 
+function PanelContent({ panel, empty, children }: { panel: InsightPanel<unknown>; empty: boolean; children: React.ReactNode }) {
+  if (panel.error || empty) return <PanelNotice error={panel.error} empty={empty} />;
+  return children;
+}
+
 /**
  * Phone Network insights: same /api/logs/insights query as the desktop panel
  * (shared react-query key), rendered as stat tiles, the world map, and
@@ -220,24 +225,17 @@ export function MobileInsights({
               title="Traffic origins"
               action={<SectionCount panel={data.origins} />}
             >
-              {data.origins.error || originsEmpty ? (
-                <PanelNotice error={data.origins.error} empty={originsEmpty} />
-              ) : (
+              <PanelContent panel={data.origins} empty={originsEmpty}>
                 <div className="space-y-3 rounded-xl border bg-card p-3">
                   {data.origins.points.length > 0 && <WorldMap points={data.origins.points} />}
                   <CountryBars rows={data.origins.rows.slice(0, 6)} />
                 </div>
-              )}
+              </PanelContent>
             </MobileSection>
 
             {/* Recent IDS alerts */}
             <MobileSection title="Recent IDS alerts" action={<SectionCount panel={data.idsAlerts} />}>
-              {data.idsAlerts.error || data.idsAlerts.rows.length === 0 ? (
-                <PanelNotice
-                  error={data.idsAlerts.error}
-                  empty={data.idsAlerts.rows.length === 0}
-                />
-              ) : (
+              <PanelContent panel={data.idsAlerts} empty={data.idsAlerts.rows.length === 0}>
                 <MobileList>
                   {data.idsAlerts.rows.slice(0, 6).map((row, index) => (
                     <MobileListRow
@@ -254,7 +252,7 @@ export function MobileInsights({
                     />
                   ))}
                 </MobileList>
-              )}
+              </PanelContent>
             </MobileSection>
 
             {/* Top visitor IPs */}
@@ -262,12 +260,7 @@ export function MobileInsights({
               title="Top visitor IPs"
               action={<SectionCount panel={data.cloudflareInbound} />}
             >
-              {data.cloudflareInbound.error || data.cloudflareInbound.rows.length === 0 ? (
-                <PanelNotice
-                  error={data.cloudflareInbound.error}
-                  empty={data.cloudflareInbound.rows.length === 0}
-                />
-              ) : (
+              <PanelContent panel={data.cloudflareInbound} empty={data.cloudflareInbound.rows.length === 0}>
                 <div className="rounded-xl border bg-card p-3.5">
                   <BarList
                     rows={data.cloudflareInbound.rows
@@ -275,7 +268,7 @@ export function MobileInsights({
                       .map((row) => ({ label: row.ip, count: row.count }))}
                   />
                 </div>
-              )}
+              </PanelContent>
             </MobileSection>
 
             {/* Tunnel activity */}
@@ -283,13 +276,7 @@ export function MobileInsights({
               title="Tunnel activity"
               action={<SectionCount panel={data.cloudflaredConnections} />}
             >
-              {data.cloudflaredConnections.error ||
-              data.cloudflaredConnections.rows.length === 0 ? (
-                <PanelNotice
-                  error={data.cloudflaredConnections.error}
-                  empty={data.cloudflaredConnections.rows.length === 0}
-                />
-              ) : (
+              <PanelContent panel={data.cloudflaredConnections} empty={data.cloudflaredConnections.rows.length === 0}>
                 <MobileList>
                   {data.cloudflaredConnections.rows.slice(0, 6).map((row, index) => {
                     const location = [row.city, row.country].filter(Boolean).join(", ");
@@ -310,14 +297,12 @@ export function MobileInsights({
                     );
                   })}
                 </MobileList>
-              )}
+              </PanelContent>
             </MobileSection>
 
             {/* IDS event mix */}
             <MobileSection title="IDS event mix" action={<SectionCount panel={data.ids} />}>
-              {data.ids.error || data.ids.types.length === 0 ? (
-                <PanelNotice error={data.ids.error} empty={data.ids.types.length === 0} />
-              ) : (
+              <PanelContent panel={data.ids} empty={data.ids.types.length === 0}>
                 <div className="rounded-xl border bg-card p-3.5">
                   <BarList
                     rows={data.ids.types
@@ -325,7 +310,7 @@ export function MobileInsights({
                       .map((row) => ({ label: row.type, count: row.count }))}
                   />
                 </div>
-              )}
+              </PanelContent>
             </MobileSection>
 
             {/* Infrastructure pulse */}

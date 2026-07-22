@@ -7,6 +7,11 @@ export interface DocLinkTarget {
   suffix: string;
 }
 
+function isInternalDocPath(path: string): boolean {
+  const hasDocPrefix = ["/docs/", "docs/", "./", "../"].some((prefix) => path.startsWith(prefix));
+  return hasDocPrefix || /^[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)*(?:\.md)?$/i.test(path);
+}
+
 /** Return the referenced PolySIEM doc key, or null for non-doc links. */
 export function docLinkTarget(href: string | undefined): DocLinkTarget | null {
   if (!href || href.startsWith("#")) return null;
@@ -16,15 +21,7 @@ export function docLinkTarget(href: string | undefined): DocLinkTarget | null {
   const path = match?.[1] ?? href;
   const suffix = match?.[2] ?? "";
   const normalized = path.replace(/\\/g, "/");
-  const isDocPath =
-    normalized.startsWith("/docs/") ||
-    normalized.startsWith("docs/") ||
-    normalized.startsWith("./") ||
-    normalized.startsWith("../") ||
-    /^[a-z0-9][a-z0-9-]*(?:\/[a-z0-9][a-z0-9-]*)*(?:\.md)?$/i.test(
-      normalized,
-    );
-  if (!isDocPath) return null;
+  if (!isInternalDocPath(normalized)) return null;
 
   const slug = normalized
     .split("/")

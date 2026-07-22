@@ -109,6 +109,7 @@ export function buildFlow(
     return `circuit-${face}-${direction}`;
   };
 
+  const addPolicyConnections = () => {
   // Same-VLAN Proxmox policy: a peer-group hub is a compact, explicit clique.
   // Only workloads connected to the hub may communicate laterally; protected
   // workloads without such a connection remain isolated by the lane baseline.
@@ -150,7 +151,9 @@ export function buildFlow(
       }
     }
   }
+  };
 
+  const addGatewayDetails = () => {
   // Gateways are the WAN roots of the tree. Each configured WAN/VPN gateway
   // feeds the firewall boundary independently; a generic Internet root exists
   // only as a fallback for installations with no gateway data.
@@ -193,7 +196,9 @@ export function buildFlow(
       ],
     });
   }
+  };
 
+  const addFirewallConnections = () => {
   for (const firewall of graph.firewalls) {
     const inboundCount = graph.inbound.filter(
       (edge) => edge.enabled && edge.type === "nat",
@@ -259,7 +264,9 @@ export function buildFlow(
       });
     }
   }
+  };
 
+  const addFilteredLaneConnections = () => {
   if (primaryFirewallId) {
     for (const lane of graph.lanes.filter(
       (candidate) => candidate.category !== "wan",
@@ -294,7 +301,9 @@ export function buildFlow(
       });
     }
   }
+  };
 
+  const addReachabilityConnections = () => {
   for (const edge of graph.reachability) {
     const source =
       edge.source === INTERNET_NODE_ID
@@ -337,30 +346,38 @@ export function buildFlow(
       })),
     });
   }
+  };
 
-  // Port forwards: Internet straight to the target machine — the loud layer.
-  for (const edge of graph.inbound) {
+  const addInboundConnections = () => {
+  const inboundPresentation = (edge: (typeof graph.inbound)[number]) => {
     const muted = !edge.enabled;
     const unknownTarget = edge.targetId.startsWith("unknown:");
-    const natSourceNode = primaryFirewallId
-      ? topLevelById.get(primaryFirewallId)
-      : undefined;
-    const natTargetNode = unknownTarget
-      ? topLevelById.get(edge.targetId)
-      : undefined;
-    const natSourceAnchor = natSourceNode
-      ? {
-          x: natSourceNode.position.x + (natSourceNode.width ?? FIREWALL_WIDTH),
-          y: natSourceNode.position.y + (natSourceNode.height ?? FIREWALL_HEIGHT) / 2,
-        }
-      : undefined;
-    const natTargetAnchor = natTargetNode
-      ? {
-          x: natTargetNode.position.x,
-          y: natTargetNode.position.y + (natTargetNode.height ?? UNKNOWN_HEIGHT) / 2,
-        }
-      : undefined;
-    const label = `${edge.label}${edge.sourceRestricted ? " · locked" : ""}${muted ? " · off" : ""}`;
+    const sourceNode = primaryFirewallId ? topLevelById.get(primaryFirewallId) : undefined;
+    const targetNode = unknownTarget ? topLevelById.get(edge.targetId) : undefined;
+    const sourceAnchor = sourceNode ? {
+      x: sourceNode.position.x + (sourceNode.width ?? FIREWALL_WIDTH),
+      y: sourceNode.position.y + (sourceNode.height ?? FIREWALL_HEIGHT) / 2,
+    } : undefined;
+    const targetAnchor = targetNode ? {
+      x: targetNode.position.x,
+      y: targetNode.position.y + (targetNode.height ?? UNKNOWN_HEIGHT) / 2,
+    } : undefined;
+    return {
+      muted,
+      unknownTarget,
+      sourceAnchor,
+      targetAnchor,
+      label: `${edge.label}${edge.sourceRestricted ? " · locked" : ""}${muted ? " · off" : ""}`,
+      color: muted ? "var(--color-muted-foreground)" : "var(--color-destructive)",
+      style: muted ? {
+        stroke: "var(--color-muted-foreground)", strokeWidth: 1.25, strokeDasharray: "4 4",
+      } : { stroke: "var(--color-destructive)", strokeWidth: 2 },
+    };
+  };
+  // Port forwards: Internet straight to the target machine — the loud layer.
+  for (const edge of graph.inbound) {
+    const { muted, unknownTarget, sourceAnchor, targetAnchor, label, color, style } =
+      inboundPresentation(edge);
     edges.push({
       id: edge.id,
       source: primaryFirewallId ?? INTERNET_NODE_ID,
@@ -372,26 +389,18 @@ export function buildFlow(
       label,
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        color: muted
-          ? "var(--color-muted-foreground)"
-          : "var(--color-destructive)",
+        color,
         width: 16,
         height: 16,
       },
-      style: muted
-        ? {
-            stroke: "var(--color-muted-foreground)",
-            strokeWidth: 1.25,
-            strokeDasharray: "4 4",
-          }
-        : { stroke: "var(--color-destructive)", strokeWidth: 2 },
+      style,
       data: {
         baseOpacity: muted ? 0.62 : 0.92,
-        ...(natSourceAnchor && natTargetAnchor
+        ...(sourceAnchor && targetAnchor
           ? {
-              sourceAnchor: natSourceAnchor,
-              targetAnchor: natTargetAnchor,
-              outerGutterX: natTargetAnchor.x - 28,
+              sourceAnchor,
+              targetAnchor,
+              outerGutterX: targetAnchor.x - 28,
             }
           : {}),
       },
@@ -402,7 +411,44 @@ export function buildFlow(
       rows: edge.detail,
     });
   }
+  };
 
+  const addPublishedRouteConnections = () => {
+  const routeColor = (classification: (typeof graph.routes)[number]["classification"]) => {
+    if (classification === "unproxied-wan-exposed") return "var(--color-destructive)";
+    if (classification === "unproxied-other") return "var(--color-warning)";
+    if (classification === "unresolved") return "var(--color-muted-foreground)";
+    return "var(--color-chart-3)";
+  };
+  const publishedRouteDetail = (
+    route: (typeof graph.routes)[number],
+    exposed: boolean,
+    count: number | undefined,
+  ): EdgeDetail => ({
+    title: `${route.hostname} — published route`,
+    rows: [
+      {
+        primary: "Public DNS",
+        secondary: route.resolvedIps.length > 0
+          ? `${exposed ? "EXPOSED — resolves to WAN" : route.classification === "proxied" ? "proxied edge" : "direct origin"} · ${route.resolvedIps.slice(0, 3).join(", ")}${route.resolvedIps.length > 3 ? ` +${route.resolvedIps.length - 3}` : ""}`
+          : "no A/AAAA records",
+        status: DNS_STATUS[route.classification],
+      },
+      {
+        primary: "Origin service",
+        secondary: route.serviceTarget ?? `${route.tunnelName} origin (no documented service target)`,
+      },
+      {
+        primary: "Serves from",
+        secondary: `${machineNames.get(route.targetId) ?? route.targetId} · via ${route.provider} tunnel ${route.tunnelName}`,
+      },
+      ...(count === undefined ? [] : [{
+        primary: "Traffic",
+        secondary: `${formatCount(count)} events/${traffic!.window}`,
+        badge: formatCount(count),
+      }]),
+    ],
+  });
   // Keep every published route on its own trace, even where the routes share a
   // tunnel. Closely spaced parallel runs read like a PCB bus and preserve the
   // one-path-per-hostname relationship in dense maps.
@@ -455,13 +501,7 @@ export function buildFlow(
       });
 
       const exposed = route.classification === "unproxied-wan-exposed";
-      const color = exposed
-        ? "var(--color-destructive)"
-        : route.classification === "unproxied-other"
-          ? "var(--color-warning)"
-          : route.classification === "unresolved"
-            ? "var(--color-muted-foreground)"
-            : "var(--color-chart-3)";
+      const color = routeColor(route.classification);
       edges.push({
         id: `${route.id}:in`,
         source: tunnelId,
@@ -497,44 +537,15 @@ export function buildFlow(
         },
       });
       const count = traffic?.byHostname.get(route.hostname.toLowerCase());
-      const detail: EdgeDetail = {
-        title: `${route.hostname} — published route`,
-        rows: [
-          {
-            primary: "Public DNS",
-            secondary:
-              route.resolvedIps.length > 0
-                ? `${exposed ? "EXPOSED — resolves to WAN" : route.classification === "proxied" ? "proxied edge" : "direct origin"} · ${route.resolvedIps.slice(0, 3).join(", ")}${route.resolvedIps.length > 3 ? ` +${route.resolvedIps.length - 3}` : ""}`
-                : "no A/AAAA records",
-            status: DNS_STATUS[route.classification],
-          },
-          {
-            primary: "Origin service",
-            secondary:
-              route.serviceTarget ??
-              `${route.tunnelName} origin (no documented service target)`,
-          },
-          {
-            primary: "Serves from",
-            secondary: `${machineNames.get(route.targetId) ?? route.targetId} · via ${route.provider} tunnel ${route.tunnelName}`,
-          },
-          ...(count !== undefined
-            ? [
-                {
-                  primary: "Traffic",
-                  secondary: `${formatCount(count)} events/${traffic!.window}`,
-                  badge: formatCount(count),
-                },
-              ]
-            : []),
-        ],
-      };
+      const detail = publishedRouteDetail(route, exposed, count);
       details.set(route.id, detail);
       details.set(`${route.id}:in`, detail);
       details.set(`${route.id}:svc`, detail);
     }
   }
+  };
 
+  const addSwitchConnections = () => {
   for (const link of graph.switchLinks) {
     const target =
       link.kind === "carriage" ? laneNodeId(link.targetId) : link.targetId;
@@ -572,6 +583,16 @@ export function buildFlow(
       ],
     });
   }
+  };
+
+  addPolicyConnections();
+  addGatewayDetails();
+  addFirewallConnections();
+  addFilteredLaneConnections();
+  addReachabilityConnections();
+  addInboundConnections();
+  addPublishedRouteConnections();
+  addSwitchConnections();
 
   const parentOfNode = routeFootprintFlow({
     graph,

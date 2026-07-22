@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { usePathname } from "next/navigation";
 import {
   AlertCircle,
@@ -149,6 +149,39 @@ export function ChatDock() {
 
   const hasConversation = state.messages.length > 0 || state.draft !== null;
 
+  return <ChatDockView {...{
+    open, setOpen, expanded, setExpanded, state, retryable, retry, reset, stop,
+    input, setInput, streaming, scrollRef, nearBottomRef, autoExpandedResponseRef,
+    handleSend, pathname, hasConversation,
+  }} />;
+}
+
+interface ChatDockViewProps {
+  open: boolean;
+  setOpen: Dispatch<SetStateAction<boolean>>;
+  expanded: boolean;
+  setExpanded: Dispatch<SetStateAction<boolean>>;
+  state: ReturnType<typeof useChatStream>["state"];
+  retryable: boolean;
+  retry: ReturnType<typeof useChatStream>["retry"];
+  reset: ReturnType<typeof useChatStream>["reset"];
+  stop: ReturnType<typeof useChatStream>["stop"];
+  input: string;
+  setInput: Dispatch<SetStateAction<string>>;
+  streaming: boolean;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  nearBottomRef: RefObject<boolean>;
+  autoExpandedResponseRef: RefObject<number>;
+  handleSend: (text: string) => void;
+  pathname: string;
+  hasConversation: boolean;
+}
+
+function ChatDockView({
+  open, setOpen, expanded, setExpanded, state, retryable, retry, reset, stop,
+  input, setInput, streaming, scrollRef, nearBottomRef, autoExpandedResponseRef,
+  handleSend, pathname, hasConversation,
+}: ChatDockViewProps) {
   return (
     <>
       <Tooltip>

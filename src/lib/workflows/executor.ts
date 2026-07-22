@@ -269,62 +269,58 @@ export async function executeWorkflow(
    * so a wide fan-out cannot open unbounded connections to Proxmox, SSH, or
    * Elasticsearch at once.
    */
-  const started = new Set<string>();
-  while (started.size < order.length) {
-    const ready = readyNodes(order, graph, states, started);
-
-    if (ready.length === 0) {
-      // Nothing is runnable but work remains — only reachable via a template
-      // reference cycle, which edges alone cannot express. Run the next node in
-      // topological order so a malformed graph fails loudly instead of hanging.
-      const next = order.find((id) => !started.has(id));
-      if (next === undefined) break;
-      started.add(next);
-      await runNode(next);
-      continue;
+  const executeWaves = async (): Promise<void> => {
+    const started = new Set<string>();
+    while (started.size < order.length) {
+      const ready = readyNodes(order, graph, states, started);
+      if (ready.length === 0) {
+        const next = order.find((id) => !started.has(id));
+        if (next === undefined) break;
+        started.add(next);
+        await runNode(next);
+        continue;
+      }
+      const wave: string[] = [];
+      for (const nodeId of ready) {
+        started.add(nodeId);
+        const node = nodesById.get(nodeId)!;
+        const dormantTrigger = isTriggerKind(node.kind) && nodeId !== activeTriggerId;
+        if (failMessage !== null) await skipNode(nodeId, "an earlier step failed");
+        else if (dormantTrigger) await skipNode(nodeId, "another trigger started this run");
+        else if (!shouldRunNode(nodeId, graph, states)) await skipNode(nodeId, "no branch reached it");
+        else wave.push(nodeId);
+      }
+      if (wave.length > 1) {
+        logger.line(null, `Running ${wave.length} steps in parallel: ${wave.map(stepLabel).join(", ")}`);
+      }
+      for (let index = 0; index < wave.length; index += MAX_PARALLEL_STEPS) {
+        await Promise.all(wave.slice(index, index + MAX_PARALLEL_STEPS).map(runNode));
+      }
     }
+  };
 
-    const wave: string[] = [];
-    for (const nodeId of ready) {
-      started.add(nodeId);
-      const node = nodesById.get(nodeId)!;
-      // Dormant triggers never run, and shouldRunNode then skips whatever hangs
-      // off them (a node fed by both triggers still runs via the live one).
-      const dormantTrigger = isTriggerKind(node.kind) && nodeId !== activeTriggerId;
-      if (failMessage !== null) await skipNode(nodeId, "an earlier step failed");
-      else if (dormantTrigger) await skipNode(nodeId, "another trigger started this run");
-      else if (!shouldRunNode(nodeId, graph, states)) await skipNode(nodeId, "no branch reached it");
-      else wave.push(nodeId);
-    }
+  const finishRun = async (): Promise<WorkflowRunResult> => {
+    const status = failMessage === null ? "SUCCESS" : "FAILED";
+    logger.line(
+      null,
+      `Run ${status === "SUCCESS" ? "succeeded" : "failed"} in ${formatDuration(Date.now() - runStartedMs)}${failMessage ? ` — ${failMessage}` : ""}`,
+      status === "SUCCESS" ? "INFO" : "ERROR",
+    );
+    await logger.flush();
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: { status, error: failMessage, finishedAt: new Date() },
+    });
+    await audit(actor, "workflow.run_finish", { type: "workflow", id: workflow.id }, {
+      name: workflow.name,
+      runId: run.id,
+      status,
+      ...(failMessage ? { error: failMessage } : {}),
+    });
+    const dto = await getRun(run.id);
+    return Object.keys(secrets).length > 0 ? { run: dto, secrets } : { run: dto };
+  };
 
-    if (wave.length > 1) {
-      logger.line(null, `Running ${wave.length} steps in parallel: ${wave.map(stepLabel).join(", ")}`);
-    }
-    for (let i = 0; i < wave.length; i += MAX_PARALLEL_STEPS) {
-      await Promise.all(wave.slice(i, i + MAX_PARALLEL_STEPS).map(runNode));
-    }
-  }
-
-  const status = failMessage === null ? "SUCCESS" : "FAILED";
-  logger.line(
-    null,
-    `Run ${status === "SUCCESS" ? "succeeded" : "failed"} in ${formatDuration(Date.now() - runStartedMs)}${failMessage ? ` — ${failMessage}` : ""}`,
-    status === "SUCCESS" ? "INFO" : "ERROR",
-  );
-  // Queued writes must land before the UI stops polling on a finished run.
-  await logger.flush();
-  await prisma.workflowRun.update({
-    where: { id: run.id },
-    data: { status, error: failMessage, finishedAt: new Date() },
-  });
-
-  await audit(actor, "workflow.run_finish", { type: "workflow", id: workflow.id }, {
-    name: workflow.name,
-    runId: run.id,
-    status,
-    ...(failMessage ? { error: failMessage } : {}),
-  });
-
-  const dto = await getRun(run.id);
-  return Object.keys(secrets).length > 0 ? { run: dto, secrets } : { run: dto };
+  await executeWaves();
+  return finishRun();
 }

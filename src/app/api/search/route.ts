@@ -2,8 +2,7 @@ import type { NextRequest } from "next/server";
 import { handleApi, jsonOk } from "@/lib/api";
 import { requireUser } from "@/lib/auth/guards";
 import { searchAll } from "@/lib/services/search";
-import type { EntityKind } from "@/lib/types";
-import { ENTITY_KINDS } from "@/lib/types";
+import { ENTITY_KINDS, type EntityKind } from "@/lib/types";
 
 export const GET = handleApi(async (req: NextRequest) => {
   await requireUser();

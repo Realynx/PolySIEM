@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import type { Workflow } from "@prisma/client";
 import type { AuditActor } from "@/lib/audit";
 import { isEsTriggerKind } from "./es-trigger-logic";
 import { THREAT_TICKET_KIND } from "./threat-trigger-logic";
@@ -197,6 +198,57 @@ async function evaluateAndFireSecurityTrailsTrigger(
   }
 }
 
+async function processScheduledWorkflow(
+  workflow: Workflow,
+  now: Date,
+  executeWorkflow: ExecuteWorkflowFn,
+): Promise<void> {
+  const graph = workflow.graph as unknown as WorkflowGraph;
+  const intervalMinutes = scheduleIntervalMinutes(graph);
+  if (intervalMinutes !== null) {
+    const lastRun = await prisma.workflowRun.findFirst({
+      where: { workflowId: workflow.id },
+      orderBy: { startedAt: "desc" },
+      select: { startedAt: true },
+    });
+    if (isDue(lastRun?.startedAt ?? null, intervalMinutes, now)) {
+      try {
+        await executeWorkflow(SYSTEM_ACTOR, workflow.id, {}, { trigger: "schedule" });
+      } catch (err) {
+        console.error(`[workflow-scheduler] "${workflow.name}" failed:`, err);
+      }
+    }
+  }
+  for (const node of threatTriggerNodes(graph)) {
+    try {
+      await evaluateAndFireThreatTrigger(workflow.id, workflow.name, node, now, executeWorkflow);
+    } catch (err) {
+      console.error(`[workflow-scheduler] "${workflow.name}" threat trigger ${node.id} failed:`, err);
+    }
+  }
+  for (const node of esTriggerNodes(graph)) {
+    try {
+      await evaluateAndFireEsTrigger(workflow.id, workflow.name, node, now, executeWorkflow);
+    } catch (err) {
+      console.error(`[workflow-scheduler] "${workflow.name}" trigger ${node.id} (${node.kind}) failed:`, err);
+    }
+  }
+  for (const node of censysTriggerNodes(graph)) {
+    try {
+      await evaluateAndFireCensysTrigger(workflow.id, workflow.name, node, now, executeWorkflow);
+    } catch (err) {
+      console.error(`[workflow-scheduler] "${workflow.name}" Censys trigger ${node.id} failed:`, err);
+    }
+  }
+  for (const node of securityTrailsTriggerNodes(graph)) {
+    try {
+      await evaluateAndFireSecurityTrailsTrigger(workflow.id, workflow.name, node, now, executeWorkflow);
+    } catch (err) {
+      console.error(`[workflow-scheduler] "${workflow.name}" SecurityTrails trigger ${node.id} failed:`, err);
+    }
+  }
+}
+
 export function startWorkflowScheduler(): void {
   const g = globalThis as typeof globalThis & { __polysiemWorkflowScheduler?: boolean };
   if (g.__polysiemWorkflowScheduler) return; // guard against double registration (dev HMR)
@@ -213,74 +265,7 @@ export function startWorkflowScheduler(): void {
       const workflows = await prisma.workflow.findMany({ where: { enabled: true } });
       const now = new Date();
       for (const workflow of workflows) {
-        const graph = workflow.graph as unknown as WorkflowGraph;
-
-        const intervalMinutes = scheduleIntervalMinutes(graph);
-        if (intervalMinutes !== null) {
-          const lastRun = await prisma.workflowRun.findFirst({
-            where: { workflowId: workflow.id },
-            orderBy: { startedAt: "desc" },
-            select: { startedAt: true },
-          });
-          if (isDue(lastRun?.startedAt ?? null, intervalMinutes, now)) {
-            try {
-              await executeWorkflow(SYSTEM_ACTOR, workflow.id, {}, { trigger: "schedule" });
-            } catch (err) {
-              // Per-workflow failures (invalid graph, step errors, …) must
-              // never take the tick down with them.
-              console.error(`[workflow-scheduler] "${workflow.name}" failed:`, err);
-            }
-          }
-        }
-
-        for (const node of threatTriggerNodes(graph)) {
-          try {
-            await evaluateAndFireThreatTrigger(workflow.id, workflow.name, node, now, executeWorkflow);
-          } catch (err) {
-            console.error(
-              `[workflow-scheduler] "${workflow.name}" threat trigger ${node.id} failed:`,
-              err,
-            );
-          }
-        }
-
-        for (const node of esTriggerNodes(graph)) {
-          try {
-            await evaluateAndFireEsTrigger(workflow.id, workflow.name, node, now, executeWorkflow);
-          } catch (err) {
-            // A misconfigured query or an unreachable Elasticsearch must not
-            // stop the other triggers, workflows, or the tick.
-            console.error(
-              `[workflow-scheduler] "${workflow.name}" trigger ${node.id} (${node.kind}) failed:`,
-              err,
-            );
-          }
-        }
-
-        for (const node of censysTriggerNodes(graph)) {
-          try {
-            await evaluateAndFireCensysTrigger(workflow.id, workflow.name, node, now, executeWorkflow);
-          } catch (err) {
-            console.error(`[workflow-scheduler] "${workflow.name}" Censys trigger ${node.id} failed:`, err);
-          }
-        }
-
-        for (const node of securityTrailsTriggerNodes(graph)) {
-          try {
-            await evaluateAndFireSecurityTrailsTrigger(
-              workflow.id,
-              workflow.name,
-              node,
-              now,
-              executeWorkflow,
-            );
-          } catch (err) {
-            console.error(
-              `[workflow-scheduler] "${workflow.name}" SecurityTrails trigger ${node.id} failed:`,
-              err,
-            );
-          }
-        }
+        await processScheduledWorkflow(workflow, now, executeWorkflow);
       }
     } catch (err) {
       console.error("[workflow-scheduler] tick failed:", err);

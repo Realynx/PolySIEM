@@ -49,6 +49,19 @@ export function recoverTruncatedObject(value: string): Document | null {
   const text = value.trim().replace(/…$/, "");
   if (!text.startsWith("{")) return null;
 
+  const topLevelCommas = findTopLevelCommas(text);
+  for (let i = topLevelCommas.length - 1; i >= 0; i--) {
+    try {
+      const recovered = JSON.parse(`${text.slice(0, topLevelCommas[i])}}`);
+      if (object(recovered)) return recovered;
+    } catch {
+      // Try the previous complete top-level property.
+    }
+  }
+  return null;
+}
+
+function findTopLevelCommas(text: string): number[] {
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -67,15 +80,7 @@ export function recoverTruncatedObject(value: string): Document | null {
     else if (char === "," && depth === 1) topLevelCommas.push(i);
   }
 
-  for (let i = topLevelCommas.length - 1; i >= 0; i--) {
-    try {
-      const recovered = JSON.parse(`${text.slice(0, topLevelCommas[i])}}`);
-      if (object(recovered)) return recovered;
-    } catch {
-      // Try the previous complete top-level property.
-    }
-  }
-  return null;
+  return topLevelCommas;
 }
 
 function decodeJsonStrings(value: unknown, depth = 0): unknown {
@@ -209,6 +214,33 @@ function fallbackFields(document: Document | null, limit = 18): EvidenceField[] 
   return output;
 }
 
+function isSuricataEvidence(
+  documents: Document[],
+  signature: string | null,
+  eventModule: string | null,
+  scope?: string,
+): boolean {
+  return scope?.toLowerCase() === "suricata"
+    || Boolean(signature)
+    || Boolean(eventModule?.toLowerCase().includes("suricata"))
+    || documents.some((document) => object(getField(document, "suricata.eve")));
+}
+
+function addSection(sections: EvidenceSection[], title: string, sectionFields: EvidenceField[]) {
+  if (sectionFields.length > 0) sections.push({ title, fields: sectionFields });
+}
+
+function addFallbackSection(sections: EvidenceSection[], document: Document | null) {
+  if (sections.length > 0) return;
+  addSection(sections, "Event fields", fallbackFields(document));
+}
+
+function evidenceKind(isSuricata: boolean, method: string | null, status: string | null): EvidencePresentation["kind"] {
+  if (isSuricata) return "Suricata alert";
+  if (method || status) return "HTTP event";
+  return "Security event";
+}
+
 export function formatEvidenceSample(
   sample: TicketEvidenceSample,
   scope?: string,
@@ -217,11 +249,7 @@ export function formatEvidenceSample(
   const documents = candidateDocuments(decoded.value);
   const signature = first(documents, SIGNATURE_FIELDS);
   const eventModule = first(documents, ["event.module", "event.dataset", "service.type"]);
-  const isSuricata =
-    scope?.toLowerCase() === "suricata" ||
-    Boolean(signature) ||
-    Boolean(eventModule?.toLowerCase().includes("suricata")) ||
-    documents.some((document) => object(getField(document, "suricata.eve")));
+  const isSuricata = isSuricataEvidence(documents, signature, eventModule, scope);
 
   const sourceIp = first(documents, ["source.ip", "source.address", "suricata.eve.src_ip", "src_ip"]);
   const sourcePort = first(documents, ["source.port", "suricata.eve.src_port", "src_port"]);
@@ -266,7 +294,7 @@ export function formatEvidenceSample(
     field("Action", action),
     field("Event type", eventType),
   );
-  if (alertFields.length) sections.push({ title: isSuricata ? "Alert" : "Event", fields: alertFields });
+  addSection(sections, isSuricata ? "Alert" : "Event", alertFields);
 
   const networkFields = fields(
     field("Source", endpoint(sourceIp, sourcePort), true),
@@ -276,7 +304,7 @@ export function formatEvidenceSample(
     field("Flow ID", first(documents, ["suricata.eve.flow_id", "flow.id"]), true),
     field("Interface", first(documents, ["suricata.eve.in_iface", "network.interface.name"]), true),
   );
-  if (networkFields.length) sections.push({ title: "Connection", fields: networkFields });
+  addSection(sections, "Connection", networkFields);
 
   const webFields = fields(
     field("Method", method, true),
@@ -288,19 +316,15 @@ export function formatEvidenceSample(
     field("TLS issuer", first(documents, ["tls.server.issuer", "suricata.eve.tls.issuerdn"])),
     field("DNS query", first(documents, ["dns.question.name", "suricata.eve.dns.rrname"]), true),
   );
-  if (webFields.length) sections.push({ title: "Application", fields: webFields });
+  addSection(sections, "Application", webFields);
 
   const contextFields = fields(
     field("Sensor", first(documents, ["host.name", "observer.name", "agent.name"])),
     field("Dataset", first(documents, ["event.dataset", "event.module"]), true),
     field("Community ID", first(documents, ["network.community_id"]), true),
   );
-  if (contextFields.length) sections.push({ title: "Context", fields: contextFields });
-
-  if (sections.length === 0) {
-    const fallback = fallbackFields(decoded.value);
-    if (fallback.length) sections.push({ title: "Event fields", fields: fallback });
-  }
+  addSection(sections, "Context", contextFields);
+  addFallbackSection(sections, decoded.value);
 
   const badges = [severity, category, eventType, protocol?.toUpperCase()]
     .filter((value): value is string => Boolean(value))
@@ -308,7 +332,7 @@ export function formatEvidenceSample(
     .slice(0, 4);
 
   return {
-    kind: isSuricata ? "Suricata alert" : method || status ? "HTTP event" : "Security event",
+    kind: evidenceKind(isSuricata, method, status),
     title: signature ?? sample.message,
     badges,
     route,

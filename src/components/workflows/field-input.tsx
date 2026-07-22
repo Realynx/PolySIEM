@@ -36,6 +36,129 @@ function isTemplateable(field: FieldSpec): boolean {
   return field.templateable ?? (field.type === "string" || field.type === "text");
 }
 
+const ENTITY_FIELD_TYPES = new Set(["network", "vm", "device", "integration", "workflow"]);
+
+interface FieldControlProps {
+  field: FieldSpec;
+  value: unknown;
+  stringValue: string;
+  id: string;
+  disabled?: boolean;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  picker: React.ReactNode;
+  entityTemplateMode: boolean;
+  onChange: (value: unknown) => void;
+}
+
+function NumberControl({ field, value, id, disabled, onChange }: FieldControlProps) {
+  return (
+    <Input
+      id={id}
+      type="number"
+      value={typeof value === "number" ? value : ""}
+      placeholder={field.placeholder}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value === "" ? undefined : Number(event.target.value))}
+    />
+  );
+}
+
+function SelectControl({ field, stringValue, id, disabled, onChange }: FieldControlProps) {
+  return (
+    <Select value={stringValue || undefined} onValueChange={onChange} disabled={disabled}>
+      <SelectTrigger id={id} className="w-full">
+        <SelectValue placeholder={field.placeholder ?? "Select…"} />
+      </SelectTrigger>
+      <SelectContent>
+        {(field.options ?? []).map((option) => (
+          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function EntityControl(props: FieldControlProps) {
+  const { field, stringValue, id, disabled, onChange, picker, inputRef, entityTemplateMode } = props;
+  if (!entityTemplateMode || !isTemplateable(field)) {
+    return (
+      <EntityPicker
+        kind={field.type as "network" | "vm" | "device" | "integration" | "workflow"}
+        value={stringValue || null}
+        onChange={(entityId) => onChange(entityId ?? undefined)}
+        disabled={disabled}
+        placeholder={field.placeholder}
+      />
+    );
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <Input
+        id={id}
+        ref={inputRef}
+        value={stringValue}
+        placeholder={field.placeholder ?? "{{input.…}}"}
+        disabled={disabled}
+        className="font-mono text-xs"
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {picker}
+    </div>
+  );
+}
+
+function TextControl({ field, stringValue, id, disabled, onChange, picker, textareaRef }: FieldControlProps) {
+  return (
+    <div className="flex items-start gap-1">
+      <Textarea
+        id={id}
+        ref={textareaRef}
+        value={stringValue}
+        placeholder={field.placeholder}
+        disabled={disabled}
+        rows={4}
+        className={cn(stringValue.includes("{{") && "font-mono text-xs")}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {picker}
+    </div>
+  );
+}
+
+function StringControl({ field, stringValue, id, disabled, onChange, picker, inputRef }: FieldControlProps) {
+  return (
+    <div className="flex items-center gap-1">
+      <Input
+        id={id}
+        ref={inputRef}
+        value={stringValue}
+        placeholder={field.placeholder}
+        disabled={disabled}
+        className={cn(stringValue.includes("{{") && "font-mono text-xs")}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {picker}
+    </div>
+  );
+}
+
+function FieldControl(props: FieldControlProps) {
+  switch (props.field.type) {
+    case "boolean":
+      return <div className="flex h-9 items-center"><Switch id={props.id} checked={props.value === true} onCheckedChange={props.onChange} disabled={props.disabled} aria-label={props.field.label} /></div>;
+    case "number": return <NumberControl {...props} />;
+    case "select": return <SelectControl {...props} />;
+    case "network":
+    case "vm":
+    case "device":
+    case "integration":
+    case "workflow": return <EntityControl {...props} />;
+    case "text": return <TextControl {...props} />;
+    default: return <StringControl {...props} />;
+  }
+}
+
 /**
  * Renders ONE config field purely from its FieldSpec — the same component
  * drives node config panels and the run-input dialog, so new engine field
@@ -66,12 +189,7 @@ export function FieldInput({
   const id = `${idPrefix}-${field.key}`;
   const inputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const isEntity =
-    field.type === "network" ||
-    field.type === "vm" ||
-    field.type === "device" ||
-    field.type === "integration" ||
-    field.type === "workflow";
+  const isEntity = ENTITY_FIELD_TYPES.has(field.type);
   const templateable = isTemplateable(field);
   const stringValue = typeof value === "string" ? value : "";
   // Entity fields holding a template expression open in template mode.
@@ -97,115 +215,10 @@ export function FieldInput({
       <TemplatePickerButton groups={templateGroups} onInsert={insertRef} disabled={disabled} />
     ) : null;
 
-  let control: React.ReactNode;
-  switch (field.type) {
-    case "boolean":
-      control = (
-        <div className="flex h-9 items-center">
-          <Switch
-            id={id}
-            checked={value === true}
-            onCheckedChange={(checked) => onChange(checked)}
-            disabled={disabled}
-            aria-label={field.label}
-          />
-        </div>
-      );
-      break;
-    case "number":
-      control = (
-        <Input
-          id={id}
-          type="number"
-          value={typeof value === "number" ? value : ""}
-          placeholder={field.placeholder}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
-        />
-      );
-      break;
-    case "select":
-      control = (
-        <Select
-          value={stringValue || undefined}
-          onValueChange={(v) => onChange(v)}
-          disabled={disabled}
-        >
-          <SelectTrigger id={id} className="w-full">
-            <SelectValue placeholder={field.placeholder ?? "Select…"} />
-          </SelectTrigger>
-          <SelectContent>
-            {(field.options ?? []).map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      );
-      break;
-    case "network":
-    case "vm":
-    case "device":
-    case "integration":
-    case "workflow":
-      control =
-        entityTemplateMode && templateable ? (
-          <div className="flex items-center gap-1">
-            <Input
-              id={id}
-              ref={inputRef}
-              value={stringValue}
-              placeholder={field.placeholder ?? "{{input.…}}"}
-              disabled={disabled}
-              className="font-mono text-xs"
-              onChange={(e) => onChange(e.target.value)}
-            />
-            {picker}
-          </div>
-        ) : (
-          <EntityPicker
-            kind={field.type}
-            value={stringValue || null}
-            onChange={(entityId) => onChange(entityId ?? undefined)}
-            disabled={disabled}
-            placeholder={field.placeholder}
-          />
-        );
-      break;
-    case "text":
-      control = (
-        <div className="flex items-start gap-1">
-          <Textarea
-            id={id}
-            ref={textareaRef}
-            value={stringValue}
-            placeholder={field.placeholder}
-            disabled={disabled}
-            rows={4}
-            className={cn(stringValue.includes("{{") && "font-mono text-xs")}
-            onChange={(e) => onChange(e.target.value)}
-          />
-          {picker}
-        </div>
-      );
-      break;
-    default: // string
-      control = (
-        <div className="flex items-center gap-1">
-          <Input
-            id={id}
-            ref={inputRef}
-            value={stringValue}
-            placeholder={field.placeholder}
-            disabled={disabled}
-            className={cn(stringValue.includes("{{") && "font-mono text-xs")}
-            onChange={(e) => onChange(e.target.value)}
-          />
-          {picker}
-        </div>
-      );
-  }
+  const control = <FieldControl {...{
+    field, value, stringValue, id, disabled, inputRef, textareaRef, picker,
+    entityTemplateMode, onChange,
+  }} />;
 
   return (
     <div className="space-y-1.5">

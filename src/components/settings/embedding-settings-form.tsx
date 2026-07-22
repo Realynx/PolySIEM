@@ -83,41 +83,92 @@ function normalizeModels(data: unknown): string[] {
     .filter((m): m is string => Boolean(m));
 }
 
+function buildEmbeddingConfig(config: {
+  enabled: boolean; provider: AiProvider; baseUrl: string; model: string;
+  azure: { endpoint: string; apiKey: string; deployment: string; apiVersion: string };
+  openai: { baseUrl: string; apiKey: string; model: string };
+}) {
+  const { enabled, provider, baseUrl, model, azure, openai } = config;
+  return {
+    enabled, provider, baseUrl: baseUrl.trim(), model,
+    ...(provider === "azure" ? { azure: { endpoint: azure.endpoint.trim(), deployment: azure.deployment.trim(), apiVersion: azure.apiVersion.trim() || DEFAULT_AZURE_API_VERSION, ...(azure.apiKey.trim() ? { apiKey: azure.apiKey.trim() } : {}) } } : {}),
+    ...(provider === "openai" ? { openai: { baseUrl: openai.baseUrl.trim(), model: openai.model.trim(), ...(openai.apiKey.trim() ? { apiKey: openai.apiKey.trim() } : {}) } } : {}),
+  };
+}
+
+function AzureEmbeddingFields({ endpoint, setEndpoint, apiKey, setApiKey, deployment, setDeployment, apiVersion, setApiVersion, hasKey }: { endpoint: string; setEndpoint: (value: string) => void; apiKey: string; setApiKey: (value: string) => void; deployment: string; setDeployment: (value: string) => void; apiVersion: string; setApiVersion: (value: string) => void; hasKey: boolean }) {
+  return <><div className="grid gap-2"><Label htmlFor="embed-az-endpoint">Azure endpoint</Label><Input id="embed-az-endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://my-resource.openai.azure.com/" className="max-w-sm" /></div><div className="grid gap-2"><Label htmlFor="embed-az-key">API key</Label><Input id="embed-az-key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={hasKey ? "•••••••• (leave blank to keep)" : "Azure OpenAI API key"} autoComplete="off" className="max-w-sm" /><p className="text-xs text-muted-foreground">{hasKey ? "A key is stored. Leave blank to keep it, or enter a new one to replace it." : "Stored encrypted at rest and never shown again. May be the same key as the AI assistant."}</p></div><div className="grid gap-2"><Label htmlFor="embed-az-deployment">Embedding deployment name</Label><Input id="embed-az-deployment" value={deployment} onChange={(event) => setDeployment(event.target.value)} placeholder="e.g. text-embedding-3-small" className="max-w-sm" /><p className="text-xs text-muted-foreground">The embeddings deployment created in your Azure OpenAI resource.</p></div><div className="grid gap-2"><Label htmlFor="embed-az-version">API version</Label><Input id="embed-az-version" value={apiVersion} onChange={(event) => setApiVersion(event.target.value)} placeholder={DEFAULT_AZURE_API_VERSION} className="max-w-sm" /></div></>;
+}
+
+function OpenAiEmbeddingFields({ baseUrl, setBaseUrl, apiKey, setApiKey, model, setModel, hasKey }: { baseUrl: string; setBaseUrl: (value: string) => void; apiKey: string; setApiKey: (value: string) => void; model: string; setModel: (value: string) => void; hasKey: boolean }) {
+  return <><div className="grid gap-2"><Label htmlFor="embed-openai-url">OpenAI base URL</Label><Input id="embed-openai-url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} className="max-w-sm" /></div><div className="grid gap-2"><Label htmlFor="embed-openai-key">API key</Label><Input id="embed-openai-key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={hasKey ? "•••••••• (leave blank to keep)" : "OpenAI API key"} autoComplete="off" className="max-w-sm" /><p className="text-xs text-muted-foreground">{hasKey ? "A key is stored. Leave blank to keep it, or enter a replacement." : "Stored encrypted at rest and never shown again."}</p></div><div className="grid gap-2"><Label htmlFor="embed-openai-model">Embedding model</Label><Input id="embed-openai-model" value={model} onChange={(event) => setModel(event.target.value)} placeholder="text-embedding-3-small" className="max-w-sm" /></div></>;
+}
+
+function OllamaEmbeddingFields({ baseUrl, setBaseUrl, model, setModel, models }: { baseUrl: string; setBaseUrl: (value: string) => void; model: string; setModel: (value: string) => void; models: string[] }) {
+  const useSelect = models.length > 0;
+  return <><div className="grid gap-2"><Label htmlFor="embed-base-url">Ollama base URL</Label><Input id="embed-base-url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="http://localhost:11434" className="max-w-sm" /></div><div className="grid gap-2"><Label htmlFor="embed-model">Embedding model</Label>{useSelect ? <Select value={model || undefined} onValueChange={setModel}><SelectTrigger id="embed-model" className="max-w-sm"><SelectValue placeholder="Choose an embedding model" /></SelectTrigger><SelectContent>{models.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}{model && !models.includes(model) && <SelectItem value={model}>{model} (saved)</SelectItem>}</SelectContent></Select> : <><Input id="embed-model" value={model} onChange={(event) => setModel(event.target.value)} placeholder="e.g. qwen3-embedding:latest" className="max-w-sm" /><p className="text-xs text-muted-foreground">Model list unavailable — enter the embedding model name manually.</p></>}</div></>;
+}
+
+function EmbeddingProviderFields(props: {
+  provider: AiProvider; baseUrl: string; setBaseUrl: (value: string) => void; model: string; setModel: (value: string) => void; models: string[];
+  openai: { baseUrl: string; setBaseUrl: (value: string) => void; apiKey: string; setApiKey: (value: string) => void; model: string; setModel: (value: string) => void; hasKey: boolean };
+  azure: { endpoint: string; setEndpoint: (value: string) => void; apiKey: string; setApiKey: (value: string) => void; deployment: string; setDeployment: (value: string) => void; apiVersion: string; setApiVersion: (value: string) => void; hasKey: boolean };
+}) {
+  if (props.provider === "azure") return <AzureEmbeddingFields {...props.azure} />;
+  if (props.provider === "openai") return <OpenAiEmbeddingFields {...props.openai} />;
+  return <OllamaEmbeddingFields baseUrl={props.baseUrl} setBaseUrl={props.setBaseUrl} model={props.model} setModel={props.setModel} models={props.models} />;
+}
+
+function retainStoredKey(active: boolean, apiKey: string, setHasKey: (value: boolean) => void, setApiKey: (value: string) => void) {
+  if (!active || !apiKey.trim()) return;
+  setHasKey(true);
+  setApiKey("");
+}
+
+function announceEmbeddingTest(data: unknown) {
+  const found = normalizeModels(data);
+  toast.success(found.length > 0 ? `Backend reachable — ${found.length} model${found.length === 1 ? "" : "s"} available` : "Backend reachable, but no models were reported");
+}
+
+function announceReindex(stats: ReindexStats) {
+  toast.success(`Reindexed ${stats.docs} doc${stats.docs === 1 ? "" : "s"} + ${stats.entities} entit${stats.entities === 1 ? "y" : "ies"} → ${stats.chunks} chunks${stats.mock ? " (mock embeddings)" : ""}`);
+}
+
+function embeddingInitial(config: EmbeddingConfigView) {
+  return {
+    provider: config.provider ?? "ollama",
+    openAiBaseUrl: config.openai?.baseUrl ?? "https://api.openai.com/v1",
+    openAiModel: config.openai?.model ?? "text-embedding-3-small",
+    openAiHasKey: Boolean(config.openai?.hasKey),
+    azEndpoint: config.azure?.endpoint ?? "",
+    azDeployment: config.azure?.deployment ?? "",
+    azApiVersion: config.azure?.apiVersion || DEFAULT_AZURE_API_VERSION,
+    azHasKey: Boolean(config.azure?.hasKey),
+  };
+}
+
 export function EmbeddingSettingsForm({
   initialConfig,
 }: {
   initialConfig: EmbeddingConfigView;
 }) {
+  const initial = embeddingInitial(initialConfig);
   const [enabled, setEnabled] = useState(initialConfig.enabled);
-  const [provider, setProvider] = useState<AiProvider>(
-    initialConfig.provider ?? "ollama",
-  );
+  const [provider, setProvider] = useState<AiProvider>(initial.provider);
   const [baseUrl, setBaseUrl] = useState(initialConfig.baseUrl);
   const [model, setModel] = useState(initialConfig.model);
 
-  const [openAiBaseUrl, setOpenAiBaseUrl] = useState(
-    initialConfig.openai?.baseUrl ?? "https://api.openai.com/v1",
-  );
+  const [openAiBaseUrl, setOpenAiBaseUrl] = useState(initial.openAiBaseUrl);
   const [openAiApiKey, setOpenAiApiKey] = useState("");
-  const [openAiModel, setOpenAiModel] = useState(
-    initialConfig.openai?.model ?? "text-embedding-3-small",
-  );
-  const [openAiHasKey, setOpenAiHasKey] = useState(
-    Boolean(initialConfig.openai?.hasKey),
-  );
+  const [openAiModel, setOpenAiModel] = useState(initial.openAiModel);
+  const [openAiHasKey, setOpenAiHasKey] = useState(initial.openAiHasKey);
 
   // Azure embedding fields. The API key is write-only (blank on save = keep).
-  const [azEndpoint, setAzEndpoint] = useState(
-    initialConfig.azure?.endpoint ?? "",
-  );
+  const [azEndpoint, setAzEndpoint] = useState(initial.azEndpoint);
   const [azApiKey, setAzApiKey] = useState("");
-  const [azDeployment, setAzDeployment] = useState(
-    initialConfig.azure?.deployment ?? "",
-  );
-  const [azApiVersion, setAzApiVersion] = useState(
-    initialConfig.azure?.apiVersion || DEFAULT_AZURE_API_VERSION,
-  );
-  const [hasKey, setHasKey] = useState(Boolean(initialConfig.azure?.hasKey));
+  const [azDeployment, setAzDeployment] = useState(initial.azDeployment);
+  const [azApiVersion, setAzApiVersion] = useState(initial.azApiVersion);
+  const [hasKey, setHasKey] = useState(initial.azHasKey);
 
   const isAzure = provider === "azure";
   const isOpenAI = provider === "openai";
@@ -137,53 +188,17 @@ export function EmbeddingSettingsForm({
     retry: false,
   });
   const models = normalizeModels(modelsQuery.data);
-  const useSelect = models.length > 0;
 
   const save = useMutation({
     mutationFn: () =>
       apiFetch("/api/admin/settings", {
         method: "PATCH",
-        body: JSON.stringify({
-          embeddingConfig: {
-            enabled,
-            provider,
-            baseUrl: baseUrl.trim(),
-            model,
-            ...(isAzure
-              ? {
-                  azure: {
-                    endpoint: azEndpoint.trim(),
-                    deployment: azDeployment.trim(),
-                    apiVersion:
-                      azApiVersion.trim() || DEFAULT_AZURE_API_VERSION,
-                    ...(azApiKey.trim() ? { apiKey: azApiKey.trim() } : {}),
-                  },
-                }
-              : {}),
-            ...(isOpenAI
-              ? {
-                  openai: {
-                    baseUrl: openAiBaseUrl.trim(),
-                    model: openAiModel.trim(),
-                    ...(openAiApiKey.trim()
-                      ? { apiKey: openAiApiKey.trim() }
-                      : {}),
-                  },
-                }
-              : {}),
-          },
-        }),
+        body: JSON.stringify({ embeddingConfig: buildEmbeddingConfig({ enabled, provider, baseUrl, model, azure: { endpoint: azEndpoint, apiKey: azApiKey, deployment: azDeployment, apiVersion: azApiVersion }, openai: { baseUrl: openAiBaseUrl, apiKey: openAiApiKey, model: openAiModel } }) }),
       }),
     onSuccess: () => {
       toast.success("Embedding settings saved");
-      if (isAzure && azApiKey.trim()) {
-        setHasKey(true);
-        setAzApiKey("");
-      }
-      if (isOpenAI && openAiApiKey.trim()) {
-        setOpenAiHasKey(true);
-        setOpenAiApiKey("");
-      }
+      retainStoredKey(isAzure, azApiKey, setHasKey, setAzApiKey);
+      retainStoredKey(isOpenAI, openAiApiKey, setOpenAiHasKey, setOpenAiApiKey);
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -193,14 +208,7 @@ export function EmbeddingSettingsForm({
       apiFetch<unknown>(
         `/api/ai/models?baseUrl=${encodeURIComponent(baseUrl.trim())}`,
       ),
-    onSuccess: (data) => {
-      const found = normalizeModels(data);
-      toast.success(
-        found.length > 0
-          ? `Backend reachable — ${found.length} model${found.length === 1 ? "" : "s"} available`
-          : "Backend reachable, but no models were reported",
-      );
-    },
+    onSuccess: announceEmbeddingTest,
     onError: (err: Error) =>
       toast.error(`Could not reach the backend: ${err.message}`),
   });
@@ -208,12 +216,7 @@ export function EmbeddingSettingsForm({
   const reindex = useMutation({
     mutationFn: () =>
       apiFetch<ReindexStats>("/api/rag/reindex", { method: "POST" }),
-    onSuccess: (stats) =>
-      toast.success(
-        `Reindexed ${stats.docs} doc${stats.docs === 1 ? "" : "s"} + ${stats.entities} ` +
-          `entit${stats.entities === 1 ? "y" : "ies"} → ${stats.chunks} chunks` +
-          (stats.mock ? " (mock embeddings)" : ""),
-      ),
+    onSuccess: announceReindex,
     onError: (err: Error) => toast.error(`Reindex failed: ${err.message}`),
   });
 
@@ -268,157 +271,7 @@ export function EmbeddingSettingsForm({
             </Select>
           </div>
 
-          {isAzure ? (
-            <>
-              <div className="grid gap-2">
-                <Label htmlFor="embed-az-endpoint">Azure endpoint</Label>
-                <Input
-                  id="embed-az-endpoint"
-                  value={azEndpoint}
-                  onChange={(e) => setAzEndpoint(e.target.value)}
-                  placeholder="https://my-resource.openai.azure.com/"
-                  className="max-w-sm"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="embed-az-key">API key</Label>
-                <Input
-                  id="embed-az-key"
-                  type="password"
-                  value={azApiKey}
-                  onChange={(e) => setAzApiKey(e.target.value)}
-                  placeholder={
-                    hasKey
-                      ? "•••••••• (leave blank to keep)"
-                      : "Azure OpenAI API key"
-                  }
-                  autoComplete="off"
-                  className="max-w-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  {hasKey
-                    ? "A key is stored. Leave blank to keep it, or enter a new one to replace it."
-                    : "Stored encrypted at rest and never shown again. May be the same key as the AI assistant."}
-                </p>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="embed-az-deployment">
-                  Embedding deployment name
-                </Label>
-                <Input
-                  id="embed-az-deployment"
-                  value={azDeployment}
-                  onChange={(e) => setAzDeployment(e.target.value)}
-                  placeholder="e.g. text-embedding-3-small"
-                  className="max-w-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  The embeddings deployment created in your Azure OpenAI
-                  resource.
-                </p>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="embed-az-version">API version</Label>
-                <Input
-                  id="embed-az-version"
-                  value={azApiVersion}
-                  onChange={(e) => setAzApiVersion(e.target.value)}
-                  placeholder={DEFAULT_AZURE_API_VERSION}
-                  className="max-w-sm"
-                />
-              </div>
-            </>
-          ) : isOpenAI ? (
-            <>
-              <div className="grid gap-2">
-                <Label htmlFor="embed-openai-url">OpenAI base URL</Label>
-                <Input
-                  id="embed-openai-url"
-                  value={openAiBaseUrl}
-                  onChange={(e) => setOpenAiBaseUrl(e.target.value)}
-                  className="max-w-sm"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="embed-openai-key">API key</Label>
-                <Input
-                  id="embed-openai-key"
-                  type="password"
-                  value={openAiApiKey}
-                  onChange={(e) => setOpenAiApiKey(e.target.value)}
-                  placeholder={
-                    openAiHasKey
-                      ? "•••••••• (leave blank to keep)"
-                      : "OpenAI API key"
-                  }
-                  autoComplete="off"
-                  className="max-w-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  {openAiHasKey
-                    ? "A key is stored. Leave blank to keep it, or enter a replacement."
-                    : "Stored encrypted at rest and never shown again."}
-                </p>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="embed-openai-model">Embedding model</Label>
-                <Input
-                  id="embed-openai-model"
-                  value={openAiModel}
-                  onChange={(e) => setOpenAiModel(e.target.value)}
-                  placeholder="text-embedding-3-small"
-                  className="max-w-sm"
-                />
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="grid gap-2">
-                <Label htmlFor="embed-base-url">Ollama base URL</Label>
-                <Input
-                  id="embed-base-url"
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder="http://localhost:11434"
-                  className="max-w-sm"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="embed-model">Embedding model</Label>
-                {useSelect ? (
-                  <Select value={model || undefined} onValueChange={setModel}>
-                    <SelectTrigger id="embed-model" className="max-w-sm">
-                      <SelectValue placeholder="Choose an embedding model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {models.map((m) => (
-                        <SelectItem key={m} value={m}>
-                          {m}
-                        </SelectItem>
-                      ))}
-                      {model && !models.includes(model) && (
-                        <SelectItem value={model}>{model} (saved)</SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <>
-                    <Input
-                      id="embed-model"
-                      value={model}
-                      onChange={(e) => setModel(e.target.value)}
-                      placeholder="e.g. qwen3-embedding:latest"
-                      className="max-w-sm"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Model list unavailable — enter the embedding model name
-                      manually.
-                    </p>
-                  </>
-                )}
-              </div>
-            </>
-          )}
+          <EmbeddingProviderFields provider={provider} baseUrl={baseUrl} setBaseUrl={setBaseUrl} model={model} setModel={setModel} models={models} openai={{ baseUrl: openAiBaseUrl, setBaseUrl: setOpenAiBaseUrl, apiKey: openAiApiKey, setApiKey: setOpenAiApiKey, model: openAiModel, setModel: setOpenAiModel, hasKey: openAiHasKey }} azure={{ endpoint: azEndpoint, setEndpoint: setAzEndpoint, apiKey: azApiKey, setApiKey: setAzApiKey, deployment: azDeployment, setDeployment: setAzDeployment, apiVersion: azApiVersion, setApiVersion: setAzApiVersion, hasKey }} />
         </CardContent>
         <CardFooter className="gap-2">
           <Button type="submit" disabled={save.isPending}>

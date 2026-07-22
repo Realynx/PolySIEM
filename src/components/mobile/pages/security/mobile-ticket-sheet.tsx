@@ -1,23 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import Link from "next/link";
-import { FileSearch, Lightbulb, RotateCcw, ShieldCheck, Sparkles, UserRound } from "lucide-react";
-import { toast } from "sonner";
-import { apiFetch } from "@/components/shared/api-client";
+import { RotateCcw, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { formatDateTime, formatRelative } from "@/lib/format";
+import { formatRelative } from "@/lib/format";
 import type { SecurityTicketDto } from "@/lib/types";
-import { EvidenceRow } from "@/components/logs/threats/evidence-row";
 import { InvestigationBadge } from "@/components/logs/threats/investigation-badge";
 import { InvestigationPanel } from "@/components/logs/threats/investigation-panel";
 import { SeverityBadge, TicketStatusBadge } from "@/components/logs/threats/severity-badge";
-import { TicketIpIndicator } from "@/components/logs/threats/ticket-ip-indicator";
+import { useTicketDetails } from "@/components/logs/threats/use-ticket-details";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
+import { SuggestedResponse, TicketEvidence, TicketIndicators } from "@/components/logs/threats/ticket-sections";
 
 /**
  * Phone detail surface for one ticket: the desktop TicketSheet's content in a
@@ -37,42 +32,10 @@ export function MobileTicketSheet({
   onOpenChange: (open: boolean) => void;
   onUpdated: (ticket: SecurityTicketDto) => void;
 }) {
-  const queryClient = useQueryClient();
-  const [resolution, setResolution] = useState("");
-
-  // Reset the resolution draft whenever a different ticket is shown.
-  useEffect(() => {
-    setResolution("");
-  }, [ticket?.id]);
-
-  const patch = useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
-      apiFetch<SecurityTicketDto>(`/api/logs/tickets/${ticket!.id}`, {
-        method: "PATCH",
-        body: JSON.stringify(body),
-      }),
-    onSuccess: (updated) => {
-      void queryClient.invalidateQueries({ queryKey: ["tickets"] });
-      onUpdated(updated);
-    },
-    onError: (err: Error) => toast.error(err.message),
-  });
+  const { resolution, setResolution, patch, refGroups, close, reopen } = useTicketDetails(ticket, onUpdated);
 
   if (!ticket) return null;
   const isClosed = ticket.status === "CLOSED";
-  const refGroups = [
-    { label: "Source IPs", kind: "ip", values: ticket.refs?.srcIps ?? [] },
-    { label: "Destination IPs", kind: "ip", values: ticket.refs?.destIps ?? [] },
-    { label: "Signatures", kind: "signature", values: ticket.refs?.signatures ?? [] },
-    { label: "Hosts", kind: "host", values: ticket.refs?.hosts ?? [] },
-  ].filter((g) => g.values.length > 0);
-
-  const close = () =>
-    patch.mutate(
-      { status: "CLOSED", resolution: resolution.trim() },
-      { onSuccess: () => toast.success("Ticket closed") },
-    );
-  const reopen = () => patch.mutate({ status: "OPEN" }, { onSuccess: () => toast.success("Ticket reopened") });
 
   return (
     <BottomSheet open onOpenChange={onOpenChange} title={ticket.title} hideHeader>
@@ -111,17 +74,7 @@ export function MobileTicketSheet({
           <p className="text-sm leading-relaxed whitespace-pre-wrap">{ticket.summary}</p>
         </section>
 
-        {ticket.suggestions && (
-          <section className="space-y-1.5">
-            <h3 className="flex items-center gap-1.5 font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
-              <Lightbulb className="size-3.5" aria-hidden />
-              Suggested response
-            </h3>
-            <div className="rounded-md border border-info/30 bg-info/5 p-3">
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">{ticket.suggestions}</p>
-            </div>
-          </section>
-        )}
+        <SuggestedResponse suggestions={ticket.suggestions} />
 
         <InvestigationPanel
           ticket={ticket}
@@ -139,56 +92,9 @@ export function MobileTicketSheet({
           }}
         />
 
-        {refGroups.length > 0 && (
-          <section className="space-y-2">
-            <h3 className="font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
-              Indicators
-            </h3>
-            <div className="space-y-2">
-              {refGroups.map((group) => (
-                <div key={group.label} className="flex flex-wrap items-baseline gap-1.5">
-                  <span className="w-full shrink-0 text-[11px] text-muted-foreground">{group.label}</span>
-                  {group.values.map((value) => {
-                    if (group.kind === "ip") return <TicketIpIndicator key={value} value={value} compact />;
-                    return group.kind === "host" ? (
-                      <Badge key={value} variant="secondary" className="max-w-full font-mono text-xs" asChild>
-                        <Link
-                          href={`/security/research?subject=${encodeURIComponent(value)}`}
-                          title={`Research ${value}`}
-                        >
-                          <span className="truncate">{value}</span>
-                          <FileSearch className="size-3 shrink-0" />
-                        </Link>
-                      </Badge>
-                    ) : (
-                      <Badge key={value} variant="secondary" className="max-w-full font-mono text-xs">
-                        <span className="truncate">{value}</span>
-                      </Badge>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
+        <TicketIndicators groups={refGroups} compact />
 
-        {ticket.evidence && ticket.evidence.samples.length > 0 && (
-          <section className="space-y-2">
-            <h3 className="font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
-              Evidence
-              {ticket.evidence.timeRange && (
-                <span className="ml-2 font-sans font-normal tracking-normal normal-case">
-                  {formatDateTime(ticket.evidence.timeRange.from)} — {formatDateTime(ticket.evidence.timeRange.to)}
-                </span>
-              )}
-            </h3>
-            <div className="divide-y rounded-md border">
-              {ticket.evidence.samples.map((sample, i) => (
-                <EvidenceRow key={i} sample={sample} scope={ticket.evidence?.scope} />
-              ))}
-            </div>
-          </section>
-        )}
+        <TicketEvidence ticket={ticket} compact />
 
         {isClosed ? (
           <section className="space-y-1.5 border-t pt-3">

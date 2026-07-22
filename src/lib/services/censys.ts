@@ -23,6 +23,54 @@ function strings(value: unknown, limit = 100): string[] {
     : [];
 }
 
+function normalizeCensysService(raw: unknown) {
+  const service = object(raw);
+  const software = Array.isArray(service.software) ? service.software.map(object) : [];
+  return {
+    port: service.port ?? null,
+    transport: service.transport_protocol ?? service.transport ?? null,
+    protocol: service.service_name ?? service.extended_service_name ?? null,
+    observedAt: service.observed_at ?? null,
+    software: software.slice(0, 10).map((item) => ({
+      vendor: item.vendor ?? null,
+      product: item.product ?? null,
+      version: item.version ?? null,
+    })),
+  };
+}
+
+function isPrivateIpv4(first: number, second: number): boolean {
+  return first === 10 || first === 127 || first === 0 || first >= 224 ||
+    (first === 169 && second === 254) || (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) || (first === 100 && second >= 64 && second <= 127);
+}
+
+function isPrivateIpv6(ip: string): boolean {
+  return ip === "::1" || ip === "::" || ip.startsWith("fc") || ip.startsWith("fd") || /^fe[89ab]/.test(ip);
+}
+
+function censysOwnership(
+  autonomousSystem: Record<string, unknown>,
+  network: Record<string, unknown>,
+  location: Record<string, unknown>,
+) {
+  return {
+    organization: autonomousSystem.name ?? network.name ?? network.organization ?? null,
+    asn: autonomousSystem.asn ?? null,
+    description: autonomousSystem.description ?? null,
+    country: autonomousSystem.country_code ?? location.country_code ?? null,
+    network: network.cidr ?? network.prefix ?? null,
+  };
+}
+
+function censysLocation(location: Record<string, unknown>) {
+  return {
+    city: location.city ?? null,
+    region: location.province ?? location.region ?? null,
+    country: location.country ?? location.country_code ?? null,
+  };
+}
+
 /** Keep tool responses compact; the complete provider response remains in the cache. */
 export function normalizeCensysHost(response: unknown) {
   const envelope = object(response);
@@ -37,35 +85,11 @@ export function normalizeCensysHost(response: unknown) {
 
   return {
     ip: String(host.ip ?? result.ip ?? ""),
-    ownership: {
-      organization: as.name ?? network.name ?? network.organization ?? null,
-      asn: as.asn ?? null,
-      description: as.description ?? null,
-      country: as.country_code ?? location.country_code ?? null,
-      network: network.cidr ?? network.prefix ?? null,
-    },
-    location: {
-      city: location.city ?? null,
-      region: location.province ?? location.region ?? null,
-      country: location.country ?? location.country_code ?? null,
-    },
+    ownership: censysOwnership(as, network, location),
+    location: censysLocation(location),
     dnsNames: strings(dns.names ?? host.names, 100),
     serviceCount: typeof host.service_count === "number" ? host.service_count : services.length,
-    services: services.slice(0, 100).map((raw) => {
-      const service = object(raw);
-      const software = Array.isArray(service.software) ? service.software.map(object) : [];
-      return {
-        port: service.port ?? null,
-        transport: service.transport_protocol ?? service.transport ?? null,
-        protocol: service.service_name ?? service.extended_service_name ?? null,
-        observedAt: service.observed_at ?? null,
-        software: software.slice(0, 10).map((item) => ({
-          vendor: item.vendor ?? null,
-          product: item.product ?? null,
-          version: item.version ?? null,
-        })),
-      };
-    }),
+    services: services.slice(0, 100).map(normalizeCensysService),
   };
 }
 
@@ -75,12 +99,10 @@ function assertPublicIp(raw: string): string {
   if (!version) throw new ApiError(400, "invalid_ip", "Enter a valid IPv4 or IPv6 address.");
   if (version === 4) {
     const [a, b] = ip.split(".").map(Number);
-    if (a === 10 || a === 127 || a === 0 || a >= 224 || (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
-      (a === 100 && b >= 64 && b <= 127)) {
+    if (isPrivateIpv4(a, b)) {
       throw new ApiError(400, "private_ip", "Censys host lookup is only available for public IP addresses.");
     }
-  } else if (ip === "::1" || ip === "::" || ip.startsWith("fc") || ip.startsWith("fd") || /^fe[89ab]/.test(ip)) {
+  } else if (isPrivateIpv6(ip)) {
     throw new ApiError(400, "private_ip", "Censys host lookup is only available for public IP addresses.");
   }
   return ip;

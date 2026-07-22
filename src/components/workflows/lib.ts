@@ -4,16 +4,15 @@
  * so tests don't need @xyflow/react.
  */
 
-import type {
+import {
+  isTriggerKind,
+  isTriggerParamType,
+  type
   NodeTypeMeta,
   TriggerParam,
   WorkflowEdgeSpec,
   WorkflowGraph,
   WorkflowNodeSpec,
-} from "@/lib/workflows/types";
-import {
-  isTriggerKind,
-  isTriggerParamType,
 } from "@/lib/workflows/types";
 
 export { isTriggerKind } from "@/lib/workflows/types";
@@ -162,19 +161,16 @@ export function migrateTriggerConfig(
   newKind: string,
   newMeta?: NodeTypeMeta | null,
 ): Record<string, unknown> {
-  const fieldBased = (newMeta?.inputs.length ?? 0) > 0;
-  const params = fieldBased ? [] : Array.isArray(config.params) ? config.params : [];
-  const next: Record<string, unknown> = { params };
+  const next: Record<string, unknown> = {
+    params: triggerParamsForMigration(config, newMeta),
+  };
 
   if (newKind === "trigger.webhook" && typeof config.token === "string" && config.token !== "") {
     next.token = config.token;
   }
   for (const input of newMeta?.inputs ?? []) {
-    // Keep a value the user already set when both flavors share a field key
-    // (e.g. swapping between two Elasticsearch triggers keeps the query).
-    const existing = config[input.key];
-    if (existing !== undefined && existing !== null && existing !== "") next[input.key] = existing;
-    else if (input.defaultValue !== undefined) next[input.key] = input.defaultValue;
+    const value = migratedInputValue(config[input.key], input.defaultValue);
+    if (value !== undefined) next[input.key] = value;
   }
   // Legacy path: schedule's interval when the catalog was unavailable.
   if (newKind === "trigger.schedule" && next.intervalMinutes === undefined) {
@@ -182,6 +178,19 @@ export function migrateTriggerConfig(
       typeof config.intervalMinutes === "number" ? config.intervalMinutes : 60;
   }
   return next;
+}
+
+function triggerParamsForMigration(
+  config: Record<string, unknown>,
+  meta?: NodeTypeMeta | null,
+): unknown[] {
+  if ((meta?.inputs.length ?? 0) > 0) return [];
+  return Array.isArray(config.params) ? config.params : [];
+}
+
+function migratedInputValue(existing: unknown, defaultValue: unknown): unknown {
+  if (existing !== undefined && existing !== null && existing !== "") return existing;
+  return defaultValue;
 }
 
 /** "VM name" → "vm_name". Keys are snake_case identifiers safe for {{input.*}}. */
@@ -275,45 +284,49 @@ export function summarizeNodeConfig(
   entityLabels: Map<string, string>,
 ): string | null {
   if (!meta) return null;
-  if (isTriggerKind(meta.kind)) {
-    if (meta.kind === "trigger.schedule") {
-      const interval = config.intervalMinutes;
-      return typeof interval === "number" ? `Every ${interval} min` : "No interval set";
-    }
-    // Param-based triggers (manual, webhook) summarize their run parameters;
-    // field-based ones fall through to the generic FieldSpec summary below.
-    if (meta.inputs.length === 0) {
-      const params = parseTriggerParams(config);
-      if (params.length === 0) return "No run parameters";
-      return `${params.length} run parameter${params.length === 1 ? "" : "s"}`;
-    }
-  }
+  const triggerSummary = summarizeTrigger(meta, config);
+  if (triggerSummary !== undefined) return triggerSummary;
   let booleanFallback: string | null = null;
   for (const field of meta.inputs) {
     const value = config[field.key];
     if (value === undefined || value === null || value === "") continue;
-    switch (field.type) {
-      case "boolean":
-        booleanFallback ??= `${field.label}: ${value === true ? "yes" : "no"}`;
-        continue;
-      case "select": {
-        const option = field.options?.find((o) => o.value === value);
-        return option?.label ?? String(value);
-      }
-      case "network":
-      case "vm":
-      case "device":
-      case "integration":
-      case "workflow": {
-        const str = String(value);
-        if (str.includes("{{")) return str;
-        return entityLabels.get(str) ?? `${field.label} set`;
-      }
-      default:
-        return String(value);
+    if (field.type === "boolean") {
+      booleanFallback ??= `${field.label}: ${value === true ? "yes" : "no"}`;
+      continue;
     }
+    return summarizeFieldValue(field, value, entityLabels);
   }
   return booleanFallback;
+}
+
+function summarizeTrigger(
+  meta: NodeTypeMeta,
+  config: Record<string, unknown>,
+): string | null | undefined {
+  if (!isTriggerKind(meta.kind)) return undefined;
+  if (meta.kind === "trigger.schedule") {
+    const interval = config.intervalMinutes;
+    return typeof interval === "number" ? `Every ${interval} min` : "No interval set";
+  }
+  if (meta.inputs.length > 0) return undefined;
+  const count = parseTriggerParams(config).length;
+  if (count === 0) return "No run parameters";
+  return `${count} run parameter${count === 1 ? "" : "s"}`;
+}
+
+const ENTITY_FIELD_TYPES = new Set(["network", "vm", "device", "integration", "workflow"]);
+
+function summarizeFieldValue(
+  field: NodeTypeMeta["inputs"][number],
+  value: unknown,
+  entityLabels: Map<string, string>,
+): string {
+  if (field.type === "select") {
+    return field.options?.find((option) => option.value === value)?.label ?? String(value);
+  }
+  const text = String(value);
+  if (!ENTITY_FIELD_TYPES.has(field.type) || text.includes("{{")) return text;
+  return entityLabels.get(text) ?? `${field.label} set`;
 }
 
 /** Compact duration between two ISO timestamps ("…" while still running). */

@@ -162,6 +162,25 @@ export interface BandwidthResponse {
 
 const WINDOW_MS: Record<string, number> = { "1h": 3_600_000, "6h": 6 * 3_600_000, "24h": 24 * 3_600_000 };
 
+function bandwidthIntegrationWhere(integrationId?: string | null) {
+  return integrationId ? { id: integrationId, enabled: true } : { enabled: true, type: "OPNSENSE" as const };
+}
+
+function bandwidthEnabled(samples: unknown[], settings: unknown, parsed: ReturnType<typeof opnsenseSettingsSchema.safeParse>): boolean {
+  const generic = settings && typeof settings === "object" && !Array.isArray(settings)
+    ? settings as Record<string, unknown> : {};
+  return samples.length > 0 || generic.bandwidthPolling === true || (parsed.success && parsed.data.bandwidthPolling);
+}
+
+function bandwidthStatus(enabled: boolean, status: Awaited<ReturnType<typeof readStatuses>>[string] | undefined) {
+  return {
+    enabled,
+    lastPollAt: status?.lastPollAt ?? null,
+    ...(status?.skipped.length ? { skipped: status.skipped } : {}),
+    ...(status?.errors.length ? { errors: status.errors } : {}),
+  };
+}
+
 /** Assemble normalized firewall telemetry for a selected provider. */
 export async function bandwidthReport(
   window: "1h" | "6h" | "24h",
@@ -169,9 +188,7 @@ export async function bandwidthReport(
   integrationId?: string | null,
 ): Promise<BandwidthResponse> {
   const integration = await prisma.integrationConfig.findFirst({
-    where: integrationId
-      ? { id: integrationId, enabled: true }
-      : { enabled: true, type: "OPNSENSE" },
+    where: bandwidthIntegrationWhere(integrationId),
     orderBy: { createdAt: "asc" },
   });
   const empty: BandwidthResponse = {
@@ -193,10 +210,7 @@ export async function bandwidthReport(
     where: { integrationId: integration.id, sampledAt: { gte: new Date(fromMs) } },
     orderBy: { sampledAt: "asc" },
   });
-  const genericSettings = integration.settings && typeof integration.settings === "object" && !Array.isArray(integration.settings)
-    ? integration.settings as Record<string, unknown>
-    : {};
-  const enabled = samples.length > 0 || genericSettings.bandwidthPolling === true || (settings.success && settings.data.bandwidthPolling);
+  const enabled = bandwidthEnabled(samples, integration.settings, settings);
   const bucketMs = chooseBucketMs(windowMs);
   const rules = aggregateRules(samples, fromMs, now.getTime(), bucketMs);
   const interfaces = aggregateInterfaces(samples, fromMs, now.getTime(), bucketMs);
@@ -222,11 +236,6 @@ export async function bandwidthReport(
     rules,
     interfaces: namedInterfaces,
     summaryInterfaceKeys,
-    status: {
-      enabled,
-      lastPollAt: status?.lastPollAt ?? null,
-      ...(status?.skipped.length ? { skipped: status.skipped } : {}),
-      ...(status?.errors.length ? { errors: status.errors } : {}),
-    },
+    status: bandwidthStatus(enabled, status),
   };
 }

@@ -71,6 +71,7 @@ export function buildPhysicalNetworkData(
   wifiAps: readonly WirelessApInput[],
 ): PhysicalNetworkData {
   const networkIdByVlan = new Map<number, string>();
+  const indexVlans = () => {
   for (const network of networks) {
     if (
       network.vlanId !== null &&
@@ -79,9 +80,12 @@ export function buildPhysicalNetworkData(
       networkIdByVlan.set(network.vlanId, network.id);
     }
   }
+  };
+  indexVlans();
 
   const carriers: Record<string, NetworkCarrier[]> = {};
   const sviMembers: SwitchSviMember[] = [];
+  const collectSwitchData = () => {
   for (const config of switchConfigs) {
     const allVlanIds = config.vlans.map((vlan) => vlan.vlanId);
     const resolveNetworkId = (vlanId: number): string | null =>
@@ -89,6 +93,7 @@ export function buildPhysicalNetworkData(
       networkIdByVlan.get(vlanId) ??
       null;
 
+    const collectSvis = () => {
     for (const vlan of config.vlans) {
       if (!vlan.svIpAddress) continue;
       const networkId = resolveNetworkId(vlan.vlanId);
@@ -102,23 +107,27 @@ export function buildPhysicalNetworkData(
         },
       });
     }
+    };
+    collectSvis();
 
     const byNetwork = new Map<string, NetworkCarrier["entries"]>();
-    for (const port of config.ports) {
-      if (port.isShutdown) continue;
-      if (!port.isPortChannel && port.channelGroup !== null) continue;
+    const vlansForPort = (port: SwitchConfigInput["ports"][number]) => {
       const vlanIds = new Set<number>();
       if (port.mode === "access" || port.accessVlanId !== null) {
         if (port.accessVlanId !== null) vlanIds.add(port.accessVlanId);
         if (port.voiceVlanId !== null) vlanIds.add(port.voiceVlanId);
       } else if (port.mode === "trunk") {
-        for (const id of port.allowedVlans
-          ? expandVlanSpec(port.allowedVlans)
-          : allVlanIds) {
+        for (const id of port.allowedVlans ? expandVlanSpec(port.allowedVlans) : allVlanIds)
           vlanIds.add(id);
-        }
         if (port.nativeVlanId !== null) vlanIds.add(port.nativeVlanId);
       }
+      return vlanIds;
+    };
+    const collectPorts = () => {
+    for (const port of config.ports) {
+      if (port.isShutdown) continue;
+      if (!port.isPortChannel && port.channelGroup !== null) continue;
+      const vlanIds = vlansForPort(port);
       for (const vlanId of vlanIds) {
         const networkId = resolveNetworkId(vlanId);
         if (!networkId) continue;
@@ -131,6 +140,8 @@ export function buildPhysicalNetworkData(
         byNetwork.set(networkId, entries);
       }
     }
+    };
+    collectPorts();
     for (const [networkId, entries] of byNetwork) {
       (carriers[networkId] ??= []).push({
         switchName: config.device.name,
@@ -138,9 +149,12 @@ export function buildPhysicalNetworkData(
       });
     }
   }
+  };
+  collectSwitchData();
 
   const wireless: Record<string, NetworkWifi[]> = {};
   const wifiNetworkIds = new Set<string>();
+  const collectWireless = () => {
   for (const ssid of wifiSsids) {
     if (!ssid.networkId) continue;
     wifiNetworkIds.add(ssid.networkId);
@@ -153,6 +167,8 @@ export function buildPhysicalNetworkData(
       enabled: ssid.enabled,
     });
   }
+  };
+  collectWireless();
 
   const wifiApNodes = wifiAps.map((ap) => ({
     id: ap.id,

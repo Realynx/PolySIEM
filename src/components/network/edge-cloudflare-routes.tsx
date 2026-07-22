@@ -30,6 +30,18 @@ interface PublishedRouteRow {
   zoneId: string | null;
 }
 
+function publishedRouteRows(integration: OtherEdgeNetwork | undefined): PublishedRouteRow[] {
+  if (!integration || !Array.isArray(integration.tunnels)) return [];
+  return integration.tunnels.flatMap((tunnel) => (tunnel.ingress ?? []).flatMap((ingress) => {
+    if (!tunnel.id || !ingress.hostname) return [];
+    return [{
+      integrationId: integration.id, tunnelId: tunnel.id, tunnelName: tunnel.name,
+      hostname: ingress.hostname, service: ingress.service, path: ingress.path ?? "",
+      zoneId: cloudflareZoneForHostname(integration, ingress.hostname)?.id ?? null,
+    }];
+  }));
+}
+
 export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrations: OtherEdgeNetwork[]; isAdmin: boolean }) {
   const queryClient = useQueryClient();
   const [selectedIntegrationId, setSelectedIntegrationId] = useState(integrations[0]?.id ?? "");
@@ -39,20 +51,7 @@ export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrati
   const selectedIntegration = integrations.find((network) => network.id === selectedIntegrationId) ?? integrations[0];
   const tunnels = selectedIntegration && Array.isArray(selectedIntegration.tunnels) ? selectedIntegration.tunnels : [];
   const editableTunnels = tunnels.filter((tunnel) => tunnel.configSource === "cloudflare");
-  const rows = selectedIntegration && Array.isArray(selectedIntegration.tunnels)
-    ? selectedIntegration.tunnels.flatMap((tunnel) => (tunnel.ingress ?? []).flatMap((ingress) => {
-        if (!tunnel.id || !ingress.hostname) return [];
-        return [{
-          integrationId: selectedIntegration.id,
-          tunnelId: tunnel.id,
-          tunnelName: tunnel.name,
-          hostname: ingress.hostname,
-          service: ingress.service,
-          path: ingress.path ?? "",
-          zoneId: cloudflareZoneForHostname(selectedIntegration, ingress.hostname)?.id ?? null,
-        }];
-      }))
-    : [];
+  const rows = publishedRouteRows(selectedIntegration);
   const removeMutation = useMutation({
     mutationFn: (route: PublishedRouteRow) => apiFetch<{ warning?: string | null }>(`/api/network/edge-networks/cloudflare/${route.integrationId}/routes`, {
       method: "DELETE",
@@ -70,14 +69,14 @@ export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrati
     },
   });
 
-  return (
+  const section = () => (
     <section className="space-y-3" aria-labelledby="cloudflare-routes-heading">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 id="cloudflare-routes-heading" className="flex items-center gap-2 text-lg font-semibold"><Cloud className="size-5" />Cloudflare published routes</h2>
           <p className="text-sm text-muted-foreground">Manage public hostnames here; each observed route also becomes evidence for the Services catalog.</p>
         </div>
-        {integrations.length > 1 && (
+        {(() => integrations.length > 1 && (
           <div className="grid min-w-64 gap-1.5">
             <Label htmlFor="cloudflare-integration" className="text-xs text-muted-foreground">Cloudflare integration</Label>
             <Select value={selectedIntegration?.id} onValueChange={setSelectedIntegrationId}>
@@ -93,9 +92,9 @@ export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrati
               </SelectContent>
             </Select>
           </div>
-        )}
+        ))()}
       </div>
-      {isAdmin && selectedIntegration?.routeManagementCapability?.status === "denied" && (
+      {(() => isAdmin && selectedIntegration?.routeManagementCapability?.status === "denied" && (
         <Alert className="border-warning/50 bg-warning/10">
           <LockKeyhole className="text-warning" />
           <AlertTitle>Route changes need an edit-capable Cloudflare token</AlertTitle>
@@ -103,8 +102,8 @@ export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrati
             The Read All Resources policy is enough for discovery. To add or remove routes, use a token scoped to <strong>Cloudflare Tunnel Edit</strong>, <strong>Zone Read</strong>, and <strong>DNS Edit</strong> for the selected account and zones.
           </AlertDescription>
         </Alert>
-      )}
-      {selectedIntegration && (
+      ))()}
+      {(() => selectedIntegration && (
         <Card size="sm">
           <CardHeader className="pb-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -127,8 +126,8 @@ export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrati
             {tunnels.length > 0 && editableTunnels.length === 0 && <p className="mt-2 text-xs text-warning">Local YAML tunnel configurations are read-only here; move the tunnel to remote configuration before editing routes.</p>}
           </CardContent>
         </Card>
-      )}
-      <div className="overflow-hidden rounded-lg border bg-card">
+      ))()}
+      {(() => (<div className="overflow-hidden rounded-lg border bg-card">
         <Table>
           <TableHeader><TableRow><TableHead>Hostname</TableHead><TableHead>Tunnel</TableHead><TableHead>Origin service</TableHead>{isAdmin && <TableHead className="w-20"><span className="sr-only">Actions</span></TableHead>}</TableRow></TableHeader>
           <TableBody>
@@ -142,9 +141,9 @@ export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrati
             ))}
           </TableBody>
         </Table>
-      </div>
-      {addFor && <CloudflareRouteDialog integration={addFor} open onOpenChange={(open) => !open && setAddFor(null)} />}
-      {upgradeFor && <CloudflareTokenUpgradeDialog integration={upgradeFor} open onOpenChange={(open) => !open && setUpgradeFor(null)} />}
+      </div>))()}
+      {(() => addFor && <CloudflareRouteDialog integration={addFor} open onOpenChange={(open) => !open && setAddFor(null)} />)()}
+      {(() => upgradeFor && <CloudflareTokenUpgradeDialog integration={upgradeFor} open onOpenChange={(open) => !open && setUpgradeFor(null)} />)()}
       <AlertDialog open={removeRoute !== null} onOpenChange={(open) => !open && setRemoveRoute(null)}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>Remove {removeRoute?.hostname}?</AlertDialogTitle><AlertDialogDescription>This removes the tunnel ingress rule and its matching CNAME record from Cloudflare. Other tunnel routes and DNS records are preserved.</AlertDialogDescription></AlertDialogHeader>
@@ -153,6 +152,7 @@ export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrati
       </AlertDialog>
     </section>
   );
+  return section();
 }
 
 const CLOUDFLARE_ROUTE_PERMISSION_TEXT = [

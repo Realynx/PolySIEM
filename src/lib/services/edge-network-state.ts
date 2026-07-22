@@ -10,37 +10,42 @@ export interface EdgeLifecycleInput {
   snapshotRulesetDrift?: boolean;
 }
 
+function hasRemoteDrift(input: EdgeLifecycleInput): boolean {
+  const missingSnapshotHash = input.snapshotAppliedHash === null &&
+    (input.snapshotAppliedRevision ?? 0) > 0 && input.appliedRulesHash !== null;
+  const mismatchedHash = Boolean(input.snapshotAppliedHash && input.appliedRulesHash &&
+    input.snapshotAppliedHash !== input.appliedRulesHash);
+  return input.snapshotRulesetDrift === true || missingSnapshotHash || mismatchedHash;
+}
+
+function reconciliationState(input: EdgeLifecycleInput, remoteDrift: boolean, desiredDrift: boolean) {
+  if (remoteDrift) return "drifted" as const;
+  if (input.pendingChanges || desiredDrift) return "pending" as const;
+  if (input.appliedRulesHash || input.snapshotAppliedHash) return "in_sync" as const;
+  return "unknown" as const;
+}
+
+function lifecycleState(enabled: boolean, cleanupRequired: boolean, reconciliation: string) {
+  if (cleanupRequired) return "disabled_with_live_rules" as const;
+  if (!enabled) return "disabled_clean" as const;
+  if (reconciliation === "drifted") return "drift" as const;
+  if (reconciliation === "pending") return "pending" as const;
+  return "active" as const;
+}
+
 export function deriveEdgeLifecycle(input: EdgeLifecycleInput) {
   const remoteRuleCount = Math.max(input.appliedRuleCount, input.snapshotManagedRules ?? 0);
-  const remoteDrift = input.snapshotRulesetDrift === true ||
-    (input.snapshotAppliedHash === null && (input.snapshotAppliedRevision ?? 0) > 0 && input.appliedRulesHash !== null) || Boolean(
-    input.snapshotAppliedHash && input.appliedRulesHash && input.snapshotAppliedHash !== input.appliedRulesHash,
-  );
+  const remoteDrift = hasRemoteDrift(input);
   const desiredDrift = input.desiredRulesHash !== input.appliedRulesHash;
-  const reconciliation = remoteDrift
-    ? "drifted"
-    : input.pendingChanges || desiredDrift
-      ? "pending"
-      : input.appliedRulesHash || input.snapshotAppliedHash
-        ? "in_sync"
-        : "unknown";
+  const reconciliation = reconciliationState(input, remoteDrift, desiredDrift);
   const cleanupRequired = !input.enabled && remoteRuleCount > 0;
-  const lifecycleState = cleanupRequired
-    ? "disabled_with_live_rules"
-    : !input.enabled
-      ? "disabled_clean"
-      : reconciliation === "drifted"
-        ? "drift"
-        : reconciliation === "pending"
-          ? "pending"
-          : "active";
   return {
     remoteRuleCount,
     drift: reconciliation,
     hasDrift: remoteDrift || desiredDrift,
     reconciliation,
     cleanupRequired,
-    lifecycleState,
+    lifecycleState: lifecycleState(input.enabled, cleanupRequired, reconciliation),
   } as const;
 }
 

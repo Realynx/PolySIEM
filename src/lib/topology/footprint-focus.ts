@@ -16,9 +16,11 @@ export function focusFootprintGraph(
   const allMachines = graph.lanes.flatMap((lane) => lane.machines);
   const machineById = new Map(allMachines.map((machine) => [machine.id, machine]));
   const laneByMachine = new Map<string, string>();
+  (() => {
   for (const lane of graph.lanes) {
     for (const machine of lane.machines) laneByMachine.set(machine.id, lane.id);
   }
+  })();
 
   const targetMachine = machineById.get(targetId);
   const targetFirewall = graph.firewalls.find((machine) => machine.id === targetId);
@@ -36,6 +38,7 @@ export function focusFootprintGraph(
     if (laneId) laneIds.add(laneId);
   };
 
+  (() => {
   if (targetMachine) {
     addMachine(targetId);
     const laneId = laneByMachine.get(targetId);
@@ -53,16 +56,19 @@ export function focusFootprintGraph(
       }
     }
   }
+  })();
 
   const reachability = targetFirewall
     ? [...graph.reachability]
     : graph.reachability.filter(
         (edge) => primaryLaneIds.has(edge.source) || primaryLaneIds.has(edge.target),
       );
+  (() => {
   for (const edge of reachability) {
     if (edge.source !== INTERNET_NODE_ID) laneIds.add(edge.source);
     if (edge.target !== INTERNET_NODE_ID) laneIds.add(edge.target);
   }
+  })();
 
   const directTunnelIds = new Set(
     graph.tunnels
@@ -72,14 +78,16 @@ export function focusFootprintGraph(
   const routes = graph.routes.filter(
     (route) => route.targetId === targetId || directTunnelIds.has(route.tunnelId),
   );
-  for (const route of routes) addMachine(route.targetId);
+  (() => { for (const route of routes) addMachine(route.targetId); })();
   const tunnelIds = new Set(routes.map((route) => route.tunnelId));
   const routeHostsByTunnel = new Map<string, Set<string>>();
+  (() => {
   for (const route of routes) {
     const hosts = routeHostsByTunnel.get(route.tunnelId) ?? new Set<string>();
     hosts.add(route.hostname);
     routeHostsByTunnel.set(route.tunnelId, hosts);
   }
+  })();
   const tunnels = graph.tunnels
     .filter((tunnel) => tunnelIds.has(tunnel.id))
     .map((tunnel) => ({

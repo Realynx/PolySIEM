@@ -3,8 +3,14 @@ import { formatBps } from "@/lib/format";
 import { edgeRateBps, rateStrokeBonus } from "@/lib/topology/bandwidth-join";
 import { cidrContains, isPrivateAddress } from "@/lib/topology/access";
 import type { EdgeDetail } from "@/components/topology/edge-details";
-import { pveNodeId, resolverAddress, splitTailscaleDestination, tailscaleConnectivitySummary, tailscaleSelectorDevices } from "./flow-utils";
-import type { TailscaleMapDevice } from "./flow-utils";
+import {
+  pveNodeId,
+  resolverAddress,
+  splitTailscaleDestination,
+  tailscaleConnectivitySummary,
+  tailscaleSelectorDevices,
+  type TailscaleMapDevice,
+} from "./flow-utils";
 import type { MapEndpoint } from "./nodes";
 import type { BuildEdgesInput } from "./edge-context";
 import { buildCloudflareEdges } from "./cloudflare-edges";
@@ -33,8 +39,12 @@ export function buildEdges({
     opacityFor: dimmed,
   });
   edges.push(...cloudflareEdges.edges);
+  const collectCloudflareDetails = () => {
   for (const [id, detail] of cloudflareEdges.details) details.set(id, detail);
+  };
+  collectCloudflareDetails();
 
+  const createEndpointEdges = () => {
   for (const [networkId, endpoints] of endpointsByNetwork) {
     for (const endpoint of endpoints) {
       const id = `${endpoint.id}->${networkId}`;
@@ -65,9 +75,12 @@ export function buildEdges({
       });
     }
   }
+  };
+  createEndpointEdges();
 
   // A canonical asset can have a LAN endpoint and a Tailscale endpoint. Join
   // those instances with a neutral identity trace; this is not an allow rule.
+  const createIdentityEdges = () => {
   for (const endpoints of endpointsByAsset.values()) {
     if (endpoints.length < 2) continue;
     const ordered = [...endpoints].sort((a, b) => a.networkId.localeCompare(b.networkId));
@@ -99,12 +112,26 @@ export function buildEdges({
       });
     }
   }
+  };
+  createIdentityEdges();
 
   // Subnet and exit-node advertisements show the path the overlay can use to
   // enter another network. Approved routes are solid; merely advertised ones
   // remain dashed so the map does not overstate current reachability.
+  const createTailscaleEdges = () => {
   for (const tailnet of tailscale) {
     const overlayNetworkId = `tailscale:${tailnet.integrationId}`;
+    const createDeviceRoutes = () => {
+    const routePresentation = (active: boolean) => ({
+      markerEnd: active
+        ? { type: MarkerType.ArrowClosed, color: "var(--color-chart-4)", width: 14, height: 14 }
+        : undefined,
+      style: {
+        stroke: active ? "var(--color-chart-4)" : "var(--color-warning)",
+        strokeWidth: active ? 1.8 : 1.25,
+        strokeDasharray: active ? undefined : "5 4",
+      },
+    });
     for (const device of tailnet.devices) {
       if (!device.assetId) continue;
       const source = (endpointsByAsset.get(device.assetId) ?? []).find(
@@ -115,7 +142,7 @@ export function buildEdges({
       const routes = [...new Set([...device.enabledRoutes, ...device.advertisedRoutes])];
       for (const route of routes) {
         const routeAddress = route.split("/")[0];
-        const target = route === "0.0.0.0/0" || route === "::/0"
+        const routeTarget = () => route === "0.0.0.0/0" || route === "::/0"
           ? graph.nodes.find((node) => node.kind === "internet")
           : graph.nodes.find(
               (node) =>
@@ -124,8 +151,10 @@ export function buildEdges({
                 node.cidr &&
                 (node.cidr.toLowerCase() === route.toLowerCase() || cidrContains(node.cidr, routeAddress)),
             );
+        const target = routeTarget();
         if (!target) continue;
         const active = enabled.has(route);
+        const presentation = routePresentation(active);
         const id = `tailscale:route:${tailnet.integrationId}:${device.id}:${route}`;
         edges.push({
           id,
@@ -135,13 +164,9 @@ export function buildEdges({
           type: "routed",
           data: { ...routeFor(source.id, target.id, "delivery"), relationship: "overlay-route" },
           label: `${route} · ${active ? "enabled" : "advertised"}`,
-          markerEnd: active
-            ? { type: MarkerType.ArrowClosed, color: "var(--color-chart-4)", width: 14, height: 14 }
-            : undefined,
+          markerEnd: presentation.markerEnd,
           style: {
-            stroke: active ? "var(--color-chart-4)" : "var(--color-warning)",
-            strokeWidth: active ? 1.8 : 1.25,
-            strokeDasharray: active ? undefined : "5 4",
+            ...presentation.style,
             opacity: dimmed(id, source.id, target.id),
           },
           ...labelDefaults,
@@ -161,6 +186,8 @@ export function buildEdges({
         });
       }
     }
+    };
+    createDeviceRoutes();
 
     const endpointForDevice = (device: TailscaleMapDevice): MapEndpoint | null => {
       if (!device.assetId) return null;
@@ -172,6 +199,7 @@ export function buildEdges({
     // Tailnet membership alone does not imply reachability. Draw a directed
     // peer path only when a captured grant/ACL resolves both endpoints.
     let policyEdgeCount = 0;
+    const createPolicyGrants = () => {
     for (const [ruleIndex, rule] of (tailnet.policy?.rules ?? []).entries()) {
       if (rule.action.toLowerCase() !== "accept" || policyEdgeCount >= 5_000) continue;
       const sourceDevices = [...new Map(
@@ -185,13 +213,14 @@ export function buildEdges({
           const source = endpointForDevice(sourceDevice);
           if (!source) continue;
           for (const targetDevice of destinationDevices) {
+            const connectPolicyDevices = () => {
             if (
               sourceDevice.id === targetDevice.id ||
               targetDevice.blocksIncomingConnections ||
               policyEdgeCount >= 5_000
-            ) continue;
+            ) return;
             const target = endpointForDevice(targetDevice);
-            if (!target) continue;
+            if (!target) return;
             const id = `tailscale:policy:${tailnet.integrationId}:${ruleIndex}:${sourceDevice.id}->${targetDevice.id}:${destination}`;
             const protocol = rule.protocols.length > 0 ? rule.protocols.join(", ") : "any protocol";
             const packetClass = destinationSpec.ports
@@ -233,10 +262,14 @@ export function buildEdges({
               }],
             });
             policyEdgeCount += 1;
+            };
+            connectPolicyDevices();
           }
         }
       }
     }
+    };
+    createPolicyGrants();
 
     const internet = graph.nodes.find((node) => node.kind === "internet");
     const dnsEntries = [
@@ -246,6 +279,7 @@ export function buildEdges({
       ),
     ];
     const seenDnsEdges = new Set<string>();
+    const createDnsRoutes = () => {
     for (const entry of dnsEntries) {
       const address = resolverAddress(entry.nameserver);
       if (!address) continue;
@@ -302,10 +336,13 @@ export function buildEdges({
         }],
       });
     }
+    };
+    createDnsRoutes();
 
     // App connector definitions identify which tailnet devices are entry
     // points for configured domains/routes without pretending the definition
     // itself is a broad allow rule.
+    const createAppConnectors = () => {
     for (const [connectorIndex, connector] of (tailnet.policy?.appConnectors ?? []).entries()) {
       const connectorDevices = [...new Map(
         connector.connectors.flatMap((selector) => tailscaleSelectorDevices(selector, tailnet))
@@ -350,8 +387,13 @@ export function buildEdges({
         });
       }
     }
+    };
+    createAppConnectors();
   }
+  };
+  createTailscaleEdges();
 
+  const createGateEdges = () => {
   for (const node of graph.nodes) {
     const gateId = gatesByNetwork.get(node.id);
     if (!gateId) continue;
@@ -406,7 +448,10 @@ export function buildEdges({
       ],
     });
   }
+  };
+  createGateEdges();
 
+  const createPeerEdges = () => {
   for (const peer of peerConnections) {
     const selected = peer.id === selectedEdgeId;
     edges.push({
@@ -454,7 +499,14 @@ export function buildEdges({
       ],
     });
   }
+  };
+  createPeerEdges();
 
+  const createPolicyEdges = () => {
+  const policyLabel = (label: string, rateBps: number) => {
+    if (rateBps > 0) return `${label === "all" ? "ANY" : label.toUpperCase()} · ${formatBps(rateBps)}`;
+    return label === "all" ? "ANY packet" : label.toUpperCase();
+  };
   for (const edge of graph.edges) {
     const selected = edge.id === selectedEdgeId;
     const routedSource = gatesByNetwork.get(edge.source) ?? edge.source;
@@ -476,11 +528,7 @@ export function buildEdges({
         fixedTraceLane: true,
         casingGap: 4.5,
       },
-      label: rateBps > 0
-        ? `${edge.label === "all" ? "ANY" : edge.label.toUpperCase()} · ${formatBps(rateBps)}`
-        : edge.label === "all"
-          ? "ANY packet"
-          : edge.label.toUpperCase(),
+      label: policyLabel(edge.label, rateBps),
       markerEnd: {
         type: MarkerType.ArrowClosed,
         color: "var(--color-success)",
@@ -532,7 +580,10 @@ export function buildEdges({
       ],
     });
   }
+  };
+  createPolicyEdges();
 
+  const createSwitchEdges = () => {
   for (const sw of switches) {
     for (const carried of sw.carried) {
       if (!names.has(carried.networkId)) continue;
@@ -566,7 +617,10 @@ export function buildEdges({
       });
     }
   }
+  };
+  createSwitchEdges();
 
+  const createWifiEdges = () => {
   for (const ap of wifiAps) {
     const source = `wifiap:${ap.id}`;
     if (!names.has(source)) continue;
@@ -601,7 +655,10 @@ export function buildEdges({
       });
     }
   }
+  };
+  createWifiEdges();
 
+  const createPveEdges = () => {
   if (pve) {
     const edgeTargets = new Set<string>();
     for (const edge of pve.edges) {
@@ -645,6 +702,7 @@ export function buildEdges({
     }
     // Anchor otherwise-floating nodes (pure peer groups) to their VLAN with a
     // faint containment line so they don't hang unexplained in space.
+    const createContainmentEdges = () => {
     if (pveHomeNetworkId && names.has(pveHomeNetworkId)) {
       const anchorable = [
         ...(pve.baseline ? ["pve:baseline"] : []),
@@ -677,6 +735,10 @@ export function buildEdges({
         });
       }
     }
+    };
+    createContainmentEdges();
   }
+  };
+  createPveEdges();
   return { edges, details };
 }

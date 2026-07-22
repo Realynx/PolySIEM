@@ -1,7 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -12,9 +11,7 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { apiFetch } from "@/components/shared/api-client";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { OperationsOverview } from "@/components/shared/operations-overview";
@@ -27,12 +24,11 @@ import { formatRelative } from "@/lib/format";
 import { scoreGrade, type ScoreGrade } from "@/lib/security/score";
 import {
   SECURITY_SEVERITIES,
-  type SecurityFinding,
-  type SecurityReport,
   type SecuritySeverity,
 } from "@/lib/security/types";
 import { FindingCard } from "./finding-card";
 import { ScoreRing } from "./score-ring";
+import { useSecurityReport } from "./use-security-report";
 
 const GRADE_HEADLINE: Record<ScoreGrade, string> = {
   excellent: "Excellent posture",
@@ -56,41 +52,41 @@ const SEVERITY_SECTION_TITLES: Record<SecuritySeverity, string> = {
   info: "Informational",
 };
 
+function gradeTone(grade: ScoreGrade): "destructive" | "warning" | "success" {
+  if (grade === "at-risk") return "destructive";
+  if (grade === "fair") return "warning";
+  return "success";
+}
+
+function categoryScoreTone(score: number): string {
+  if (score >= 90) return "text-success";
+  if (score >= 60) return "text-warning";
+  return "text-destructive";
+}
+
+function findingCountLabel(count: number): string {
+  if (count === 0) return "No findings";
+  return `${count} finding${count === 1 ? "" : "s"}`;
+}
+
+function urgentFindingDetail(count: number): string {
+  return count > 0 ? `${count} critical or high priority` : "No critical or high findings";
+}
+
+function activityTone(count: number): "destructive" | "success" {
+  return count > 0 ? "destructive" : "success";
+}
+
 /** The security advisor dashboard: score gauge, category subscores, findings. */
 export function SecurityPanel({ isAdmin }: { isAdmin: boolean }) {
-  const queryClient = useQueryClient();
   const [showDismissed, setShowDismissed] = useState(false);
-
-  const reportQuery = useQuery({
-    queryKey: ["security-report"],
-    queryFn: () => apiFetch<SecurityReport>("/api/security"),
-  });
-
-  const dismissMutation = useMutation({
-    mutationFn: (input: { action: "dismiss" | "undismiss"; findingId: string }) =>
-      apiFetch<SecurityReport>("/api/security", { method: "POST", body: JSON.stringify(input) }),
-    onSuccess: (report, input) => {
-      queryClient.setQueryData(["security-report"], report);
-      toast.success(input.action === "dismiss" ? "Finding dismissed." : "Finding restored.");
-    },
-    onError: (err: Error) => toast.error(err.message),
-  });
+  const { reportQuery, dismissMutation, findingsBySeverity } = useSecurityReport();
 
   const report = reportQuery.data;
   const grade = report ? scoreGrade(report.score) : null;
   const urgentFindings = report
     ? report.bySeverity.critical + report.bySeverity.high
     : 0;
-
-  const findingsBySeverity = useMemo(() => {
-    const groups = new Map<SecuritySeverity, SecurityFinding[]>();
-    for (const finding of report?.findings ?? []) {
-      const list = groups.get(finding.severity) ?? [];
-      list.push(finding);
-      groups.set(finding.severity, list);
-    }
-    return groups;
-  }, [report?.findings]);
 
   const dismiss = (findingId: string) => dismissMutation.mutate({ action: "dismiss", findingId });
   const restore = (findingId: string) => dismissMutation.mutate({ action: "undismiss", findingId });
@@ -150,34 +146,21 @@ export function SecurityPanel({ isAdmin }: { isAdmin: boolean }) {
                 {GRADE_HEADLINE[grade]}
               </>
             }
-            statusTone={
-              grade === "at-risk"
-                ? "destructive"
-                : grade === "fair"
-                  ? "warning"
-                  : "success"
-            }
+            statusTone={gradeTone(grade)}
             metrics={[
               {
                 icon: <Gauge />,
                 label: "Overall score",
                 value: <ScoreRing score={report.score} size={112} />,
                 detail: `${report.score} out of 100`,
-                tone:
-                  grade === "at-risk"
-                    ? "destructive"
-                    : grade === "fair"
-                      ? "warning"
-                      : "success",
+                tone: gradeTone(grade),
               },
               {
                 icon: <ShieldAlert />,
                 label: "Open findings",
                 value: report.findings.length.toLocaleString(),
-                detail: urgentFindings > 0
-                  ? `${urgentFindings} critical or high priority`
-                  : "No critical or high findings",
-                tone: urgentFindings > 0 ? "destructive" : "success",
+                detail: urgentFindingDetail(urgentFindings),
+                tone: activityTone(urgentFindings),
               },
               {
                 icon: <AlertTriangle />,
@@ -205,7 +188,7 @@ export function SecurityPanel({ isAdmin }: { isAdmin: boolean }) {
                     <span
                       className={cn(
                         "text-2xl font-semibold tabular-nums",
-                        cat.score >= 90 ? "text-success" : cat.score >= 60 ? "text-warning" : "text-destructive",
+                        categoryScoreTone(cat.score),
                       )}
                     >
                       {cat.score}
@@ -217,9 +200,7 @@ export function SecurityPanel({ isAdmin }: { isAdmin: boolean }) {
                     aria-label={`${cat.label} subscore ${cat.score} out of 100`}
                   />
                   <p className="text-xs text-muted-foreground">
-                    {cat.findingCount === 0
-                      ? "No findings"
-                      : `${cat.findingCount} finding${cat.findingCount === 1 ? "" : "s"}`}
+                    {findingCountLabel(cat.findingCount)}
                     {" — "}
                     {cat.blurb}
                   </p>

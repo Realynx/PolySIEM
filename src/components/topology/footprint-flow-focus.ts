@@ -20,7 +20,16 @@ export function applyFocus(
   const hoveredCircuit = focusForId(built, hoveredId);
   const selectedCircuit = focusForId(built, selectedEdgeId);
 
-  return edges.map((edge) => {
+  return edges.map((edge) => focusEdge(edge, hoveredCircuit, selectedCircuit, hoveredId, selectedEdgeId));
+}
+
+function focusEdge(
+  edge: Edge,
+  hoveredCircuit: CircuitFocus | null,
+  selectedCircuit: CircuitFocus | null,
+  hoveredId: string | null,
+  selectedEdgeId: string | null,
+): Edge {
     const data = edge.data as {
       baseOpacity: number;
       hoverOnly?: boolean;
@@ -33,18 +42,7 @@ export function applyFocus(
     // hostname branches. A route selection still highlights both segments.
     const selected =
       selectedCircuit !== null && selectedCircuit.edgeIds.has(edge.id);
-    let opacity: number;
-    if (data.hoverOnly) {
-      opacity = touched ? 0.9 : 0;
-    } else if (selected) {
-      opacity = 1;
-    } else if (hoveredId) {
-      opacity = touched ? Math.min(1, data.baseOpacity + 0.3) : 0.06;
-    } else if (selectedEdgeId) {
-      opacity = 0.15;
-    } else {
-      opacity = data.baseOpacity;
-    }
+    const opacity = focusedEdgeOpacity(data, touched, selected, hoveredId, selectedEdgeId);
     const atRest = data.hoverOnly ? 0 : data.baseOpacity;
     if (opacity === atRest && !selected && !data.topologyFocused) return edge;
     const style = { ...edge.style, opacity };
@@ -56,7 +54,52 @@ export function applyFocus(
       style,
       hidden: data.routingFailed || (data.hoverOnly ? opacity === 0 : false),
     };
-  });
+}
+
+function focusedEdgeOpacity(
+  data: { baseOpacity: number; hoverOnly?: boolean },
+  touched: boolean,
+  selected: boolean,
+  hoveredId: string | null,
+  selectedEdgeId: string | null,
+): number {
+  if (data.hoverOnly) return touched ? 0.9 : 0;
+  if (selected) return 1;
+  if (hoveredId) return touched ? Math.min(1, data.baseOpacity + 0.3) : 0.06;
+  if (selectedEdgeId) return 0.15;
+  return data.baseOpacity;
+}
+
+function nodeFocusStyle(node: FootprintFlowNode, active: boolean) {
+  const isContainer = node.type === "lane" || node.type === "laneLabel";
+  return {
+    ...node.style,
+    opacity: active ? 1 : 0.14,
+    filter: active
+      ? "brightness(1.12) saturate(1.1)"
+      : "grayscale(0.55) brightness(0.72)",
+    outline: active && !isContainer
+      ? "2px solid color-mix(in oklab, var(--color-ring) 72%, transparent)"
+      : "none",
+    outlineOffset: active ? 3 : 0,
+    borderRadius: active && !isContainer ? 12 : undefined,
+    transition:
+      "opacity 120ms ease, filter 120ms ease, outline-color 120ms ease",
+  };
+}
+
+function focusNode(node: FootprintFlowNode, focused: ReadonlySet<string>): FootprintFlowNode {
+  const active = focused.has(node.id) ||
+    (node.type === "laneLabel" && node.parentId !== undefined && focused.has(node.parentId));
+  return {
+    ...node,
+    zIndex: node.type === "lane"
+      ? 0
+      : active
+        ? Math.max(node.zIndex ?? 0, 10)
+        : node.zIndex,
+    style: nodeFocusStyle(node, active),
+  } as FootprintFlowNode;
 }
 
 const isGatewayRoot = (id: string) =>
@@ -202,38 +245,5 @@ export function applyNodeFocus(
     ...(hovered?.nodeIds ?? []),
     ...(selected?.nodeIds ?? []),
   ]);
-  return nodes.map((node) => {
-    const active =
-      focused.has(node.id) ||
-      (node.type === "laneLabel" &&
-        node.parentId !== undefined &&
-        focused.has(node.parentId));
-    return {
-      ...node,
-      zIndex:
-        node.type === "lane"
-          ? 0
-          : active
-            ? Math.max(node.zIndex ?? 0, 10)
-            : node.zIndex,
-      style: {
-        ...node.style,
-        opacity: active ? 1 : 0.14,
-        filter: active
-          ? "brightness(1.12) saturate(1.1)"
-          : "grayscale(0.55) brightness(0.72)",
-        outline:
-          active && node.type !== "lane" && node.type !== "laneLabel"
-            ? "2px solid color-mix(in oklab, var(--color-ring) 72%, transparent)"
-            : "none",
-        outlineOffset: active ? 3 : 0,
-        borderRadius:
-          active && node.type !== "lane" && node.type !== "laneLabel"
-            ? 12
-            : undefined,
-        transition:
-          "opacity 120ms ease, filter 120ms ease, outline-color 120ms ease",
-      },
-    } as FootprintFlowNode;
-  });
+  return nodes.map((node) => focusNode(node, focused));
 }

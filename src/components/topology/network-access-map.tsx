@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNodesState, type EdgeMouseHandler, type NodeMouseHandler } from "@xyflow/react";
 import { TopologyCanvas } from "@/components/topology/topology-canvas";
 import { EdgeDetails } from "@/components/topology/edge-details";
@@ -15,6 +15,48 @@ import { COLLAPSED_MAX, edgeTypes, nodeTypes, type AnyFlowNode, type NetworkNode
 import type { CloudflareMapAccount, MapSwitch, MapWifiAp, NetworkCarrier, NetworkMember, NetworkWifi, TailscaleMapTailnet } from "./network-access-map/types";
 
 export type { CloudflareMapAccount, MapSwitch, MapWifiAp, NetworkCarrier, NetworkMember, NetworkWifi, TailscaleMapTailnet } from "./network-access-map/types";
+
+function DesktopOnly({ chromeless, children }: { chromeless: boolean; children: ReactNode }) {
+  return chromeless ? null : children;
+}
+
+function SelectedEdgeDetail({ detail, onClose }: {
+  detail: Parameters<typeof EdgeDetails>[0]["detail"] | null;
+  onClose: () => void;
+}) {
+  return detail ? <EdgeDetails detail={detail} onClose={onClose} /> : null;
+}
+
+function TraceSummary({
+  selectedNodeId,
+  names,
+  focusedCircuit,
+}: {
+  selectedNodeId: string | null;
+  names: ReadonlyMap<string, string>;
+  focusedCircuit: ReturnType<typeof deriveAccessFocusCircuit> | null;
+}) {
+  if (!selectedNodeId) return null;
+  const selectedName = names.get(selectedNodeId);
+  if (!selectedName) return null;
+  const pathCount = focusedCircuit?.edgeIds.size ?? 0;
+  const nodeCount = Math.max(0, (focusedCircuit?.nodeIds.size ?? 1) - 1);
+  return (
+    <div className="absolute left-3 top-3 z-10 rounded-lg border border-border bg-card/95 px-3 py-2 shadow-sm">
+      <p className="text-xs font-medium text-card-foreground">{selectedName} trace</p>
+      <p className="text-[11px] text-muted-foreground">
+        {nodeCount} connected node{nodeCount === 1 ? "" : "s"} · {pathCount} trace{pathCount === 1 ? "" : "s"}
+      </p>
+    </div>
+  );
+}
+
+function selectedAccessDetail(
+  details: ReadonlyMap<string, Parameters<typeof EdgeDetails>[0]["detail"]>,
+  selectedEdgeId: string | null,
+) {
+  return selectedEdgeId ? (details.get(selectedEdgeId) ?? null) : null;
+}
 
 export function NetworkAccessMap({
   graph,
@@ -140,9 +182,7 @@ export function NetworkAccessMap({
     [baseEdges, focusedCircuit],
   );
 
-  const selectedDetail = selectedEdgeId
-    ? (details.get(selectedEdgeId) ?? null)
-    : null;
+  const selectedDetail = selectedAccessDetail(details, selectedEdgeId);
 
   const handleEdgeClick: EdgeMouseHandler = (_event, edge) => {
     setSelectedNodeId(null);
@@ -186,21 +226,8 @@ export function NetworkAccessMap({
       fitPadding={0.12}
       heightClassName={heightClassName ?? "h-[clamp(680px,76vh,900px)]"}
     >
-      {selectedNodeId && (() => {
-        const selectedName = names.get(selectedNodeId);
-        if (!selectedName) return null;
-        const pathCount = focusedCircuit?.edgeIds.size ?? 0;
-        const nodeCount = Math.max(0, (focusedCircuit?.nodeIds.size ?? 1) - 1);
-        return (
-          <div className="absolute left-3 top-3 z-10 rounded-lg border border-border bg-card/95 px-3 py-2 shadow-sm">
-            <p className="text-xs font-medium text-card-foreground">{selectedName} trace</p>
-            <p className="text-[11px] text-muted-foreground">
-              {nodeCount} connected node{nodeCount === 1 ? "" : "s"} · {pathCount} trace{pathCount === 1 ? "" : "s"}
-            </p>
-          </div>
-        );
-      })()}
-      {!chromeless && (
+      <TraceSummary selectedNodeId={selectedNodeId} names={names} focusedCircuit={focusedCircuit} />
+      <DesktopOnly chromeless={chromeless}>
         <AccessMapLegend
           unmapped={graph.unmapped}
           pveUnresolved={pve?.unresolved ?? []}
@@ -213,13 +240,8 @@ export function NetworkAccessMap({
           bwWindow={bwWindow}
           onBwWindowChange={setBwWindow}
         />
-      )}
-      {selectedDetail && (
-        <EdgeDetails
-          detail={selectedDetail}
-          onClose={() => setSelectedEdgeId(null)}
-        />
-      )}
+      </DesktopOnly>
+      <SelectedEdgeDetail detail={selectedDetail} onClose={() => setSelectedEdgeId(null)} />
     </TopologyCanvas>
   );
 }

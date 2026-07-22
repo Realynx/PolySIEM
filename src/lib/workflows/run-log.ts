@@ -78,7 +78,7 @@ export function createRunLogger(runId: string): RunLogger {
     },
     async flush() {
       // Writes queued while we wait are picked up by the loop.
-      while (pending.size > 0) await Promise.all([...pending]);
+      while (pending.size > 0) await Promise.all(pending);
     },
   };
 }

@@ -66,7 +66,7 @@ export async function getCloudflareTunnelConfig(
     cfg,
     `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/configurations`,
   );
-  return { ...(response.result?.config ?? {}), ingress: response.result?.config?.ingress ?? [] };
+  return { ...response.result?.config, ingress: response.result?.config?.ingress ?? [] };
 }
 
 export async function putCloudflareTunnelConfig(

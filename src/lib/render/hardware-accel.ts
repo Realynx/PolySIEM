@@ -85,6 +85,39 @@ function createGlContext(failIfMajorPerformanceCaveat: boolean): GlContext | nul
   }
 }
 
+async function probeWebGpu(): Promise<HardwareAccelStatus | null> {
+  const gpu = (navigator as Navigator & { gpu?: GpuLike }).gpu;
+  if (!gpu || typeof gpu.requestAdapter !== "function") return null;
+  try {
+    const adapter = await gpu.requestAdapter();
+    if (!adapter) return null;
+    const info = adapter.info;
+    const renderer = info?.description || info?.vendor || null;
+    const accelerated = renderer === null || classifyRenderer(renderer) === "hardware";
+    return { supported: true, accelerated, renderer, method: "webgpu" };
+  } catch {
+    return null;
+  }
+}
+
+function webGlRenderer(context: GlContext): string | null {
+  try {
+    const debugInfo = context.getExtension("WEBGL_debug_renderer_info");
+    if (debugInfo) {
+      const unmasked = context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+      if (typeof unmasked === "string" && unmasked) return unmasked;
+    }
+  } catch {
+    // Extension may be blocked (e.g. privacy.resistFingerprinting).
+  }
+  try {
+    const masked = context.getParameter(context.RENDERER);
+    return typeof masked === "string" && masked ? masked : null;
+  } catch {
+    return null;
+  }
+}
+
 async function probe(): Promise<HardwareAccelStatus> {
   if (typeof window === "undefined" || typeof document === "undefined") {
     return UNPROBED;
@@ -93,45 +126,15 @@ async function probe(): Promise<HardwareAccelStatus> {
   try {
     // WebGPU first: adapters are only handed out for viable devices, so an
     // adapter implies acceleration unless its info names a software rasterizer.
-    const gpu = (navigator as Navigator & { gpu?: GpuLike }).gpu;
-    if (gpu && typeof gpu.requestAdapter === "function") {
-      try {
-        const adapter = await gpu.requestAdapter();
-        if (adapter) {
-          const info = adapter.info;
-          const renderer = info?.description || info?.vendor || null;
-          const accelerated =
-            renderer === null || classifyRenderer(renderer) === "hardware";
-          return { supported: true, accelerated, renderer, method: "webgpu" };
-        }
-      } catch {
-        // Fall through to the WebGL probe.
-      }
-    }
+    const webGpu = await probeWebGpu();
+    if (webGpu) return webGpu;
 
     const relaxed = createGlContext(false);
     if (!relaxed) {
       return { supported: true, accelerated: false, renderer: null, method: "none" };
     }
 
-    let renderer: string | null = null;
-    try {
-      const debugInfo = relaxed.getExtension("WEBGL_debug_renderer_info");
-      if (debugInfo) {
-        const unmasked = relaxed.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
-        if (typeof unmasked === "string" && unmasked) renderer = unmasked;
-      }
-    } catch {
-      // Extension may be blocked (e.g. privacy.resistFingerprinting).
-    }
-    if (renderer === null) {
-      try {
-        const masked = relaxed.getParameter(relaxed.RENDERER);
-        if (typeof masked === "string" && masked) renderer = masked;
-      } catch {
-        // Leave renderer null; the caveat probe below still decides.
-      }
-    }
+    const renderer = webGlRenderer(relaxed);
 
     // A context that only materializes without the performance-caveat flag is
     // being software-rendered even when the renderer string is masked.

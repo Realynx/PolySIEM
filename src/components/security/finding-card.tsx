@@ -18,33 +18,28 @@ const CATEGORY_LABELS = new Map(SECURITY_CATEGORIES.map((c) => [c.id, c.label]))
 
 const AFFECTED_PREVIEW = 8;
 
+const AFFECTED_ROUTES: Partial<Record<AffectedEntity["kind"], string>> = {
+  rule: "/firewall/rules",
+  "port-forward": "/firewall",
+  dyndns: "/firewall",
+  integration: "/settings/integrations",
+  user: "/settings/users",
+  "api-token": "/settings/api-tokens",
+  wireless: "/network/wifi",
+};
+
+const INVENTORY_ROUTES: Partial<Record<AffectedEntity["kind"], string>> = {
+  device: "/inventory/hosts",
+  vm: "/inventory/vms",
+  container: "/inventory/containers",
+  "ssh-key": "/keys",
+};
+
 /** Deep link for an affected entity, when PolySIEM has a page for it. */
-function affectedHref(entity: AffectedEntity): string | null {
-  switch (entity.kind) {
-    case "device":
-      return entity.id ? `/inventory/hosts/${entity.id}` : "/inventory/hosts";
-    case "vm":
-      return entity.id ? `/inventory/vms/${entity.id}` : "/inventory/vms";
-    case "container":
-      return entity.id ? `/inventory/containers/${entity.id}` : "/inventory/containers";
-    case "rule":
-      return "/firewall/rules";
-    case "port-forward":
-    case "dyndns":
-      return "/firewall";
-    case "integration":
-      return "/settings/integrations";
-    case "user":
-      return "/settings/users";
-    case "api-token":
-      return "/settings/api-tokens";
-    case "ssh-key":
-      return entity.id ? `/keys/${entity.id}` : "/keys";
-    case "wireless":
-      return "/network/wifi";
-    default:
-      return null;
-  }
+export function affectedHref(entity: AffectedEntity): string | null {
+  const inventoryRoute = INVENTORY_ROUTES[entity.kind];
+  if (inventoryRoute) return entity.id ? `${inventoryRoute}/${entity.id}` : inventoryRoute;
+  return AFFECTED_ROUTES[entity.kind] ?? null;
 }
 
 function AffectedChip({ entity }: { entity: AffectedEntity }) {

@@ -136,17 +136,12 @@ function parseEsError(status: number, body: unknown): string {
   return `Elasticsearch error: HTTP ${status}`;
 }
 
-/** Authenticated fetch against the Elasticsearch base URL. GET when body is omitted, POST otherwise. */
-export async function esFetch<T>(cfg: DriverConfig, path: string, body?: unknown): Promise<T> {
-  const url = cfg.baseUrl.replace(/\/+$/, "") + path;
+function esRequestInit(cfg: DriverConfig, body: unknown): RequestInit & { dispatcher?: Dispatcher } {
   const headers: Record<string, string> = { Accept: "application/json" };
   const { apiKey, username, password } = cfg.credentials;
-  if (apiKey?.trim()) {
-    headers.Authorization = `ApiKey ${apiKey.trim()}`;
-  } else {
-    headers.Authorization = `Basic ${Buffer.from(`${username ?? ""}:${password ?? ""}`).toString("base64")}`;
-  }
-
+  headers.Authorization = apiKey?.trim()
+    ? `ApiKey ${apiKey.trim()}`
+    : `Basic ${Buffer.from(`${username ?? ""}:${password ?? ""}`).toString("base64")}`;
   const init: RequestInit & { dispatcher?: Dispatcher } = {
     method: body === undefined ? "GET" : "POST",
     headers,
@@ -158,39 +153,44 @@ export async function esFetch<T>(cfg: DriverConfig, path: string, body?: unknown
     init.body = JSON.stringify(body);
   }
   if (!cfg.verifyTls) init.dispatcher = getInsecureAgent();
+  return init;
+}
 
-  let res: Response;
+async function fetchEsResponse(url: string, baseUrl: string, init: RequestInit): Promise<Response> {
   try {
-    res = await fetch(url, init);
-  } catch (err) {
-    const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
-    const base = err instanceof Error ? err.message : String(err);
-    if (err instanceof Error && err.name === "TimeoutError") {
+    return await fetch(url, init);
+  } catch (error) {
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : null;
+    const base = error instanceof Error ? error.message : String(error);
+    if (error instanceof Error && error.name === "TimeoutError") {
       throw new Error(`Elasticsearch did not respond within ${REQUEST_TIMEOUT_MS / 1000}s (${url})`);
     }
-    throw new Error(`Could not reach Elasticsearch at ${cfg.baseUrl}: ${cause ?? base}`);
+    throw new Error(`Could not reach Elasticsearch at ${baseUrl}: ${cause ?? base}`);
   }
+}
 
-  const text = await res.text();
-  const contentType = res.headers.get("content-type")?.toLowerCase() ?? "";
+function parseEsResponse(response: Response, text: string): unknown {
   let json: unknown = null;
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
-    // non-JSON body (proxy error page etc.) — handled below
+    // Non-JSON response is described below.
   }
-  if (!res.ok) throw new Error(parseEsError(res.status, json));
-  if (json === null) {
-    const looksLikeHtml = contentType.includes("text/html") || /<(?:!doctype|html|head|body|title)\b/i.test(text);
-    if (looksLikeHtml) {
-      throw new Error(`The address returned an HTML page instead of Elasticsearch JSON. ${KIBANA_ENDPOINT_MESSAGE}`);
-    }
-    if (!text.trim()) {
-      throw new Error("Elasticsearch returned an empty response. Check that this URL points to the Elasticsearch HTTP API.");
-    }
-    throw new Error("Elasticsearch returned a non-JSON response. Check that this URL points to the Elasticsearch HTTP API, usually on port 9200.");
+  if (!response.ok) throw new Error(parseEsError(response.status, json));
+  if (json !== null) return json;
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (contentType.includes("text/html") || /<(?:!doctype|html|head|body|title)\b/i.test(text)) {
+    throw new Error(`The address returned an HTML page instead of Elasticsearch JSON. ${KIBANA_ENDPOINT_MESSAGE}`);
   }
-  return json as T;
+  if (!text.trim()) throw new Error("Elasticsearch returned an empty response. Check that this URL points to the Elasticsearch HTTP API.");
+  throw new Error("Elasticsearch returned a non-JSON response. Check that this URL points to the Elasticsearch HTTP API, usually on port 9200.");
+}
+
+/** Authenticated fetch against the Elasticsearch base URL. GET when body is omitted, POST otherwise. */
+export async function esFetch<T>(cfg: DriverConfig, path: string, body?: unknown): Promise<T> {
+  const url = cfg.baseUrl.replace(/\/+$/, "") + path;
+  const response = await fetchEsResponse(url, cfg.baseUrl, esRequestInit(cfg, body));
+  return parseEsResponse(response, await response.text()) as T;
 }
 
 /* ------------------------------------------------------------------ */

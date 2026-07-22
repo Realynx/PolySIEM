@@ -19,6 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ExplainRuleButton, useAiModels } from "@/components/ai";
 import { cn } from "@/lib/utils";
+import { filterFirewallRules, firewallInterfaceNames, referencedFirewallAliases } from "./firewall-rule-model";
 
 export interface FirewallRuleDto {
   id: string;
@@ -122,6 +123,28 @@ function AnnotationEditor({
   );
 }
 
+function RuleDetails({
+  open, rule, aiEnabled, aliases, onAnnotationSaved,
+}: {
+  open: boolean;
+  rule: FirewallRuleDto;
+  aiEnabled: boolean;
+  aliases: Map<string, FirewallAliasDto>;
+  onAnnotationSaved: (id: string, annotation: string | null) => void;
+}) {
+  if (!open) return null;
+  const referencedAliases = referencedFirewallAliases(rule, aliases);
+  return (
+    <div className="space-y-4 border-t bg-muted/30 px-4 py-3">
+      {aiEnabled && <div className="flex items-center gap-1.5"><ExplainRuleButton ruleId={rule.id} /><span className="text-xs text-muted-foreground">Explain this rule with AI</span></div>}
+      {rule.annotation && <div className="flex items-start gap-2 rounded-md border border-info/30 bg-info/5 p-2.5 text-sm"><StickyNote className="mt-0.5 size-4 shrink-0 text-info" /><p className="whitespace-pre-wrap">{rule.annotation}</p></div>}
+      {referencedAliases.length > 0 && <div className="space-y-1.5">{referencedAliases.map(({ label, alias }) => <AliasExpansion key={`${label}-${alias.name}`} label={label} alias={alias} />)}</div>}
+      <AnnotationEditor rule={rule} onSaved={(annotation) => onAnnotationSaved(rule.id, annotation)} />
+      {rule.metadata && <details><summary className="cursor-pointer text-xs font-medium text-muted-foreground">Raw rule metadata</summary><pre className="mt-2 max-h-64 overflow-auto rounded-md border bg-background p-3 text-xs">{JSON.stringify(rule.metadata, null, 2)}</pre></details>}
+    </div>
+  );
+}
+
 function RuleRow({
   rule,
   aliases,
@@ -134,15 +157,6 @@ function RuleRow({
   const [open, setOpen] = useState(false);
   const { data: aiInfo } = useAiModels();
   const aiEnabled = Boolean(aiInfo?.enabled);
-  const referencedAliases: { label: string; alias: FirewallAliasDto }[] = [];
-  for (const [label, spec] of [
-    ["Source", rule.sourceSpec],
-    ["Destination", rule.destSpec],
-    ["Port", rule.destPort],
-  ] as const) {
-    const alias = spec ? aliases.get(spec) : undefined;
-    if (alias) referencedAliases.push({ label, alias });
-  }
 
   return (
     <div className="border-b last:border-b-0">
@@ -180,40 +194,7 @@ function RuleRow({
           {rule.annotation ? <StickyNote className="size-3.5 text-info" aria-label="Has annotation" /> : null}
         </span>
       </button>
-      {open && (
-        <div className="space-y-4 border-t bg-muted/30 px-4 py-3">
-          {aiEnabled && (
-            <div className="flex items-center gap-1.5">
-              <ExplainRuleButton ruleId={rule.id} />
-              <span className="text-xs text-muted-foreground">Explain this rule with AI</span>
-            </div>
-          )}
-          {rule.annotation && (
-            <div className="flex items-start gap-2 rounded-md border border-info/30 bg-info/5 p-2.5 text-sm">
-              <StickyNote className="mt-0.5 size-4 shrink-0 text-info" />
-              <p className="whitespace-pre-wrap">{rule.annotation}</p>
-            </div>
-          )}
-          {referencedAliases.length > 0 && (
-            <div className="space-y-1.5">
-              {referencedAliases.map(({ label, alias }) => (
-                <AliasExpansion key={`${label}-${alias.name}`} label={label} alias={alias} />
-              ))}
-            </div>
-          )}
-          <AnnotationEditor rule={rule} onSaved={(annotation) => onAnnotationSaved(rule.id, annotation)} />
-          {rule.metadata && (
-            <details>
-              <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                Raw rule metadata
-              </summary>
-              <pre className="mt-2 max-h-64 overflow-auto rounded-md border bg-background p-3 text-xs">
-                {JSON.stringify(rule.metadata, null, 2)}
-              </pre>
-            </details>
-          )}
-        </div>
-      )}
+      <RuleDetails {...{ open, rule, aiEnabled, aliases, onAnnotationSaved }} />
     </div>
   );
 }
@@ -232,25 +213,14 @@ export function RulesExplorer({
 
   const aliasMap = useMemo(() => new Map(aliases.map((a) => [a.name, a])), [aliases]);
   const interfaceNames = useMemo(
-    () => [...new Set(rules.map((r) => r.interfaceName ?? "Unassigned"))].sort(),
+    () => firewallInterfaceNames(rules),
     [rules],
   );
 
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return rules.filter((r) => {
-      if (iface !== "all" && (r.interfaceName ?? "Unassigned") !== iface) return false;
-      if (action !== "all" && r.action !== action) return false;
-      if (needle) {
-        const haystack = [r.descriptionText, r.sourceSpec, r.destSpec, r.destPort, r.protocol, r.annotation]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(needle)) return false;
-      }
-      return true;
-    });
-  }, [rules, iface, action, q]);
+  const filtered = useMemo(
+    () => filterFirewallRules(rules, { iface, action, query: q }),
+    [rules, iface, action, q],
+  );
 
   const groups = useMemo(() => {
     const map = new Map<string, FirewallRuleDto[]>();

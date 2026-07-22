@@ -1,6 +1,5 @@
 import "server-only";
-import type { DriverConfig } from "@/lib/integrations/types";
-import { isMock } from "@/lib/integrations/types";
+import { isMock, type DriverConfig } from "@/lib/integrations/types";
 import { canonicalLevel, esFetch, getField } from "@/lib/integrations/elasticsearch/client";
 import { elasticsearchSettingsSchema } from "@/lib/validators/integrations";
 import type { AiScanConfig } from "@/lib/settings";
@@ -116,6 +115,60 @@ interface SignatureGroup {
   destPorts: Set<string>;
 }
 
+function signatureGroup(source: Record<string, unknown>, signature: string): SignatureGroup {
+  return {
+    signature,
+    severity: firstField(source, SEVERITY_FIELDS),
+    category: firstField(source, CATEGORY_FIELDS),
+    count: 0,
+    srcIps: new Map(),
+    destIps: new Map(),
+    destPorts: new Set(),
+  };
+}
+
+function increment(map: Map<string, number>, key: string | null): void {
+  if (key) map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+function recordSuricataHit(
+  hit: NonNullable<NonNullable<Awaited<ReturnType<typeof scopeSearch>>["hits"]>["hits"]>[number],
+  groups: Map<string, SignatureGroup>,
+  samples: TicketEvidenceSample[],
+  timestampField: string,
+  sampleLimit: number,
+): void {
+  const source = hit._source ?? {};
+  const signature = firstField(source, SIGNATURE_FIELDS) ?? "(unknown signature)";
+  const srcIp = firstField(source, SRC_IP_FIELDS);
+  const destIp = firstField(source, DEST_IP_FIELDS);
+  const destPort = firstField(source, DEST_PORT_FIELDS);
+  const group = groups.get(signature) ?? signatureGroup(source, signature);
+  groups.set(signature, group);
+  group.count++;
+  increment(group.srcIps, srcIp);
+  increment(group.destIps, destIp);
+  if (destPort) group.destPorts.add(destPort);
+  if (samples.length >= sampleLimit) return;
+  const timestamp = firstField(source, [timestampField]) ?? new Date().toISOString();
+  const proto = firstField(source, PROTO_FIELDS);
+  const srcPort = firstField(source, SRC_PORT_FIELDS);
+  samples.push({
+    timestamp,
+    message: `${signature} ${srcIp ?? "?"}${srcPort ? `:${srcPort}` : ""} -> ${destIp ?? "?"}${destPort ? `:${destPort}` : ""}${proto ? ` ${proto.toUpperCase()}` : ""}`,
+    index: hit._index,
+    raw: truncatedRaw(source),
+  });
+}
+
+function signatureLine(group: SignatureGroup): string {
+  const severity = group.severity ? `[sev ${group.severity}] ` : "";
+  const category = group.category ? ` (${group.category})` : "";
+  const ports = group.destPorts.size ? ` | ports: ${[...group.destPorts].slice(0, 10).join(", ")}` : "";
+  return `- ${severity}"${group.signature}"${category} ×${group.count}`
+    + ` | src: ${topEntries(group.srcIps, 5) || "?"} | dst: ${topEntries(group.destIps, 5) || "?"}${ports}`;
+}
+
 function topEntries(map: Map<string, number>, n: number): string {
   return [...map.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -149,52 +202,11 @@ export async function collectSuricata(
   const groups = new Map<string, SignatureGroup>();
   const samples: TicketEvidenceSample[] = [];
 
-  for (const hit of hits) {
-    const source = hit._source ?? {};
-    const signature = firstField(source, SIGNATURE_FIELDS) ?? "(unknown signature)";
-    const srcIp = firstField(source, SRC_IP_FIELDS);
-    const destIp = firstField(source, DEST_IP_FIELDS);
-    const destPort = firstField(source, DEST_PORT_FIELDS);
-
-    let group = groups.get(signature);
-    if (!group) {
-      group = {
-        signature,
-        severity: firstField(source, SEVERITY_FIELDS),
-        category: firstField(source, CATEGORY_FIELDS),
-        count: 0,
-        srcIps: new Map(),
-        destIps: new Map(),
-        destPorts: new Set(),
-      };
-      groups.set(signature, group);
-    }
-    group.count++;
-    if (srcIp) group.srcIps.set(srcIp, (group.srcIps.get(srcIp) ?? 0) + 1);
-    if (destIp) group.destIps.set(destIp, (group.destIps.get(destIp) ?? 0) + 1);
-    if (destPort) group.destPorts.add(destPort);
-
-    if (samples.length < scanCfg.maxLogsPerQuery) {
-      const timestamp = firstField(source, [s.timestampField]) ?? new Date().toISOString();
-      const proto = firstField(source, PROTO_FIELDS);
-      const srcPort = firstField(source, SRC_PORT_FIELDS);
-      samples.push({
-        timestamp,
-        message: `${signature} ${srcIp ?? "?"}${srcPort ? `:${srcPort}` : ""} -> ${destIp ?? "?"}${destPort ? `:${destPort}` : ""}${proto ? ` ${proto.toUpperCase()}` : ""}`,
-        index: hit._index,
-        raw: truncatedRaw(source),
-      });
-    }
-  }
+  hits.forEach((hit) => recordSuricataHit(hit, groups, samples, s.timestampField, scanCfg.maxLogsPerQuery));
 
   const lines = [...groups.values()]
     .sort((a, b) => b.count - a.count)
-    .map(
-      (g) =>
-        `- ${g.severity ? `[sev ${g.severity}] ` : ""}"${g.signature}"${g.category ? ` (${g.category})` : ""} ×${g.count}` +
-        ` | src: ${topEntries(g.srcIps, 5) || "?"} | dst: ${topEntries(g.destIps, 5) || "?"}` +
-        (g.destPorts.size ? ` | ports: ${[...g.destPorts].slice(0, 10).join(", ")}` : ""),
-    );
+    .map(signatureLine);
 
   const text = clip(
     [

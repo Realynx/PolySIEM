@@ -126,8 +126,7 @@ async function entityUnits(): Promise<IndexUnit[]> {
 
   const units: IndexUnit[] = [];
 
-  for (const d of devices) {
-    units.push(unit("device", d.id, d.name, `/inventory/hosts/${d.id}`, d.kind, [
+  units.push(...devices.map((d) => unit("device", d.id, d.name, `/inventory/hosts/${d.id}`, d.kind, [
       { label: "Manufacturer", value: d.manufacturer },
       { label: "Model", value: d.model },
       { label: "Location", value: d.location },
@@ -135,48 +134,41 @@ async function entityUnits(): Promise<IndexUnit[]> {
       { label: "CPU cores", value: d.cpuCores },
       { label: "Memory", value: gib(d.memoryBytes) },
       { label: "OS", value: [d.osName, d.osVersion].filter(Boolean).join(" ") },
-    ], d.description));
-  }
+    ], d.description)));
 
-  for (const v of vms) {
-    units.push(unit("vm", v.id, v.name, `/inventory/vms/${v.id}`, v.host?.name ?? null, [
+  units.push(...vms.map((v) => unit("vm", v.id, v.name, `/inventory/vms/${v.id}`, v.host?.name ?? null, [
       { label: "Host", value: v.host?.name },
       { label: "Power", value: v.powerState },
       { label: "CPU cores", value: v.cpuCores },
       { label: "Memory", value: gib(v.memoryBytes) },
       { label: "Disk", value: gib(v.diskBytes) },
       { label: "OS", value: v.osName },
-    ], v.description));
-  }
+    ], v.description)));
 
-  for (const c of containers) {
-    units.push(unit("container", c.id, c.name, `/inventory/containers/${c.id}`, c.runtime, [
+  units.push(...containers.map((c) => unit("container", c.id, c.name, `/inventory/containers/${c.id}`, c.runtime, [
       { label: "Host", value: c.host?.name },
       { label: "Power", value: c.powerState },
       { label: "CPU cores", value: c.cpuCores },
       { label: "Memory", value: gib(c.memoryBytes) },
       { label: "Disk", value: gib(c.diskBytes) },
       { label: "OS", value: c.osName },
-    ], c.description));
-  }
+    ], c.description)));
 
-  for (const n of networks) {
-    units.push(unit("network", n.id, n.name, `/network/${n.id}`, n.vlanId != null ? `VLAN ${n.vlanId}` : null, [
+  units.push(...networks.map((n) => unit("network", n.id, n.name, `/network/${n.id}`, n.vlanId != null ? `VLAN ${n.vlanId}` : null, [
       { label: "CIDR", value: n.cidr },
       { label: "Gateway", value: n.gateway },
       { label: "Domain", value: n.domain },
       { label: "Purpose", value: n.purpose },
-    ], n.description));
-  }
+    ], n.description)));
 
-  for (const s of services) {
+  units.push(...services.map((s) => {
     const host = s.device?.name ?? s.vm?.name ?? s.container?.name ?? null;
-    units.push(unit("service", s.id, s.name, `/inventory/services/${s.id}`, s.protocol, [
+    return unit("service", s.id, s.name, `/inventory/services/${s.id}`, s.protocol, [
       { label: "URL", value: s.url },
       { label: "Port", value: s.port },
       { label: "Runs on", value: host },
-    ], s.description));
-  }
+    ], s.description);
+  }));
 
   return units;
 }

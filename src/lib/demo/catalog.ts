@@ -60,29 +60,59 @@ export function isScenarioProfile(value: string): value is ScenarioProfile {
 const ALLOWED_QUERY_KEYS = new Set(["seed", "now", "size"]);
 const SAFE_SEED_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 
-/**
- * Strict parser for mock integration URLs. Only named profiles plus bounded
- * seed/clock controls are accepted; credentials, paths, fragments, and extra
- * query switches are rejected rather than silently ignored.
- */
-export function scenarioOptionsFromMockUrl(baseUrl: string): ParsedMockScenarioUrl {
+function parseMockUrl(baseUrl: string): URL {
   if (baseUrl.length > 512) throw new Error("Scenario URL is too long");
-  let url: URL;
   try {
-    url = new URL(baseUrl);
+    return new URL(baseUrl);
   } catch {
     throw new Error("Scenario URL must be a valid mock:// URL");
   }
+}
+
+function validateMockUrl(url: URL): void {
   if (url.protocol !== "mock:") throw new Error("Scenario URL must use the mock:// scheme");
   if (url.username || url.password) throw new Error("Scenario URL must not contain credentials");
   if (url.port || (url.pathname && url.pathname !== "/")) {
     throw new Error("Scenario URL must not contain a port or path");
   }
   if (url.hash) throw new Error("Scenario URL must not contain a fragment");
-  for (const key of url.searchParams.keys()) {
+}
+
+function validateMockQuery(searchParams: URLSearchParams): void {
+  for (const key of searchParams.keys()) {
     if (!ALLOWED_QUERY_KEYS.has(key)) throw new Error(`Unsupported mock scenario option: ${key}`);
-    if (url.searchParams.getAll(key).length > 1) throw new Error(`Duplicate mock scenario option: ${key}`);
+    if (searchParams.getAll(key).length > 1) throw new Error(`Duplicate mock scenario option: ${key}`);
   }
+}
+
+function parseScenarioNow(value: string | null): string | undefined {
+  if (value === null) return undefined;
+  if (value.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    throw new Error("Scenario now must be an ISO timestamp");
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) throw new Error("Scenario now must be an ISO timestamp");
+  return new Date(parsed).toISOString();
+}
+
+function parseScenarioSize(value: string | null): LabSize | undefined {
+  if (value === null) return undefined;
+  const parsed = Number(value);
+  if (!/^\d+$/.test(value) || !isLabSize(parsed)) {
+    throw new Error("Scenario size must be an integer from 1 to 5");
+  }
+  return parsed;
+}
+
+/**
+ * Strict parser for mock integration URLs. Only named profiles plus bounded
+ * seed/clock controls are accepted; credentials, paths, fragments, and extra
+ * query switches are rejected rather than silently ignored.
+ */
+export function scenarioOptionsFromMockUrl(baseUrl: string): ParsedMockScenarioUrl {
+  const url = parseMockUrl(baseUrl);
+  validateMockUrl(url);
+  validateMockQuery(url.searchParams);
 
   const requested = url.hostname;
   const profile = requested === "demo" ? "healthy" : requested;
@@ -92,24 +122,7 @@ export function scenarioOptionsFromMockUrl(baseUrl: string): ParsedMockScenarioU
   if (!SAFE_SEED_RE.test(seed)) {
     throw new Error("Scenario seed must be 1-64 letters, numbers, dots, underscores, or hyphens");
   }
-  const nowInput = url.searchParams.get("now");
-  let now: string | undefined;
-  if (nowInput !== null) {
-    if (nowInput.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(nowInput)) {
-      throw new Error("Scenario now must be an ISO timestamp");
-    }
-    const parsed = Date.parse(nowInput);
-    if (!Number.isFinite(parsed)) throw new Error("Scenario now must be an ISO timestamp");
-    now = new Date(parsed).toISOString();
-  }
-  const sizeInput = url.searchParams.get("size");
-  let size: LabSize | undefined;
-  if (sizeInput !== null) {
-    const parsed = Number(sizeInput);
-    if (!/^\d+$/.test(sizeInput) || !isLabSize(parsed)) {
-      throw new Error("Scenario size must be an integer from 1 to 5");
-    }
-    size = parsed;
-  }
+  const now = parseScenarioNow(url.searchParams.get("now"));
+  const size = parseScenarioSize(url.searchParams.get("size"));
   return { profile, seed, ...(now ? { now } : {}), ...(size ? { size } : {}) };
 }

@@ -175,6 +175,65 @@ function nullableString(value: unknown, field: string): string | null {
   return value.trim() || null;
 }
 
+function requiredRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} has the wrong shape.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function serviceTarget(
+  value: unknown,
+  index: number,
+): InterviewServiceCandidate["target"] {
+  const target = requiredRecord(value, `Service ${index + 1} target`);
+  const kind = target.kind;
+  const id = nullableString(target.id, "target id");
+  const name = nullableString(target.name, "target name");
+  if (!id || !name) throw new Error(`Service ${index + 1} has no hardware target.`);
+  if (kind !== "device" && kind !== "vm" && kind !== "container") {
+    throw new Error(`Service ${index + 1} has an unsupported hardware target.`);
+  }
+  return { kind, id, name };
+}
+
+function serviceProtocol(value: unknown, index: number): InterviewServiceCandidate["protocol"] {
+  if (value === null || value === undefined) return null;
+  if (value === "http" || value === "https" || value === "tcp" || value === "udp") return value;
+  throw new Error(`Service ${index + 1} has an unsupported protocol.`);
+}
+
+function servicePort(value: unknown, index: number): number | null {
+  if (value === null || value === undefined) return null;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > 65535
+  ) {
+    throw new Error(`Service ${index + 1} has an invalid port.`);
+  }
+  return value;
+}
+
+function parseServiceCandidate(item: unknown, index: number): InterviewServiceCandidate {
+  const service = requiredRecord(item, `Service ${index + 1}`);
+  const name = nullableString(service.name, "service name");
+  const evidence = nullableString(service.evidence, "service evidence");
+  if (!name || !evidence) {
+    throw new Error(`Service ${index + 1} is missing a name, target, or evidence.`);
+  }
+  return {
+    name,
+    url: nullableString(service.url, "service URL"),
+    port: servicePort(service.port, index),
+    protocol: serviceProtocol(service.protocol, index),
+    description: nullableString(service.description, "service description"),
+    target: serviceTarget(service.target, index),
+    evidence,
+  };
+}
+
 /** Parse and defensively validate the model's JSON-only service proposal. */
 export function parseInterviewServicePlan(raw: string): InterviewServicePlan {
   const cleaned = raw
@@ -189,69 +248,11 @@ export function parseInterviewServicePlan(raw: string): InterviewServicePlan {
       "The interviewer returned an invalid service proposal. Retry the review.",
     );
   }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("The service proposal has the wrong shape.");
-  }
-  const record = value as Record<string, unknown>;
+  const record = requiredRecord(value, "The service proposal");
   if (!Array.isArray(record.services)) {
     throw new Error("The service proposal is missing its services list.");
   }
-  const services: InterviewServiceCandidate[] = record.services.map(
-    (item, index) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) {
-        throw new Error(`Service ${index + 1} has the wrong shape.`);
-      }
-      const service = item as Record<string, unknown>;
-      const target = service.target;
-      if (!target || typeof target !== "object" || Array.isArray(target)) {
-        throw new Error(`Service ${index + 1} has no hardware target.`);
-      }
-      const targetRecord = target as Record<string, unknown>;
-      const kind = targetRecord.kind;
-      const id = nullableString(targetRecord.id, "target id");
-      const targetName = nullableString(targetRecord.name, "target name");
-      const name = nullableString(service.name, "service name");
-      const evidence = nullableString(service.evidence, "service evidence");
-      if (!name || !evidence || !id || !targetName) {
-        throw new Error(
-          `Service ${index + 1} is missing a name, target, or evidence.`,
-        );
-      }
-      if (kind !== "device" && kind !== "vm" && kind !== "container") {
-        throw new Error(
-          `Service ${index + 1} has an unsupported hardware target.`,
-        );
-      }
-      const protocol = service.protocol;
-      if (
-        protocol !== null &&
-        protocol !== undefined &&
-        protocol !== "http" &&
-        protocol !== "https" &&
-        protocol !== "tcp" &&
-        protocol !== "udp"
-      ) {
-        throw new Error(`Service ${index + 1} has an unsupported protocol.`);
-      }
-      const port = service.port;
-      if (
-        port !== null &&
-        port !== undefined &&
-        (!Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535)
-      ) {
-        throw new Error(`Service ${index + 1} has an invalid port.`);
-      }
-      return {
-        name,
-        url: nullableString(service.url, "service URL"),
-        port: port === null || port === undefined ? null : Number(port),
-        protocol: protocol ?? null,
-        description: nullableString(service.description, "service description"),
-        target: { kind, id, name: targetName },
-        evidence,
-      };
-    },
-  );
+  const services = record.services.map(parseServiceCandidate);
   const notes = Array.isArray(record.notes)
     ? record.notes
         .map((note) => (typeof note === "string" ? note.trim() : ""))

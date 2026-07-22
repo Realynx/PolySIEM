@@ -36,6 +36,7 @@ export function buildFlow(
   const widths = new Map<string, number>();
   const endpointsByNetwork = new Map<string, MapEndpoint[]>();
   const anonymousMembers = new Map<string, NetworkMember[]>();
+  const indexEndpoints = () => {
   for (const [networkId, networkMembers] of Object.entries(members)) {
     const endpointByAsset = new Map<string, MapEndpoint>();
     const anonymous: NetworkMember[] = [];
@@ -69,7 +70,10 @@ export function buildFlow(
     );
     anonymousMembers.set(networkId, anonymous);
   }
+  };
+  indexEndpoints();
   const endpointsByAsset = new Map<string, MapEndpoint[]>();
+  const indexEndpointsByAsset = () => {
   for (const endpoints of endpointsByNetwork.values()) {
     for (const endpoint of endpoints) {
       const list = endpointsByAsset.get(endpoint.assetId) ?? [];
@@ -77,6 +81,8 @@ export function buildFlow(
       endpointsByAsset.set(endpoint.assetId, list);
     }
   }
+  };
+  indexEndpointsByAsset();
   const peerConnections: {
     id: string;
     group: string;
@@ -84,6 +90,7 @@ export function buildFlow(
     source: string;
     target: string;
   }[] = [];
+  const collectPeerConnections = () => {
   for (const group of pve?.groups.filter((item) => item.peer) ?? []) {
     const peerEndpoints = group.members.flatMap((member) => {
       const choices = endpointsByAsset.get(member.id) ?? [];
@@ -106,6 +113,8 @@ export function buildFlow(
       }
     }
   }
+  };
+  collectPeerConnections();
 
   const addNode = (id: string, width: number, height: number, name: string) => {
     heights.set(id, height);
@@ -113,6 +122,7 @@ export function buildFlow(
     names.set(id, name);
   };
 
+  const registerGraphNodes = () => {
   for (const node of graph.nodes) {
     const count =
       node.kind === "internet" ? 0 : (anonymousMembers.get(node.id)?.length ?? 0);
@@ -126,7 +136,10 @@ export function buildFlow(
       node.name,
     );
   }
+  };
+  registerGraphNodes();
   const gatesByNetwork = new Map<string, string>();
+  const registerInterfaceGates = () => {
   for (const node of graph.nodes) {
     if (
       node.kind !== "network" ||
@@ -139,11 +152,17 @@ export function buildFlow(
     gatesByNetwork.set(node.id, id);
     addNode(id, GATE_WIDTH, GATE_HEIGHT, `${node.name} · ${node.interfaceKey}`);
   }
+  };
+  registerInterfaceGates();
+  const registerEndpoints = () => {
   for (const endpoints of endpointsByNetwork.values()) {
     for (const endpoint of endpoints) {
       addNode(endpoint.id, ENDPOINT_WIDTH, ENDPOINT_HEIGHT, endpoint.name);
     }
   }
+  };
+  registerEndpoints();
+  const registerPhysicalNodes = () => {
   for (const sw of switches) {
     addNode(`switch:${sw.deviceId}`, NODE_WIDTH, 64, sw.name);
   }
@@ -151,6 +170,9 @@ export function buildFlow(
     if (ap.networkIds.some((id) => names.has(id)))
       addNode(`wifiap:${ap.id}`, NODE_WIDTH, 60, ap.name);
   }
+  };
+  registerPhysicalNodes();
+  const registerPveNodes = () => {
   if (pve) {
     if (pve.baseline)
       addNode("pve:baseline", PVE_NODE_WIDTH, 64, "All firewalled guests");
@@ -166,11 +188,14 @@ export function buildFlow(
       addNode(`pve:set:${set.id}`, PVE_NODE_WIDTH, 52, set.label);
     }
   }
+  };
+  registerPveNodes();
   const cloudflareAppTargets = new Map<
     string,
     { id: string; name: string; kind: "endpoint" | "network" }
   >();
   const allEndpoints = [...endpointsByNetwork.values()].flat();
+  const registerCloudflareNodes = () => {
   for (const account of cloudflare) {
     addNode(
       `cloudflare:account:${account.integrationId}`,
@@ -204,6 +229,8 @@ export function buildFlow(
       addNode(id, 242, 50, application.hostname);
     }
   }
+  };
+  registerCloudflareNodes();
 
   // A trace-oriented deterministic layout. Mixing physical delivery, routed
   // firewall cycles, and workload policy in one Dagre pass made every layer
@@ -222,11 +249,12 @@ export function buildFlow(
   const GATE_X = NETWORK_X + NODE_WIDTH + 54;
   const networkOrder = orderAccessTraceNodes(graph.nodes);
   const policyLoad = new Map(graph.nodes.map((node) => [node.id, 0]));
+  let networkY = 24;
+  const placeNetworkRows = () => {
   for (const edge of graph.edges) {
     policyLoad.set(edge.source, (policyLoad.get(edge.source) ?? 0) + 1);
     policyLoad.set(edge.target, (policyLoad.get(edge.target) ?? 0) + 1);
   }
-  let networkY = 24;
   for (const node of networkOrder) {
     const endpoints = endpointsByNetwork.get(node.id) ?? [];
     const endpointRows = Math.ceil(endpoints.length / 2);
@@ -257,11 +285,14 @@ export function buildFlow(
     });
     networkY += rowHeight + accessPolicyRowGap(policyLoad.get(node.id) ?? 0);
   }
+  };
+  placeNetworkRows();
 
   // Public ingress sits to the left of the physical/network plane, keeping
   // each hostname as an inspectable hop instead of collapsing an account into
   // one ambiguous edge.
   let cloudflareY = 24;
+  const placeCloudflareRows = () => {
   for (const account of cloudflare) {
     const accountId = `cloudflare:account:${account.integrationId}`;
     const appIds = account.applications.map(
@@ -277,10 +308,13 @@ export function buildFlow(
     });
     cloudflareY += blockHeight + 30;
   }
+  };
+  placeCloudflareRows();
 
   const centerY = (id: string): number =>
     (positions.get(id)?.y ?? 0) + (heights.get(id) ?? 64) / 2;
   const physicalTargets = new Map<string, string[]>();
+  const indexPhysicalTargets = () => {
   for (const sw of switches) {
     physicalTargets.set(
       `switch:${sw.deviceId}`,
@@ -293,6 +327,8 @@ export function buildFlow(
       ap.networkIds.filter((id) => names.has(id)),
     );
   }
+  };
+  indexPhysicalTargets();
   const physicalIds = [...physicalTargets.keys()].filter((id) => names.has(id));
   physicalIds.sort((a, b) => {
     const desired = (id: string) => {
@@ -307,6 +343,7 @@ export function buildFlow(
   // it below the network rows so Cloudflare/application and policy traces do
   // not have to run through switch/AP cards.
   let physicalCursor = Math.max(networkY + 40, cloudflareY + 40);
+  const placePhysicalRows = () => {
   for (const id of physicalIds) {
     const targets = physicalTargets.get(id) ?? [];
     const desiredCenter = targets.length > 0
@@ -317,6 +354,8 @@ export function buildFlow(
     positions.set(id, { x: PHYSICAL_X, y });
     physicalCursor = y + height + 24;
   }
+  };
+  placePhysicalRows();
 
   const orderedTraces = orderAccessTraceEdges(graph.nodes, graph.edges);
   const TRACE_START_X = GATE_X + GATE_WIDTH + 72;
@@ -345,10 +384,13 @@ export function buildFlow(
     Math.max(0, policyTargets.length - 1) * 24,
   );
   let policyY = Math.max(24, homeCenter - policyHeight / 2);
+  const placePolicyTargets = () => {
   for (const id of policyTargets) {
     positions.set(id, { x: policyTargetX, y: policyY });
     policyY += (heights.get(id) ?? 64) + 24;
   }
+  };
+  placePolicyTargets();
   const policySources = pve?.sourceSets
     .map((set) => `pve:set:${set.id}`)
     .filter((id) => names.has(id)) ?? [];
@@ -356,10 +398,13 @@ export function buildFlow(
     (sum, id) => sum + (heights.get(id) ?? 52) + 18,
     0,
   ) / 2);
+  const placePolicySources = () => {
   for (const id of policySources) {
     positions.set(id, { x: policySourceX, y: sourceY });
     sourceY += (heights.get(id) ?? 52) + 18;
   }
+  };
+  placePolicySources();
 
   const boundary = (id: string, side: "left" | "right"): Pt => {
     const position = positions.get(id) ?? { x: 0, y: 0 };
@@ -381,7 +426,7 @@ export function buildFlow(
     );
     const routeKey = edgeId ?? `${source}→${target}:${kind}`;
     const deliveryLane = (stableLane(routeKey, 7) - 3) * 4;
-    const corridorX = kind === "trace"
+    const selectCorridorX = () => kind === "trace"
       ? (traceTrack.get(edgeId ?? "") ?? TRACE_START_X)
       : kind === "peer"
         ? (peerTrack.get(edgeId ?? "") ??
@@ -389,6 +434,7 @@ export function buildFlow(
       : targetAnchor.x > sourceAnchor.x
         ? targetAnchor.x - 30 + deliveryLane
         : Math.max(sourceAnchor.x, boundary(target, "right").x) + 56;
+    const corridorX = selectCorridorX();
     if (kind === "trace") {
       const lanes = traceEndpointLanes.get(edgeId ?? "") ?? {
         sourceOffset: 0,
@@ -428,6 +474,7 @@ export function buildFlow(
   const place = (id: string): { x: number; y: number } =>
     positions.get(id) ?? { x: 0, y: 0 };
 
+  const createGraphNodes = () => {
   for (const node of graph.nodes) {
     nodes.push({
       id: node.id,
@@ -451,6 +498,9 @@ export function buildFlow(
       },
     } as NetworkNodeType);
   }
+  };
+  createGraphNodes();
+  const createEndpointNodes = () => {
   for (const endpoints of endpointsByNetwork.values()) {
     for (const endpoint of endpoints) {
       nodes.push({
@@ -463,6 +513,9 @@ export function buildFlow(
       } as EndpointNodeType);
     }
   }
+  };
+  createEndpointNodes();
+  const createGateNodes = () => {
   for (const node of graph.nodes) {
     const id = gatesByNetwork.get(node.id);
     if (!id) continue;
@@ -481,6 +534,9 @@ export function buildFlow(
       },
     } as InterfaceGateNodeType);
   }
+  };
+  createGateNodes();
+  const createPhysicalNodes = () => {
   for (const sw of switches) {
     const id = `switch:${sw.deviceId}`;
     nodes.push({
@@ -504,6 +560,9 @@ export function buildFlow(
       data: { ap },
     } as WifiApNodeType);
   }
+  };
+  createPhysicalNodes();
+  const createPveNodes = () => {
   if (pve) {
     if (pve.baseline) {
       nodes.push({
@@ -548,6 +607,9 @@ export function buildFlow(
       } as PveSetNodeType);
     }
   }
+  };
+  createPveNodes();
+  const createCloudflareNodes = () => {
   for (const account of cloudflare) {
     const accountId = `cloudflare:account:${account.integrationId}`;
     nodes.push({
@@ -573,6 +635,8 @@ export function buildFlow(
       } as CloudflareAppNodeType);
     }
   }
+  };
+  createCloudflareNodes();
 
   const { edges, details } = buildEdges({
     graph, cloudflare, tailscale, pve, pveHomeNetworkId, selectedEdgeId,
@@ -582,6 +646,7 @@ export function buildFlow(
   });
 
   const offsets = endpointOffsets(edges, 6, 40);
+  const applyOffsets = () => {
   for (const edge of edges) {
     const fixedTraceLane = edge.data?.fixedTraceLane === true;
     edge.data = {
@@ -591,6 +656,8 @@ export function buildFlow(
         : offsets.get(edge.id)),
     };
   }
+  };
+  applyOffsets();
 
   return { nodes, edges, details, names };
 }

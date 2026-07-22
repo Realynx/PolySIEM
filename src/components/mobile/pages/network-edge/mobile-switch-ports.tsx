@@ -32,11 +32,12 @@ function ModeBadge({ mode }: { mode: string | null }) {
   if (mode === "access") return <Badge variant="secondary" className="text-[10px]">access</Badge>;
   if (mode === "trunk") return <Badge className="text-[10px]">trunk</Badge>;
   if (mode === "routed") return <Badge variant="outline" className="text-[10px]">routed</Badge>;
-  return (
+  const content = () => (
     <Badge variant="outline" className="text-[10px] text-muted-foreground">
       unknown
     </Badge>
   );
+  return content();
 }
 
 /** Compact VLAN/address summary matching the desktop PortVlans column. */
@@ -105,7 +106,29 @@ export function MobileSwitchPorts({
   const [selected, setSelected] = useState<MobileSwitchPort | null>(null);
   const members = selected?.isPortChannel ? (membersByChannel[selected.id] ?? []) : [];
 
-  return (
+  const channelMembers = () => selected?.isPortChannel ? (
+    <div className="rounded-xl border bg-card p-3">
+      <p className="mb-1.5 font-mono text-[11px] tracking-wider text-muted-foreground uppercase">Member ports</p>
+      {members.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No member ports found in the config.</p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {members.map((member) => (
+            <li key={member.id} className={cn("flex items-center gap-2 text-xs", member.isShutdown && "opacity-60")}>
+              <span className="font-mono font-medium">{member.shortName}</span>
+              {member.description && <span className="truncate text-muted-foreground">{member.description}</span>}
+              <span className="ml-auto flex shrink-0 items-center gap-1">
+                {member.isShutdown && <Badge variant="destructive" className="text-[10px]">shut</Badge>}
+                {member.channelMode && <Badge variant="outline" className="text-[10px] text-muted-foreground">{member.channelMode}</Badge>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  ) : null;
+
+  const content = () => (
     <>
       {portChannels.length > 0 && (
         <MobileSection title={`Port-channels · ${portChannels.length}`}>
@@ -137,7 +160,7 @@ export function MobileSwitchPorts({
         title={selected?.name ?? "Port"}
         description={selected?.description ?? undefined}
       >
-        {selected && (
+        {selected && (() => (
           <div className="flex flex-col gap-3 pb-2">
             <div className="divide-y divide-border/60 rounded-xl border bg-card">
               <MobileKeyRow label="Mode">
@@ -190,42 +213,11 @@ export function MobileSwitchPorts({
                 )}
               </MobileKeyRow>
             </div>
-            {selected.isPortChannel && (
-              <div className="rounded-xl border bg-card p-3">
-                <p className="mb-1.5 font-mono text-[11px] tracking-wider text-muted-foreground uppercase">
-                  Member ports
-                </p>
-                {members.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No member ports found in the config.</p>
-                ) : (
-                  <ul className="flex flex-col gap-1.5">
-                    {members.map((member) => (
-                      <li key={member.id} className={cn("flex items-center gap-2 text-xs", member.isShutdown && "opacity-60")}>
-                        <span className="font-mono font-medium">{member.shortName}</span>
-                        {member.description && (
-                          <span className="truncate text-muted-foreground">{member.description}</span>
-                        )}
-                        <span className="ml-auto flex shrink-0 items-center gap-1">
-                          {member.isShutdown && (
-                            <Badge variant="destructive" className="text-[10px]">
-                              shut
-                            </Badge>
-                          )}
-                          {member.channelMode && (
-                            <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                              {member.channelMode}
-                            </Badge>
-                          )}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
+            {channelMembers()}
           </div>
-        )}
+        ))()}
       </BottomSheet>
     </>
   );
+  return content();
 }

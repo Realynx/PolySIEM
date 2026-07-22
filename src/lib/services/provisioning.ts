@@ -134,6 +134,29 @@ export async function getContainerProvisioningOptions(
   }
 }
 
+async function provisioningPublicKey(sshKeyId: string | undefined): Promise<string | undefined> {
+  if (!sshKeyId) return undefined;
+  const key = await prisma.sshKey.findUnique({ where: { id: sshKeyId } });
+  if (!key) throw new ApiError(404, "ssh_key_not_found", "SSH key not found");
+  return key.publicKey;
+}
+
+function validateContainerSelection(
+  options: ContainerProvisioningOptions,
+  input: ProvisionContainerInput,
+): void {
+  const unsupported = unsupportedContainerSelection(options, input);
+  const errors = {
+    template: ["template_not_found", "That template is not available on the selected node"],
+    storage: ["storage_not_found", "That storage cannot hold container root disks"],
+    network: ["network_not_found", "That bridge is not available on the selected node"],
+  } as const;
+  if (unsupported) {
+    const [code, message] = errors[unsupported];
+    throw new ApiError(422, code, message);
+  }
+}
+
 /** Create one container, wait for the provider task, sync it, and audit both phases. */
 export async function provisionContainer(
   actor: AuditActor,
@@ -141,12 +164,7 @@ export async function provisionContainer(
 ): Promise<ProvisionContainerResult> {
   const input = provisionContainerSchema.parse(rawInput);
   const { integration, provisioner, cfg } = await getProvisioningIntegration(input.integrationId);
-  let publicKey: string | undefined;
-  if (input.sshKeyId) {
-    const key = await prisma.sshKey.findUnique({ where: { id: input.sshKeyId } });
-    if (!key) throw new ApiError(404, "ssh_key_not_found", "SSH key not found");
-    publicKey = key.publicKey;
-  }
+  const publicKey = await provisioningPublicKey(input.sshKeyId);
 
   try {
     const nodes = await provisioner.listNodes(cfg);
@@ -154,16 +172,7 @@ export async function provisionContainer(
     if (!node) throw new ApiError(404, "node_not_found", "Provider node not found");
     if (!node.online) throw new ApiError(409, "node_offline", `Provider node “${node.label}” is offline`);
     const options = await provisioner.getOptions(cfg, input.node);
-    const unsupported = unsupportedContainerSelection(options, input);
-    if (unsupported === "template") {
-      throw new ApiError(422, "template_not_found", "That template is not available on the selected node");
-    }
-    if (unsupported === "storage") {
-      throw new ApiError(422, "storage_not_found", "That storage cannot hold container root disks");
-    }
-    if (unsupported === "network") {
-      throw new ApiError(422, "network_not_found", "That bridge is not available on the selected node");
-    }
+    validateContainerSelection(options, input);
     const vmid = input.vmid ?? options.nextVmid;
     const task = await provisioner.create(cfg, createRequest(input, vmid, publicKey));
     await audit(actor, "provision.container_requested", { type: "integration", id: integration.id }, {

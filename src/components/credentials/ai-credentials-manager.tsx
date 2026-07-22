@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, ChevronDown, KeyRound, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -44,6 +44,74 @@ export interface AiCredentialView {
   secretLength: number;
   createdAt: string;
   updatedAt: string;
+}
+
+function CredentialFields({
+  isEdit, name, setName, description, setDescription, username, setUsername,
+  url, setUrl, secret, setSecret,
+}: {
+  isEdit: boolean;
+  name: string; setName: (value: string) => void;
+  description: string; setDescription: (value: string) => void;
+  username: string; setUsername: (value: string) => void;
+  url: string; setUrl: (value: string) => void;
+  secret: string; setSecret: (value: string) => void;
+}) {
+  return <div className="space-y-4 py-4">
+    <div className="grid gap-2"><Label htmlFor="cred-name">Name</Label><Input id="cred-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. grafana-admin" required maxLength={64} pattern="[a-z0-9][a-z0-9\-_.]*" title="Lowercase slug: letters, digits, '-', '_' or '.'" className="font-mono" /><p className="text-xs text-muted-foreground">Lowercase slug — this is the name the AI passes to get_ai_credential.</p></div>
+    <div className="grid gap-2"><Label htmlFor="cred-description">Description (optional)</Label><Textarea id="cred-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What this credential is for — shown to the AI so it can pick the right one" maxLength={500} rows={2} /></div>
+    <div className="grid gap-2"><Label htmlFor="cred-username">Username (optional)</Label><Input id="cred-username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="e.g. admin" maxLength={128} autoComplete="off" /></div>
+    <div className="grid gap-2"><Label htmlFor="cred-url">URL (optional)</Label><Input id="cred-url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="e.g. https://grafana.lab.example" maxLength={512} autoComplete="off" /></div>
+    <div className="grid gap-2"><Label htmlFor="cred-secret">{isEdit ? "New secret (optional)" : "Secret"}</Label><Input id="cred-secret" type="password" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder={isEdit ? "Leave blank to keep the current secret" : "Password, API key, token…"} maxLength={4096} autoComplete="new-password" required={!isEdit} /><p className="text-xs text-muted-foreground">Stored encrypted, never shown again.{isEdit ? " Leave blank to keep the existing secret." : ""}</p></div>
+  </div>;
+}
+
+function useCredentialSave({
+  credential, name, description, username, url, secret, onOpenChange, onSaved,
+}: {
+  credential: AiCredentialView | null;
+  name: string;
+  description: string;
+  username: string;
+  url: string;
+  secret: string;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  const isEdit = credential !== null;
+  return useMutation({
+    mutationFn: () => {
+      const base = { name: name.trim(), description: description.trim() || undefined, username: username.trim() || undefined, url: url.trim() || undefined };
+      if (!credential) return apiFetch("/api/admin/ai-credentials", { method: "POST", body: JSON.stringify({ ...base, secret }) });
+      return apiFetch(`/api/admin/ai-credentials/${credential.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...base, description: description.trim() || null, username: username.trim() || null, url: url.trim() || null, ...(secret.length > 0 ? { secret } : {}) }),
+      });
+    },
+    onSuccess: () => {
+      toast.success(isEdit ? `Updated "${name.trim()}"` : `Added "${name.trim()}"`);
+      onOpenChange(false);
+      onSaved();
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+function useCredentialFields(open: boolean, credential: AiCredentialView | null) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [username, setUsername] = useState("");
+  const [url, setUrl] = useState("");
+  const [secret, setSecret] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    setName(credential?.name ?? "");
+    setDescription(credential?.description ?? "");
+    setUsername(credential?.username ?? "");
+    setUrl(credential?.url ?? "");
+    setSecret("");
+  }, [open, credential]);
+  return { name, setName, description, setDescription, username, setUsername, url, setUrl, secret, setSecret };
 }
 
 const CREDENTIALS_KEY = ["admin-ai-credentials"];
@@ -254,69 +322,23 @@ export function AiCredentialsManager({
   );
 }
 
-function CredentialDialog({
+export function CredentialDialog({
   open,
   onOpenChange,
   credential,
   onSaved,
+  onDelete,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   credential: AiCredentialView | null;
   onSaved: () => void;
+  onDelete?: () => void;
 }) {
   const isEdit = credential !== null;
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [username, setUsername] = useState("");
-  const [url, setUrl] = useState("");
-  const [secret, setSecret] = useState("");
-  // Re-seed the form whenever the dialog opens for a different target.
-  const [seededFor, setSeededFor] = useState<string | null>(null);
-  const seedKey = credential?.id ?? "new";
-  if (open && seededFor !== seedKey) {
-    setSeededFor(seedKey);
-    setName(credential?.name ?? "");
-    setDescription(credential?.description ?? "");
-    setUsername(credential?.username ?? "");
-    setUrl(credential?.url ?? "");
-    setSecret("");
-  }
-  if (!open && seededFor !== null) setSeededFor(null);
+  const { name, setName, description, setDescription, username, setUsername, url, setUrl, secret, setSecret } = useCredentialFields(open, credential);
 
-  const save = useMutation({
-    mutationFn: () => {
-      const base = {
-        name: name.trim(),
-        description: description.trim() || undefined,
-        username: username.trim() || undefined,
-        url: url.trim() || undefined,
-      };
-      if (isEdit) {
-        return apiFetch(`/api/admin/ai-credentials/${credential.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            ...base,
-            description: description.trim() || null,
-            username: username.trim() || null,
-            url: url.trim() || null,
-            // Blank secret = keep the stored one.
-            ...(secret.length > 0 ? { secret } : {}),
-          }),
-        });
-      }
-      return apiFetch("/api/admin/ai-credentials", {
-        method: "POST",
-        body: JSON.stringify({ ...base, secret }),
-      });
-    },
-    onSuccess: () => {
-      toast.success(isEdit ? `Updated "${name.trim()}"` : `Added "${name.trim()}"`);
-      onOpenChange(false);
-      onSaved();
-    },
-    onError: (err: Error) => toast.error(err.message),
-  });
+  const save = useCredentialSave({ credential, name, description, username, url, secret, onOpenChange, onSaved });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -338,76 +360,13 @@ function CredentialDialog({
               tokens with the credentials scope.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="cred-name">Name</Label>
-              <Input
-                id="cred-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. grafana-admin"
-                required
-                maxLength={64}
-                pattern="[a-z0-9][a-z0-9\-_.]*"
-                title="Lowercase slug: letters, digits, '-', '_' or '.'"
-                className="font-mono"
-              />
-              <p className="text-xs text-muted-foreground">
-                Lowercase slug — this is the name the AI passes to get_ai_credential.
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="cred-description">Description (optional)</Label>
-              <Textarea
-                id="cred-description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="What this credential is for — shown to the AI so it can pick the right one"
-                maxLength={500}
-                rows={2}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="cred-username">Username (optional)</Label>
-              <Input
-                id="cred-username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="e.g. admin"
-                maxLength={128}
-                autoComplete="off"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="cred-url">URL (optional)</Label>
-              <Input
-                id="cred-url"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="e.g. https://grafana.lab.example"
-                maxLength={512}
-                autoComplete="off"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="cred-secret">{isEdit ? "New secret (optional)" : "Secret"}</Label>
-              <Input
-                id="cred-secret"
-                type="password"
-                value={secret}
-                onChange={(e) => setSecret(e.target.value)}
-                placeholder={isEdit ? "Leave blank to keep the current secret" : "Password, API key, token…"}
-                maxLength={4096}
-                autoComplete="new-password"
-                required={!isEdit}
-              />
-              <p className="text-xs text-muted-foreground">
-                Stored encrypted, never shown again.
-                {isEdit ? " Leave blank to keep the existing secret." : ""}
-              </p>
-            </div>
-          </div>
+          <CredentialFields {...{ isEdit, name, setName, description, setDescription, username, setUsername, url, setUrl, secret, setSecret }} />
           <DialogFooter>
+            {isEdit && onDelete && (
+              <Button type="button" variant="destructive" className="sm:mr-auto" onClick={onDelete}>
+                <Trash2 className="size-4" /> Delete
+              </Button>
+            )}
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>

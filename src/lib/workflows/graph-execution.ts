@@ -1,5 +1,4 @@
-import type { WorkflowGraph } from "./types";
-import { isTriggerKind } from "./types";
+import { isTriggerKind, type WorkflowGraph } from "./types";
 import { collectTemplateRefs } from "./template-resolution";
 
 export function topologicalOrder(graph: WorkflowGraph): string[] | null {

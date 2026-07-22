@@ -170,6 +170,182 @@ function sameIdSet(a: Set<string>, b: Set<string>): boolean {
   return true;
 }
 
+function rowsByKey<T>(rows: readonly T[], keys: (row: T) => readonly string[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    for (const key of keys(row)) {
+      const values = grouped.get(key) ?? [];
+      values.push(row);
+      grouped.set(key, values);
+    }
+  }
+  return grouped;
+}
+
+function findBaselineGroup(
+  firewalled: PveGuestInput[], membersByGroup: ReadonlyMap<string, PveGuestInput[]>,
+  rulesByGroup: ReadonlyMap<string, PveGroupRuleInput[]>,
+): string | null {
+  let baseline: string | null = null;
+  for (const [group, members] of membersByGroup) {
+    const hasDrop = (rulesByGroup.get(group) ?? []).some((rule) =>
+      rule.scope !== "guest" && rule.enabled && (rule.action === "BLOCK" || rule.action === "REJECT"));
+    if (!hasDrop || firewalled.length === 0 || members.length < Math.ceil(firewalled.length * 0.8)) continue;
+    if (!baseline || members.length > (membersByGroup.get(baseline)?.length ?? 0)) baseline = group;
+  }
+  return baseline;
+}
+
+interface PveSourceResolver {
+  baselineGroup: string | null;
+  guestByIp: ReadonlyMap<string, PveGuestInput>;
+  homeNetworkId?: string;
+  ipsetByName: ReadonlyMap<string, PveIpsetInput>;
+  memberIdSets: ReadonlyMap<string, Set<string>>;
+  networks: PveNetworkInput[];
+  sourceSets: Map<string, PveSourceSet>;
+  unresolved: Set<string>;
+}
+
+function guestSource(entries: string[], token: string, resolver: PveSourceResolver): PveSourceRef[] | null {
+  if (!entries.every(isBareIp)) return null;
+  const matched = entries.map((entry) => resolver.guestByIp.get(stripHost(entry)) ?? null);
+  if (!matched.every((guest): guest is PveGuestInput => guest !== null)) return null;
+  const ids = new Set(matched.map((guest) => guest.id));
+  for (const [group, memberIds] of resolver.memberIdSets) {
+    if (group !== resolver.baselineGroup && sameIdSet(ids, memberIds)) return [{ type: "group", group }];
+  }
+  const isNamed = token.startsWith("+");
+  const setId = isNamed ? token.slice(1) : `ips:${entries.join(",")}`;
+  if (!resolver.sourceSets.has(setId)) {
+    resolver.sourceSets.set(setId, {
+      id: setId,
+      label: isNamed ? token.slice(1) : matched.map((guest) => guest.name).join(", "),
+      guestNames: matched.map((guest) => guest.name),
+    });
+  }
+  return [{ type: "guests", setId }];
+}
+
+function networkSources(entries: string[], token: string, resolver: PveSourceResolver): PveSourceRef[] {
+  const refs: PveSourceRef[] = [];
+  const seenNetworks = new Set<string>();
+  for (const entry of entries) {
+    const network = containingPveNetwork(entry, resolver.networks);
+    if (!network || seenNetworks.has(network.id)) continue;
+    seenNetworks.add(network.id);
+    const covers = Boolean(network.cidr && stripHost(entry) === network.cidr);
+    refs.push({
+      type: "network", networkId: network.id,
+      note: network.id === resolver.homeNetworkId ? "any guest" : covers ? null : entry,
+    });
+  }
+  if (refs.length === 0) resolver.unresolved.add(token);
+  return refs;
+}
+
+function resolvePveSource(spec: string | null, resolver: PveSourceResolver): PveSourceRef[] {
+  if (!spec || spec.trim() === "") {
+    return resolver.homeNetworkId
+      ? [{ type: "network", networkId: resolver.homeNetworkId, note: "any source" }]
+      : [];
+  }
+  const token = spec.trim();
+  const isNamed = token.startsWith("+");
+  const namedSet = resolver.ipsetByName.get((isNamed ? token.slice(1) : token).toLowerCase());
+  const entries = namedSet?.entries ?? (isNamed ? null : [token]);
+  if (!entries || entries.length === 0) {
+    resolver.unresolved.add(token);
+    return [];
+  }
+  return guestSource(entries, token, resolver) ?? networkSources(entries, token, resolver);
+}
+
+function sourceEdgeKey(source: PveSourceRef): string {
+  if (source.type === "network") return `net:${source.networkId}`;
+  if (source.type === "group") return `grp:${source.group}`;
+  return `set:${source.setId}`;
+}
+
+function mergePveEdge(
+  edgeMap: Map<string, PveEdge>, source: PveSourceRef, groupName: string,
+  isBaseline: boolean, rule: PveGroupRuleInput,
+): void {
+  const toKey = isBaseline ? "baseline" : `grp:${groupName}`;
+  const key = `${sourceEdgeKey(source)}->${toKey}`;
+  const existing = edgeMap.get(key);
+  const label = portLabel(rule);
+  const description = rule.comment ?? rule.groupComment ?? groupName;
+  if (existing) {
+    if (!existing.label.split(" · ").includes(label)) existing.label += ` · ${label}`;
+    if (!existing.descriptions.includes(description)) existing.descriptions.push(description);
+    return;
+  }
+  edgeMap.set(key, {
+    id: `pve:${key}`, from: source,
+    to: isBaseline ? { type: "baseline" } : { type: "group", group: groupName },
+    label, descriptions: [description],
+  });
+}
+
+function isEnabledInboundRule(rule: PveGroupRuleInput): boolean {
+  const direction = rule.direction || "in";
+  return rule.enabled && direction.toLowerCase() === "in";
+}
+
+function dropsHomeNetwork(
+  rule: PveGroupRuleInput, sources: PveSourceRef[], isBaseline: boolean, homeNetworkId?: string,
+): boolean {
+  if (!isBaseline || !rule.sourceSpec) return false;
+  return sources.some((source) => source.type === "network" && source.networkId === homeNetworkId);
+}
+
+function pveGroupNode(
+  groupName: string,
+  members: PveGuestInput[],
+  inbound: PveGroupRuleInput[],
+  peer: boolean,
+): PveGroupNode {
+  return {
+    name: groupName,
+    label: inbound[0]?.groupLabel ?? groupName,
+    kind: inbound.some((rule) => rule.scope === "guest") ? "guest-local" : "security-group",
+    comment: inbound[0]?.groupComment ?? null,
+    members: members.map((member) => ({ id: member.id, name: member.name, kind: member.kind })),
+    peer,
+  };
+}
+
+function processPveGroup(
+  groupName: string, members: PveGuestInput[], rules: PveGroupRuleInput[],
+  baselineGroup: string | null, resolver: PveSourceResolver, edgeMap: Map<string, PveEdge>,
+): { node: PveGroupNode | null; dropsOwnNetwork: boolean } {
+  const inbound = rules.filter(isEnabledInboundRule);
+  const isBaseline = groupName === baselineGroup;
+  let peer = false;
+  let dropsOwnNetwork = false;
+  for (const rule of inbound) {
+    if (rule.action !== "PASS") {
+      const sources = isBaseline && rule.sourceSpec ? resolvePveSource(rule.sourceSpec, resolver) : [];
+      if (dropsHomeNetwork(rule, sources, isBaseline, resolver.homeNetworkId)) dropsOwnNetwork = true;
+      continue;
+    }
+    const sources = resolvePveSource(rule.sourceSpec, resolver);
+    for (const source of sources) {
+      if (!isBaseline && source.type === "group" && source.group === groupName) {
+        peer = true;
+      } else {
+        mergePveEdge(edgeMap, source, groupName, isBaseline, rule);
+      }
+    }
+  }
+  if (isBaseline) return { node: null, dropsOwnNetwork };
+  return {
+    node: pveGroupNode(groupName, members, inbound, peer),
+    dropsOwnNetwork,
+  };
+}
+
 // ---------- main derivation ----------
 
 export function derivePveAccess(
@@ -182,175 +358,25 @@ export function derivePveAccess(
 ): PveAccessView {
   const firewalled = guests.filter((g) => g.firewallEnabled && g.groups.length > 0);
   const unresolved = new Set<string>();
-
-  const membersByGroup = new Map<string, PveGuestInput[]>();
-  for (const guest of firewalled) {
-    for (const group of guest.groups) {
-      const list = membersByGroup.get(group) ?? [];
-      list.push(guest);
-      membersByGroup.set(group, list);
-    }
-  }
-
-  const rulesByGroup = new Map<string, PveGroupRuleInput[]>();
-  for (const rule of groupRules) {
-    const list = rulesByGroup.get(rule.group) ?? [];
-    list.push(rule);
-    rulesByGroup.set(rule.group, list);
-  }
-
-  // Baseline: the group carried by (almost) every firewalled guest that also
-  // drops traffic from somewhere — the default-deny backstop.
-  let baselineGroup: string | null = null;
-  for (const [group, members] of membersByGroup) {
-    const hasDrop = (rulesByGroup.get(group) ?? []).some(
-      (r) =>
-        r.scope !== "guest" &&
-        r.enabled &&
-        (r.action === "BLOCK" || r.action === "REJECT"),
-    );
-    if (!hasDrop) continue;
-    if (firewalled.length > 0 && members.length >= Math.ceil(firewalled.length * 0.8)) {
-      if (!baselineGroup || members.length > (membersByGroup.get(baselineGroup)?.length ?? 0)) {
-        baselineGroup = group;
-      }
-    }
-  }
-
-  const guestByIp = new Map<string, PveGuestInput>();
-  for (const guest of guests) {
-    for (const ip of guest.ips) guestByIp.set(ip, guest);
-  }
+  const membersByGroup = rowsByKey(firewalled, (guest) => guest.groups);
+  const rulesByGroup = rowsByKey(groupRules, (rule) => [rule.group]);
+  const baselineGroup = findBaselineGroup(firewalled, membersByGroup, rulesByGroup);
+  const guestByIp = new Map(guests.flatMap((guest) => guest.ips.map((ip) => [ip, guest] as const)));
   const ipsetByName = new Map(ipsets.map((s) => [s.name.toLowerCase(), s]));
-
-  const memberIdSets = new Map<string, Set<string>>();
-  for (const [group, members] of membersByGroup) {
-    memberIdSets.set(group, new Set(members.map((m) => m.id)));
-  }
-
+  const memberIdSets = new Map(Array.from(membersByGroup, ([group, members]) =>
+    [group, new Set(members.map((member) => member.id))] as const));
   const sourceSets = new Map<string, PveSourceSet>();
-
-  /** Resolve a rule source spec into graph references. */
-  function resolveSource(spec: string | null): PveSourceRef[] {
-    if (!spec || spec.trim() === "") {
-      // No source = anywhere; phrase as the home network + beyond is too
-      // strong — treat as the guests' own network with an "anywhere" note.
-      return homeNetworkId ? [{ type: "network", networkId: homeNetworkId, note: "any source" }] : [];
-    }
-    const token = spec.trim();
-    const namedSet = ipsetByName.get((token.startsWith("+") ? token.slice(1) : token).toLowerCase());
-    const entries = namedSet?.entries ?? (token.startsWith("+") ? null : [token]);
-    if (entries === null || entries.length === 0) {
-      unresolved.add(token);
-      return [];
-    }
-
-    // All bare IPs → try guests.
-    if (entries.every(isBareIp)) {
-      const matched = entries.map((e) => guestByIp.get(stripHost(e)) ?? null);
-      if (matched.every((g): g is PveGuestInput => g !== null)) {
-        const ids = new Set(matched.map((g) => g.id));
-        for (const [group, memberIds] of memberIdSets) {
-          if (group !== baselineGroup && sameIdSet(ids, memberIds)) return [{ type: "group", group }];
-        }
-        const setId = token.startsWith("+") ? token.slice(1) : `ips:${entries.join(",")}`;
-        if (!sourceSets.has(setId)) {
-          sourceSets.set(setId, {
-            id: setId,
-            label: token.startsWith("+") ? token.slice(1) : matched.map((g) => g.name).join(", "),
-            guestNames: matched.map((g) => g.name),
-          });
-        }
-        return [{ type: "guests", setId }];
-      }
-    }
-
-    // CIDR entries → networks that contain them.
-    const refs: PveSourceRef[] = [];
-    const seenNetworks = new Set<string>();
-    let anyResolved = false;
-    for (const entry of entries) {
-      const net = containingPveNetwork(entry, networks);
-      if (net) {
-        anyResolved = true;
-        if (!seenNetworks.has(net.id)) {
-          seenNetworks.add(net.id);
-          const covers = net.cidr && stripHost(entry) === net.cidr;
-          refs.push({
-            type: "network",
-            networkId: net.id,
-            note: net.id === homeNetworkId ? "any guest" : covers ? null : entry,
-          });
-        }
-      }
-    }
-    if (!anyResolved) {
-      unresolved.add(token);
-      return [];
-    }
-    return refs;
-  }
-
-  // Build group nodes (peer flag) and edges.
+  const resolver: PveSourceResolver = {
+    baselineGroup, guestByIp, homeNetworkId, ipsetByName, memberIdSets, networks, sourceSets, unresolved,
+  };
   const groups: PveGroupNode[] = [];
   const edgeMap = new Map<string, PveEdge>();
   let dropNote: string | null = null;
-
   for (const [groupName, members] of membersByGroup) {
-    const rules = (rulesByGroup.get(groupName) ?? []).filter(
-      (r) => r.enabled && (r.direction ?? "in").toLowerCase() === "in",
-    );
-    const isBaseline = groupName === baselineGroup;
-    let peer = false;
-
-    for (const rule of rules) {
-      if (rule.action !== "PASS") {
-        if (isBaseline && rule.sourceSpec) {
-          const sources = resolveSource(rule.sourceSpec);
-          const ownNetwork = sources.some((s) => s.type === "network" && s.networkId === homeNetworkId);
-          if (ownNetwork) dropNote = "everything else between guests is dropped";
-        }
-        continue;
-      }
-      const sources = resolveSource(rule.sourceSpec);
-      for (const source of sources) {
-        // A group's rule admitting exactly its own members = peer clique.
-        if (!isBaseline && source.type === "group" && source.group === groupName) {
-          peer = true;
-          continue;
-        }
-        const fromKey =
-          source.type === "network" ? `net:${source.networkId}` : source.type === "group" ? `grp:${source.group}` : `set:${source.setId}`;
-        const toKey = isBaseline ? "baseline" : `grp:${groupName}`;
-        const key = `${fromKey}->${toKey}`;
-        const existing = edgeMap.get(key);
-        const label = portLabel(rule);
-        const description = rule.comment ?? rule.groupComment ?? groupName;
-        if (existing) {
-          if (!existing.label.split(" · ").includes(label)) existing.label += ` · ${label}`;
-          if (!existing.descriptions.includes(description)) existing.descriptions.push(description);
-        } else {
-          edgeMap.set(key, {
-            id: `pve:${key}`,
-            from: source,
-            to: isBaseline ? { type: "baseline" } : { type: "group", group: groupName },
-            label,
-            descriptions: [description],
-          });
-        }
-      }
-    }
-
-    if (!isBaseline) {
-      groups.push({
-        name: groupName,
-        label: rules[0]?.groupLabel ?? groupName,
-        kind: rules.some((rule) => rule.scope === "guest") ? "guest-local" : "security-group",
-        comment: rules[0]?.groupComment ?? null,
-        members: members.map((m) => ({ id: m.id, name: m.name, kind: m.kind })),
-        peer,
-      });
-    }
+    const result = processPveGroup(groupName, members, rulesByGroup.get(groupName) ?? [],
+      baselineGroup, resolver, edgeMap);
+    if (result.node) groups.push(result.node);
+    if (result.dropsOwnNetwork) dropNote = "everything else between guests is dropped";
   }
   groups.sort((a, b) => a.name.localeCompare(b.name));
 

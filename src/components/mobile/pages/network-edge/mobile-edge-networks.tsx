@@ -108,32 +108,32 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
       </MobilePageHeader>
 
       <MobilePage>
-        {overviewQuery.isLoading && (
+        {(() => overviewQuery.isLoading && (
           <div className="flex flex-col gap-3">
             <Skeleton className="h-16 rounded-xl" />
             <Skeleton className="h-48 rounded-xl" />
             <Skeleton className="h-48 rounded-xl" />
           </div>
-        )}
+        ))()}
 
-        {overviewQuery.isError && (
+        {(() => overviewQuery.isError && (
           <EmptyState
             icon={Router}
             title="Could not load edge networks"
             description={(overviewQuery.error as Error)?.message ?? "The edge network inventory is unavailable."}
             action={<Button onClick={() => void overviewQuery.refetch()}>Try again</Button>}
           />
-        )}
+        ))()}
 
-        {!overviewQuery.isLoading && !overviewQuery.isError && !hasAnyNetwork && (
+        {(() => !overviewQuery.isLoading && !overviewQuery.isError && !hasAnyNetwork && (
           <EmptyState
             icon={Router}
             title="No edge networks connected"
             description="Add an Edge NAT server to publish selected services through a remote IP, or connect Tailscale to inventory private routes and entry points."
           />
-        )}
+        ))()}
 
-        {!overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && tab === "edge" && (
+        {(() => !overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && tab === "edge" && (() => (
           <>
             <MobileStatStrip>
               <MobileStat label="Online" value={`${counts.onlineServers}/${overview.edgeServers.length}`} icon={<Server />} />
@@ -157,9 +157,9 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
               ))
             )}
           </>
-        )}
+        ))())()}
 
-        {!overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && tab === "tailscale" && (
+        {(() => !overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && tab === "tailscale" && (() => (
           overview.tailscale.length === 0 ? (
             <EmptyState
               icon={Share2}
@@ -171,9 +171,9 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
               <MobileTailscaleSection key={network.id ?? network.integrationId ?? index} network={network} />
             ))
           )
-        )}
+        ))())()}
 
-        {!overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && tab === "cloudflare" && (
+        {(() => !overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && tab === "cloudflare" && (() => (
           cloudflare.length === 0 ? (
             <EmptyState
               icon={Cloud}
@@ -185,10 +185,10 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
               <MobileCloudflareSection key={network.id} network={network} isAdmin={isAdmin} />
             ))
           )
-        )}
+        ))())()}
       </MobilePage>
 
-      {isAdmin && (
+      {(() => isAdmin && (() => (
         <MobileFab
           aria-label={
             tab === "edge" ? "Add Edge NAT server" : tab === "tailscale" ? "Connect Tailscale" : "Connect Cloudflare"
@@ -197,7 +197,7 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
         >
           <Plus />
         </MobileFab>
-      )}
+      ))())()}
     </>
   );
 }
@@ -273,9 +273,9 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
 
   const selectedApplied = selectedRule ? isRuleApplied(selectedRule, settings.lastAppliedAt) : false;
 
-  return (
+  const section = () => (
     <MobileSection title={server.name}>
-      <MobileList>
+      {(() => (<MobileList>
         <MobileListRow
           title={
             <>
@@ -314,29 +314,29 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
         <MobileKeyRow label="Rules confirmed remote">
           {reconciliation.desiredRuleCount ?? 0} desired · {reconciliation.appliedRuleCount ?? "unknown"} applied
         </MobileKeyRow>
-      </MobileList>
+      </MobileList>))()}
 
-      {(server.lastSyncError || settings.lastApplyError) && (
+      {(() => (server.lastSyncError || settings.lastApplyError) && (
         <p className="flex items-start gap-1.5 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
           {settings.lastApplyError ?? server.lastSyncError}
         </p>
-      )}
-      {!server.enabled && (
+      ))()}
+      {(() => !server.enabled && (
         <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
           {reconciliation.cleanupRequired
             ? "Disabled here, but previously applied remote rules may still forward traffic until they are cleared."
             : "Disabled and remotely cleared."}
         </p>
-      )}
-      {isAdmin && server.enabled && !server.hostKeyEnrolled && (
+      ))()}
+      {(() => isAdmin && server.enabled && !server.hostKeyEnrolled && (
         <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
           SSH enrollment is not finished. Complete the guided setup from the desktop view before applying rules.
         </p>
-      )}
+      ))()}
 
-      {server.rules.length === 0 ? (
+      {(() => server.rules.length === 0 ? (
         <p className="rounded-xl border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
           No ports are published. This server exposes no lab targets until a rule is added and applied.
         </p>
@@ -372,9 +372,9 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
             );
           })}
         </MobileList>
-      )}
+      ))()}
 
-      {isAdmin && server.enabled && (
+      {(() => isAdmin && server.enabled && (
         <div className="grid grid-cols-2 gap-2">
           <Button
             variant="outline"
@@ -409,12 +409,12 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
             </Button>
           )}
         </div>
-      )}
-      {isAdmin && !server.enabled && reconciliation.cleanupRequired && (
+      ))()}
+      {(() => isAdmin && !server.enabled && reconciliation.cleanupRequired && (
         <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
           <Trash2 /> Clear remote rules
         </Button>
-      )}
+      ))()}
 
       <BottomSheet
         open={selectedRule !== null}
@@ -422,7 +422,7 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
         title={selectedRule?.name ?? "NAT rule"}
         description={`Published on ${server.name}`}
       >
-        {selectedRule && (
+        {(() => selectedRule && (
           <div className="flex flex-col gap-3 pb-2">
             <div className="divide-y divide-border/60 rounded-xl border bg-card">
               <MobileKeyRow label="Edge listener" mono>
@@ -455,16 +455,16 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
               </div>
             )}
           </div>
-        )}
+        ))()}
       </BottomSheet>
 
-      {ruleForm.open && (
+      {(() => ruleForm.open && (
         <MobileNatRuleSheet
           server={server}
           rule={ruleForm.rule}
           onOpenChange={(open) => setRuleForm((current) => ({ ...current, open }))}
         />
-      )}
+      ))()}
 
       <AlertDialog open={deleteRule !== null} onOpenChange={(open) => !open && setDeleteRule(null)}>
         <AlertDialogContent>
@@ -518,6 +518,7 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
       </AlertDialog>
     </MobileSection>
   );
+  return section();
 }
 
 
@@ -622,7 +623,7 @@ function MobileCloudflareSection({ network, isAdmin }: { network: OtherEdgeNetwo
     },
   });
 
-  return (
+  const section = () => (
     <MobileSection title={network.name}>
       <MobileList>
         <MobileKeyRow label="Account">{network.account?.name ?? "Cloudflare account"}</MobileKeyRow>
@@ -637,7 +638,7 @@ function MobileCloudflareSection({ network, isAdmin }: { network: OtherEdgeNetwo
         </p>
       )}
 
-      {tunnels.length > 0 && (
+      {(() => tunnels.length > 0 && (
         <MobileList>
           {tunnels.map((tunnel) => (
             <MobileListRow
@@ -656,9 +657,9 @@ function MobileCloudflareSection({ network, isAdmin }: { network: OtherEdgeNetwo
             />
           ))}
         </MobileList>
-      )}
+      ))()}
 
-      {routes.length === 0 ? (
+      {(() => routes.length === 0 ? (
         <p className="rounded-xl border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
           No published hostname routes found.
         </p>
@@ -679,7 +680,7 @@ function MobileCloudflareSection({ network, isAdmin }: { network: OtherEdgeNetwo
             />
           ))}
         </MobileList>
-      )}
+      ))()}
 
       <BottomSheet
         open={selected !== null}
@@ -744,4 +745,5 @@ function MobileCloudflareSection({ network, isAdmin }: { network: OtherEdgeNetwo
       </AlertDialog>
     </MobileSection>
   );
+  return section();
 }

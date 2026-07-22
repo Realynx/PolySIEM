@@ -42,6 +42,35 @@ interface ApiEnvelope<T> {
   error?: { message?: string };
 }
 
+function setupCardWidth(step: number): string {
+  if (step === 5) return "max-w-5xl";
+  if (step === 3 || step === 4) return "max-w-3xl";
+  return "max-w-lg";
+}
+
+function SetupProgress({ step }: { step: number }) {
+  return (
+    <ol className="flex flex-wrap items-center justify-center gap-2">
+      {SETUP_STEPS.map((label, index) => (
+        <li key={label} className="flex items-center gap-2">
+          <span className={cn(
+            "flex size-6 items-center justify-center rounded-full text-xs font-medium transition-colors",
+            index < step ? "bg-primary text-primary-foreground" : index === step ? "border-2 border-primary text-primary" : "border border-border text-muted-foreground",
+          )}>
+            {index < step ? <Check className="size-3.5" /> : index + 1}
+          </span>
+          <span className={cn("text-xs sm:text-sm", index === step ? "font-medium" : "text-muted-foreground")}>{label}</span>
+          {index < SETUP_STEPS.length - 1 && <span className="mx-1 hidden h-px w-5 bg-border sm:block" />}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function showSetupStep(active: boolean, content: React.ReactNode): React.ReactNode {
+  return active ? content : null;
+}
+
 export function SetupWizard({
   initialStage,
   initialAiConfig,
@@ -70,6 +99,7 @@ export function SetupWizard({
   const [tourSlide, setTourSlide] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const activeSteps = SETUP_STEPS.map((_, index) => index === step);
 
   const refreshIntegrations = useCallback(async () => {
     try {
@@ -193,42 +223,17 @@ export function SetupWizard({
           </p>
         </div>
 
-        <ol className="flex flex-wrap items-center justify-center gap-2">
-          {SETUP_STEPS.map((label, index) => (
-            <li key={label} className="flex items-center gap-2">
-              <span
-                className={cn(
-                  "flex size-6 items-center justify-center rounded-full text-xs font-medium transition-colors",
-                  index < step
-                    ? "bg-primary text-primary-foreground"
-                    : index === step
-                      ? "border-2 border-primary text-primary"
-                      : "border border-border text-muted-foreground",
-                )}
-              >
-                {index < step ? <Check className="size-3.5" /> : index + 1}
-              </span>
-              <span className={cn("text-xs sm:text-sm", index === step ? "font-medium" : "text-muted-foreground")}>
-                {label}
-              </span>
-              {index < SETUP_STEPS.length - 1 && <span className="mx-1 hidden h-px w-5 bg-border sm:block" />}
-            </li>
-          ))}
-        </ol>
+        <SetupProgress step={step} />
 
         <Card
           className={cn(
             "mx-auto",
-            step === 5
-              ? "max-w-5xl"
-              : step === 3 || step === 4
-                ? "max-w-3xl"
-                : "max-w-lg",
+            setupCardWidth(step),
           )}
         >
-          {step === 0 && <WelcomeStep onBegin={() => setStep(1)} />}
+          {showSetupStep(activeSteps[0], <WelcomeStep onBegin={() => setStep(1)} />)}
 
-          {step === 1 && (
+          {showSetupStep(activeSteps[1], (
             <AdministratorStep
               username={username}
               displayName={displayName}
@@ -250,9 +255,9 @@ export function SetupWizard({
                 setStep(2);
               }}
             />
-          )}
+          ))}
 
-          {step === 2 && (
+          {showSetupStep(activeSteps[2], (
             <PreferencesStep
               instanceName={instanceName}
               themeColor={themeColor}
@@ -263,9 +268,9 @@ export function SetupWizard({
               onBack={() => setStep(1)}
               onCreate={() => void createAdministrator()}
             />
-          )}
+          ))}
 
-          {step === 3 && (
+          {showSetupStep(activeSteps[3], (
             <>
               {aiChoice === "ask-enable" && (
                 <>
@@ -401,9 +406,9 @@ export function SetupWizard({
                 </CardContent>
               )}
             </>
-          )}
+          ))}
 
-          {step === 4 && (
+          {showSetupStep(activeSteps[4], (
             <>
               <CardHeader>
                 <CardTitle>Connect integrations?</CardTitle>
@@ -480,9 +485,9 @@ export function SetupWizard({
                 {error && <p role="alert" className="text-sm font-medium text-destructive">{error}</p>}
               </CardContent>
             </>
-          )}
+          ))}
 
-          {step === 5 && (
+          {showSetupStep(activeSteps[5], (
             <>
               <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
                 <div>
@@ -532,7 +537,7 @@ export function SetupWizard({
                 </div>
               </CardContent>
             </>
-          )}
+          ))}
         </Card>
       </div>
 

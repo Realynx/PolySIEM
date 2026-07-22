@@ -1,5 +1,4 @@
-import type { DriverConfig, IntegrationDriver, TestResult } from "../types";
-import { isMock } from "../types";
+import { isMock, type DriverConfig, type IntegrationDriver, type TestResult } from "../types";
 import { testConnection } from "./client";
 import { mockTestConnection } from "./mock";
 

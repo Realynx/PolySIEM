@@ -59,30 +59,22 @@ export interface ProviderResolution {
   ready: boolean;
 }
 
+function azureReady(block: Partial<AzureAiConfig> | undefined): boolean {
+  return Boolean(block?.endpoint?.trim() && block.apiKeyEncrypted?.trim() && block.deployment?.trim());
+}
+
+function hostedReady(block: Partial<HostedAiConfig> | undefined): boolean {
+  return Boolean(block?.baseUrl?.trim() && block.apiKeyEncrypted?.trim() && block.model?.trim());
+}
+
 /** Pure readiness check used by runtime and settings tests. */
 export function resolveProvider(cfg: ProviderConfigLike): ProviderResolution {
   const provider = cfg.provider ?? "ollama";
   if (provider === "ollama") return { provider, ready: true };
   if (provider === "azure") {
-    const block = cfg.azure;
-    return {
-      provider,
-      ready: Boolean(
-        block?.endpoint?.trim() &&
-        block?.apiKeyEncrypted?.trim() &&
-        block?.deployment?.trim(),
-      ),
-    };
+    return { provider, ready: azureReady(cfg.azure) };
   }
-  const block = cfg[provider];
-  return {
-    provider,
-    ready: Boolean(
-      block?.baseUrl?.trim() &&
-      block?.apiKeyEncrypted?.trim() &&
-      block?.model?.trim(),
-    ),
-  };
+  return { provider, ready: hostedReady(cfg[provider]) };
 }
 
 export function toAzureRuntime(

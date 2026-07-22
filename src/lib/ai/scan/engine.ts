@@ -238,6 +238,21 @@ function enabledScopes(cfg: AiScanConfig): ScanScope[] {
   return scopes;
 }
 
+function scanStatus(errors: string[], scopeCount: number): "SUCCESS" | "FAILED" | "PARTIAL" {
+  if (errors.length === 0) return "SUCCESS";
+  return errors.length === scopeCount ? "FAILED" : "PARTIAL";
+}
+
+function validateScanSetup(cfg: AiScanConfig): ScanScope[] {
+  if (!cfg.baseUrl) throw new ApiError(400, "scan_not_configured", "Configure the Ollama base URL first.");
+  if (!cfg.model && !isMockMode(cfg.baseUrl)) {
+    throw new ApiError(400, "scan_not_configured", "Choose an Ollama model to scan with first.");
+  }
+  const scopes = enabledScopes(cfg);
+  if (scopes.length === 0) throw new ApiError(400, "scan_not_configured", "Enable at least one scan scope.");
+  return scopes;
+}
+
 /**
  * Execute one AI scan: collect a digest per enabled scope, ask the model for
  * findings, and upsert tickets. Scopes fail independently — one bad scope
@@ -245,12 +260,7 @@ function enabledScopes(cfg: AiScanConfig): ScanScope[] {
  */
 export async function runScan(trigger: "manual" | "interval"): Promise<AiScanRun> {
   const cfg = await getAiScanConfig();
-  if (!cfg.baseUrl) throw new ApiError(400, "scan_not_configured", "Configure the Ollama base URL first.");
-  if (!cfg.model && !isMockMode(cfg.baseUrl)) {
-    throw new ApiError(400, "scan_not_configured", "Choose an Ollama model to scan with first.");
-  }
-  const scopes = enabledScopes(cfg);
-  if (scopes.length === 0) throw new ApiError(400, "scan_not_configured", "Enable at least one scan scope.");
+  const scopes = validateScanSetup(cfg);
 
   const esCfg = await resolveLogSource(cfg.integrationId || undefined);
   const toMs = Date.now();
@@ -274,29 +284,32 @@ export async function runScan(trigger: "manual" | "interval"): Promise<AiScanRun
   const errors: string[] = [];
   const newHighTickets: string[] = [];
 
+  const processScope = async (scope: ScanScope): Promise<void> => {
+    const digest = await collectScope(scope, esCfg, cfg, fromMs, toMs);
+    stats.docsScanned! += digest.docCount;
+    if (scope === "suricata") stats.suricataAlerts = digest.docCount;
+    stats.scopesRun!.push(scope);
+    if (digest.docCount === 0 && digest.samples.length === 0) return;
+    const { contexts, byHandle } = buildScopeContext(contextCandidates, digest.text);
+    const raw = await generateJson({
+      baseUrl: cfg.baseUrl,
+      model,
+      system: SCAN_SYSTEM_PROMPT,
+      prompt: buildScanPrompt(digest, networks, contexts),
+    });
+    for (const finding of parseFindings(raw)) {
+      const result = await applyFinding(finding, digest, run.id, fromMs, toMs, byHandle);
+      stats.ticketsCreated! += result.created;
+      stats.ticketsUpdated! += result.updated;
+      if (result.createdTicket && ["CRITICAL", "HIGH"].includes(result.createdTicket.severity)) {
+        newHighTickets.push(result.createdTicket.id);
+      }
+    }
+  };
+
   for (const scope of scopes) {
     try {
-      const digest = await collectScope(scope, esCfg, cfg, fromMs, toMs);
-      stats.docsScanned! += digest.docCount;
-      if (scope === "suricata") stats.suricataAlerts = digest.docCount;
-      stats.scopesRun!.push(scope);
-      if (digest.docCount === 0 && digest.samples.length === 0) continue; // nothing to analyze
-
-      const { contexts, byHandle } = buildScopeContext(contextCandidates, digest.text);
-      const raw = await generateJson({
-        baseUrl: cfg.baseUrl,
-        model,
-        system: SCAN_SYSTEM_PROMPT,
-        prompt: buildScanPrompt(digest, networks, contexts),
-      });
-      for (const finding of parseFindings(raw)) {
-        const result = await applyFinding(finding, digest, run.id, fromMs, toMs, byHandle);
-        stats.ticketsCreated! += result.created;
-        stats.ticketsUpdated! += result.updated;
-        if (result.createdTicket && (result.createdTicket.severity === "CRITICAL" || result.createdTicket.severity === "HIGH")) {
-          newHighTickets.push(result.createdTicket.id);
-        }
-      }
+      await processScope(scope);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       errors.push(`${scope}: ${message}`);
@@ -316,7 +329,7 @@ export async function runScan(trigger: "manual" | "interval"): Promise<AiScanRun
     }
   }
 
-  const status = errors.length === 0 ? "SUCCESS" : errors.length === scopes.length ? "FAILED" : "PARTIAL";
+  const status = scanStatus(errors, scopes.length);
   const finished = await prisma.aiScanRun.update({
     where: { id: run.id },
     data: {

@@ -27,6 +27,32 @@ import { ToolCallChips, ToolCallTrail } from "./tool-call-trail";
 import { type InvestigationState, useInvestigationPoll } from "./use-investigation-poll";
 import { VerdictBadge } from "./verdict-badge";
 
+function InvestigationBody({
+  state, report, active, isAdmin, isEnqueuing, enqueueError, pollError, investigate, thinkingRef, partialText,
+}: {
+  state: InvestigationState;
+  report: InvestigationReport | null;
+  active: boolean;
+  isAdmin: boolean;
+  isEnqueuing: boolean;
+  enqueueError: string | null;
+  pollError: boolean;
+  investigate: () => void;
+  thinkingRef: React.RefObject<HTMLDivElement | null>;
+  partialText: string;
+}) {
+  if (enqueueError) return <ErrorBox message={enqueueError} onRetry={isAdmin ? investigate : undefined} retrying={isEnqueuing} />;
+  if (active) return <ActiveView state={state} pollError={pollError} thinkingRef={thinkingRef} partialText={partialText} />;
+  if (state.status === "failed") return <ErrorBox message={state.progress?.error ?? "The investigation failed before it could finish."} onRetry={isAdmin ? investigate : undefined} retrying={isEnqueuing} />;
+  if (report) return <ReportView report={report} isAdmin={isAdmin} onReinvestigate={investigate} reinvestigating={isEnqueuing} />;
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-md border border-dashed p-3">
+      <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">Let the agent research this ticket — it identifies the IPs involved, checks threat intel, reverse DNS, WHOIS, and your firewall context, then proposes a resolution plan. It runs in the background, so you can close this and come back.</p>
+      <Button size="sm" onClick={investigate} disabled={isEnqueuing}><Sparkles data-icon="inline-start" />{isEnqueuing ? "Starting…" : "Investigate with AI"}</Button>
+    </div>
+  );
+}
+
 /**
  * "Investigate with AI" panel inside the ticket sheet. Investigations run in the
  * BACKGROUND server-side; this panel is a VIEW over that persisted state — it
@@ -75,36 +101,7 @@ export function InvestigationPanel({
         )}
       </h3>
 
-      {enqueueError ? (
-        <ErrorBox message={enqueueError} onRetry={isAdmin ? investigate : undefined} retrying={isEnqueuing} />
-      ) : active ? (
-        <ActiveView state={state} pollError={pollError} thinkingRef={thinkingRef} partialText={partialText} />
-      ) : status === "failed" ? (
-        <ErrorBox
-          message={state.progress?.error ?? "The investigation failed before it could finish."}
-          onRetry={isAdmin ? investigate : undefined}
-          retrying={isEnqueuing}
-        />
-      ) : report ? (
-        <ReportView
-          report={report}
-          isAdmin={isAdmin}
-          onReinvestigate={investigate}
-          reinvestigating={isEnqueuing}
-        />
-      ) : (
-        <div className="flex flex-wrap items-center gap-3 rounded-md border border-dashed p-3">
-          <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
-            Let the agent research this ticket — it identifies the IPs involved, checks threat intel, reverse
-            DNS, WHOIS, and your firewall context, then proposes a resolution plan. It runs in the background,
-            so you can close this and come back.
-          </p>
-          <Button size="sm" onClick={investigate} disabled={isEnqueuing}>
-            <Sparkles data-icon="inline-start" />
-            {isEnqueuing ? "Starting…" : "Investigate with AI"}
-          </Button>
-        </div>
-      )}
+      <InvestigationBody {...{ state, report, active, isAdmin, isEnqueuing, enqueueError, pollError, investigate, thinkingRef, partialText }} />
     </section>
   );
 }

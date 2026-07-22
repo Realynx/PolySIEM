@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
 import {
@@ -157,6 +157,111 @@ export function IntegrationFormDialog({
     setSelectingType(false);
   }
 
+  return <IntegrationFormView {...{
+    open, onOpenChange, integration, mockIntegrationsEnabled, credentialUpgrade,
+    isEdit, selectingType, setSelectingType, selectIntegration, form, setForm,
+    set, setMockOptions, usingMock, elasticsearchEndpointIssue, formMeta,
+    replaceCredentials, setReplaceCredentials, showCredentials, submit,
+    savePending: save.isPending,
+  }} />;
+}
+
+interface IntegrationFormViewProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  integration: IntegrationView | null;
+  mockIntegrationsEnabled: boolean;
+  credentialUpgrade: "cloudflare-routes" | null;
+  isEdit: boolean;
+  selectingType: boolean;
+  setSelectingType: Dispatch<SetStateAction<boolean>>;
+  selectIntegration: (type: IntegrationTypeValue) => void;
+  form: FormState;
+  setForm: Dispatch<SetStateAction<FormState>>;
+  set: <K extends keyof FormState>(key: K, value: FormState[K]) => void;
+  setMockOptions: (profile: MockScenarioProfile, seed: string) => void;
+  usingMock: boolean;
+  elasticsearchEndpointIssue: string | null;
+  formMeta: (typeof INTEGRATION_FORM_META)[IntegrationTypeValue];
+  replaceCredentials: boolean;
+  setReplaceCredentials: Dispatch<SetStateAction<boolean>>;
+  showCredentials: boolean;
+  submit: (event: React.FormEvent) => void;
+  savePending: boolean;
+}
+
+type IntegrationFormMeta = (typeof INTEGRATION_FORM_META)[IntegrationTypeValue];
+type SetFormField = IntegrationFormViewProps["set"];
+
+const MOCK_UNSUPPORTED_TYPES = new Set<IntegrationTypeValue>([
+  "CLOUDFLARE", "TAILSCALE", "EDGE_NAT_SERVER", "CENSYS", "SECURITYTRAILS",
+]);
+
+function IntegrationIntro({
+  isEdit, usingMock, form, formMeta, credentialUpgrade,
+}: {
+  isEdit: boolean;
+  usingMock: boolean;
+  form: FormState;
+  formMeta: IntegrationFormMeta;
+  credentialUpgrade: "cloudflare-routes" | null;
+}) {
+  return <>
+    {!isEdit && !usingMock && <div className="flex items-start gap-3 rounded-lg bg-primary/5 p-3 ring-1 ring-primary/15"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><ShieldCheck className="size-4" /></span><div className="space-y-0.5"><p className="text-sm font-medium">{formMeta.summaryTitle}</p><p className="text-xs leading-relaxed text-muted-foreground">{formMeta.summary}</p></div></div>}
+    {isEdit && form.type === "CLOUDFLARE" && credentialUpgrade === "cloudflare-routes" && <div className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-3"><div className="space-y-1"><p className="text-sm font-medium">Upgrade this token for published-route management</p><p className="text-xs leading-relaxed text-muted-foreground">In Cloudflare, either edit the current token or create a Custom Token with<strong> Account → Cloudflare Tunnel → Edit</strong> and<strong> Zone → Zone → Read</strong>, and<strong> Zone → DNS → Edit</strong>, scoped to this account and the zones PolySIEM may publish.</p></div><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" asChild><a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">Open Cloudflare API Tokens <ExternalLink /></a></Button></div><p className="text-xs text-muted-foreground">Editing the existing token normally keeps the stored secret, so you can close this dialog and retry the route. If you create a replacement token, paste it below and save.</p></div>}
+  </>;
+}
+
+function MockToggle({ enabled, form, usingMock, set, setForm }: { enabled: boolean; form: FormState; usingMock: boolean; set: SetFormField; setForm: Dispatch<SetStateAction<FormState>> }) {
+  if (!enabled || MOCK_UNSUPPORTED_TYPES.has(form.type)) return null;
+  const toggle = (useMock: boolean) => {
+    if (!useMock) { set("baseUrl", ""); return; }
+    setForm((current) => ({ ...current, baseUrl: buildMockIntegrationUrl(current.mockProfile, current.mockSeed), verifyTls: false }));
+  };
+  return <div className="flex items-center justify-between gap-3 rounded-md border border-dashed p-3"><div className="space-y-0.5"><Label htmlFor="int-mock">Use generated mock data</Label><p className="text-xs text-muted-foreground">Runs completely offline and does not contact a remote system or require credentials.</p></div><Switch id="int-mock" checked={usingMock} onCheckedChange={toggle} /></div>;
+}
+
+function MockOptions({ enabled, usingMock, form, setMockOptions }: { enabled: boolean; usingMock: boolean; form: FormState; setMockOptions: IntegrationFormViewProps["setMockOptions"] }) {
+  if (!enabled || !usingMock) return null;
+  return <div className="space-y-4 rounded-md border border-dashed p-3"><div className="grid gap-2"><Label htmlFor="int-mock-profile">Scenario profile</Label><Select value={form.mockProfile} onValueChange={(value) => setMockOptions(value as MockScenarioProfile, form.mockSeed)}><SelectTrigger id="int-mock-profile"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(MOCK_SCENARIO_PROFILES).map(([value, profile]) => <SelectItem key={value} value={value}>{profile.label}</SelectItem>)}</SelectContent></Select><p className="text-xs text-muted-foreground">{MOCK_SCENARIO_PROFILES[form.mockProfile].description}</p></div><div className="grid gap-2"><Label htmlFor="int-mock-seed">Stable seed</Label><Input id="int-mock-seed" value={form.mockSeed} maxLength={MAX_MOCK_SCENARIO_SEED_LENGTH} onChange={(event) => setMockOptions(form.mockProfile, event.target.value)} onBlur={() => setMockOptions(form.mockProfile, normalizeMockScenarioSeed(form.mockSeed))} placeholder={DEFAULT_MOCK_SCENARIO_SEED} className="font-mono" /><p className="text-xs text-muted-foreground">Reusing the same profile and seed produces the same inventory and event identities. Use the pair across related mock integrations to keep one coherent lab.</p></div></div>;
+}
+
+function ConnectionOptions({
+  form, formMeta, set, usingMock, mockIntegrationsEnabled,
+  elasticsearchEndpointIssue, isEdit, replaceCredentials, setReplaceCredentials,
+}: {
+  form: FormState;
+  formMeta: IntegrationFormMeta;
+  set: SetFormField;
+  usingMock: boolean;
+  mockIntegrationsEnabled: boolean;
+  elasticsearchEndpointIssue: string | null;
+  isEdit: boolean;
+  replaceCredentials: boolean;
+  setReplaceCredentials: Dispatch<SetStateAction<boolean>>;
+}) {
+  return <>
+    <div className="grid gap-2">
+      <Label htmlFor="int-url">{formMeta.urlLabel}</Label>
+      <Input id="int-url" value={form.baseUrl} onChange={(event) => set("baseUrl", event.target.value)} placeholder={formMeta.urlPlaceholder} required disabled={mockIntegrationsEnabled && usingMock} />
+      {!usingMock && <p className="text-xs text-muted-foreground">{formMeta.urlHint}</p>}
+      {elasticsearchEndpointIssue && <p className="text-xs text-destructive">{elasticsearchEndpointIssue}</p>}
+      {usingMock && mockIntegrationsEnabled && <p className="text-xs text-muted-foreground">This saved integration uses the offline mock driver.</p>}
+      {usingMock && !mockIntegrationsEnabled && <p className="text-xs text-destructive">Mock integrations are turned off, so this one can no longer be saved as-is. Point it at a real system, or delete it from the integrations list.</p>}
+    </div>
+    {form.type !== "EDGE_NAT_SERVER" && <div className="flex items-center justify-between gap-3 rounded-md border p-3"><div className="space-y-0.5"><Label htmlFor="int-tls">Verify TLS certificate</Label><p className="text-xs text-muted-foreground">{form.type === "PROXMOX" ? "Turn this off if the node still uses Proxmox's default self-signed certificate." : "Turn this off only if the service uses a self-signed certificate."}</p></div><Switch id="int-tls" checked={form.verifyTls} disabled={usingMock} onCheckedChange={(value) => set("verifyTls", value)} /></div>}
+    {!isLiveQueryType(form.type) && <div className="grid gap-2"><Label htmlFor="int-interval">Sync interval (minutes)</Label><Input id="int-interval" type="number" min={1} max={1440} value={form.syncIntervalMinutes} onChange={(event) => set("syncIntervalMinutes", event.target.value)} className="max-w-32" /></div>}
+    {isEdit && form.type !== "EDGE_NAT_SERVER" && <Collapsible open={replaceCredentials} onOpenChange={setReplaceCredentials}><CollapsibleTrigger asChild><Button type="button" variant="outline" size="sm" className="gap-1.5">Replace credentials<ChevronDown className={cn("size-4 transition-transform", replaceCredentials && "rotate-180")} /></Button></CollapsibleTrigger></Collapsible>}
+  </>;
+}
+
+function IntegrationFormView({
+  open, onOpenChange, integration, mockIntegrationsEnabled, credentialUpgrade,
+  isEdit, selectingType, setSelectingType, selectIntegration, form, setForm,
+  set, setMockOptions, usingMock, elasticsearchEndpointIssue, formMeta,
+  replaceCredentials, setReplaceCredentials, showCredentials, submit, savePending,
+}: IntegrationFormViewProps) {
+
   if (!isEdit && selectingType) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -188,7 +293,7 @@ export function IntegrationFormDialog({
             )}
             <DialogTitle>
               {isEdit
-                ? `Edit ${integration.name}`
+                ? `Edit ${integration?.name ?? formMeta.label}`
                 : `Connect ${formMeta.label}`}
             </DialogTitle>
             <DialogDescription>
@@ -199,43 +304,7 @@ export function IntegrationFormDialog({
           </DialogHeader>
 
           <div className="-mr-2 min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain py-4 pr-2">
-            {!isEdit && !usingMock && (
-              <div className="flex items-start gap-3 rounded-lg bg-primary/5 p-3 ring-1 ring-primary/15">
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
-                  <ShieldCheck className="size-4" />
-                </span>
-                <div className="space-y-0.5">
-                  <p className="text-sm font-medium">{formMeta.summaryTitle}</p>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    {formMeta.summary}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {isEdit && form.type === "CLOUDFLARE" && credentialUpgrade === "cloudflare-routes" && (
-              <div className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
-                <div className="space-y-1">
-                  <p className="text-sm font-medium">Upgrade this token for published-route management</p>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    In Cloudflare, either edit the current token or create a Custom Token with
-                    <strong> Account → Cloudflare Tunnel → Edit</strong> and
-                    <strong> Zone → Zone → Read</strong>, and
-                    <strong> Zone → DNS → Edit</strong>, scoped to this account and the zones PolySIEM may publish.
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="outline" size="sm" asChild>
-                    <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">
-                      Open Cloudflare API Tokens <ExternalLink />
-                    </a>
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Editing the existing token normally keeps the stored secret, so you can close this dialog and retry the route. If you create a replacement token, paste it below and save.
-                </p>
-              </div>
-            )}
+            <IntegrationIntro {...{ isEdit, usingMock, form, formMeta, credentialUpgrade }} />
 
             <div className="grid gap-2">
               <Label htmlFor="int-name">Name</Label>
@@ -248,159 +317,9 @@ export function IntegrationFormDialog({
                 maxLength={64}
               />
             </div>
-            {mockIntegrationsEnabled && form.type !== "CLOUDFLARE" && form.type !== "TAILSCALE" && form.type !== "EDGE_NAT_SERVER" && form.type !== "CENSYS" && form.type !== "SECURITYTRAILS" && (
-              <div className="flex items-center justify-between gap-3 rounded-md border border-dashed p-3">
-                <div className="space-y-0.5">
-                  <Label htmlFor="int-mock">Use generated mock data</Label>
-                  <p className="text-xs text-muted-foreground">
-                    Runs completely offline and does not contact a remote system or require credentials.
-                  </p>
-                </div>
-                <Switch
-                  id="int-mock"
-                  checked={usingMock}
-                  onCheckedChange={(enabled) => {
-                    if (enabled) {
-                      setForm((current) => ({
-                        ...current,
-                        baseUrl: buildMockIntegrationUrl(
-                          current.mockProfile,
-                          current.mockSeed,
-                        ),
-                        verifyTls: false,
-                      }));
-                    } else {
-                      set("baseUrl", "");
-                    }
-                  }}
-                />
-              </div>
-            )}
-            {mockIntegrationsEnabled && usingMock && (
-              <div className="space-y-4 rounded-md border border-dashed p-3">
-                <div className="grid gap-2">
-                  <Label htmlFor="int-mock-profile">Scenario profile</Label>
-                  <Select
-                    value={form.mockProfile}
-                    onValueChange={(value) =>
-                      setMockOptions(value as MockScenarioProfile, form.mockSeed)
-                    }
-                  >
-                    <SelectTrigger id="int-mock-profile">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(MOCK_SCENARIO_PROFILES).map(([value, profile]) => (
-                        <SelectItem key={value} value={value}>
-                          {profile.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    {MOCK_SCENARIO_PROFILES[form.mockProfile].description}
-                  </p>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="int-mock-seed">Stable seed</Label>
-                  <Input
-                    id="int-mock-seed"
-                    value={form.mockSeed}
-                    maxLength={MAX_MOCK_SCENARIO_SEED_LENGTH}
-                    onChange={(event) =>
-                      setMockOptions(form.mockProfile, event.target.value)
-                    }
-                    onBlur={() =>
-                      setMockOptions(
-                        form.mockProfile,
-                        normalizeMockScenarioSeed(form.mockSeed),
-                      )
-                    }
-                    placeholder={DEFAULT_MOCK_SCENARIO_SEED}
-                    className="font-mono"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Reusing the same profile and seed produces the same inventory and event identities. Use
-                    the pair across related mock integrations to keep one coherent lab.
-                  </p>
-                </div>
-              </div>
-            )}
-            <div className="grid gap-2">
-              <Label htmlFor="int-url">{formMeta.urlLabel}</Label>
-              <Input
-                id="int-url"
-                value={form.baseUrl}
-                onChange={(e) => set("baseUrl", e.target.value)}
-                placeholder={formMeta.urlPlaceholder}
-                required
-                disabled={mockIntegrationsEnabled && usingMock}
-              />
-              {!usingMock && (
-                <p className="text-xs text-muted-foreground">
-                  {formMeta.urlHint}
-                </p>
-              )}
-              {elasticsearchEndpointIssue && (
-                <p className="text-xs text-destructive">
-                  {elasticsearchEndpointIssue}
-                </p>
-              )}
-              {usingMock && mockIntegrationsEnabled && (
-                <p className="text-xs text-muted-foreground">
-                  This saved integration uses the offline mock driver.
-                </p>
-              )}
-              {usingMock && !mockIntegrationsEnabled && (
-                <p className="text-xs text-destructive">
-                  Mock integrations are turned off, so this one can no longer be saved as-is. Point it
-                  at a real system, or delete it from the integrations list.
-                </p>
-              )}
-            </div>
-            {form.type !== "EDGE_NAT_SERVER" && <div className="flex items-center justify-between gap-3 rounded-md border p-3">
-              <div className="space-y-0.5">
-                <Label htmlFor="int-tls">Verify TLS certificate</Label>
-                <p className="text-xs text-muted-foreground">
-                  {form.type === "PROXMOX"
-                    ? "Turn this off if the node still uses Proxmox's default self-signed certificate."
-                    : "Turn this off only if the service uses a self-signed certificate."}
-                </p>
-              </div>
-              <Switch
-                id="int-tls"
-                checked={form.verifyTls}
-                disabled={usingMock}
-                onCheckedChange={(v) => set("verifyTls", v)}
-              />
-            </div>}
-            {!isLiveQueryType(form.type) && (
-              <div className="grid gap-2">
-                <Label htmlFor="int-interval">Sync interval (minutes)</Label>
-                <Input
-                  id="int-interval"
-                  type="number"
-                  min={1}
-                  max={1440}
-                  value={form.syncIntervalMinutes}
-                  onChange={(e) => set("syncIntervalMinutes", e.target.value)}
-                  className="max-w-32"
-                />
-              </div>
-            )}
-
-            {isEdit && form.type !== "EDGE_NAT_SERVER" && (
-              <Collapsible open={replaceCredentials} onOpenChange={setReplaceCredentials}>
-                <CollapsibleTrigger asChild>
-                  <Button type="button" variant="outline" size="sm" className="gap-1.5">
-                    Replace credentials
-                    <ChevronDown
-                      className={cn("size-4 transition-transform", replaceCredentials && "rotate-180")}
-                    />
-                  </Button>
-                </CollapsibleTrigger>
-              </Collapsible>
-            )}
+            <MockToggle enabled={mockIntegrationsEnabled} {...{ form, usingMock, set, setForm }} />
+            <MockOptions enabled={mockIntegrationsEnabled} {...{ usingMock, form, setMockOptions }} />
+            <ConnectionOptions {...{ form, formMeta, set, usingMock, mockIntegrationsEnabled, elasticsearchEndpointIssue, isEdit, replaceCredentials, setReplaceCredentials }} />
 
             <IntegrationSpecificFields
               form={form}
@@ -415,8 +334,8 @@ export function IntegrationFormDialog({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? "Saving…" : isEdit ? "Save changes" : "Add integration"}
+            <Button type="submit" disabled={savePending}>
+              {savePending ? "Saving…" : isEdit ? "Save changes" : "Add integration"}
             </Button>
           </DialogFooter>
         </form>

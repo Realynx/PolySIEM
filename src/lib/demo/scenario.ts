@@ -261,6 +261,33 @@ function scaleSnapshots(snapshots: ScenarioSnapshots, size: LabSize): ScenarioSn
   return snapshots;
 }
 
+function applyMinimalProfile({ proxmox, opnsense, unifi }: ScenarioSnapshots): void {
+  const nodeName = proxmox.nodes[0]?.name;
+  proxmox.nodes = proxmox.nodes.slice(0, 1);
+  proxmox.guests = proxmox.guests.filter((guest) => guest.node === nodeName).slice(0, 4);
+  proxmox.storage = proxmox.storage.filter((storage) => storage.node === nodeName).slice(0, 3);
+  opnsense.interfaces = opnsense.interfaces.filter((iface) => iface.key === "lan" || iface.key === "wan");
+  opnsense.rules = opnsense.rules.filter((rule) => rule.interfaceName === "LAN" || rule.interfaceName === "WAN").slice(0, 8);
+  opnsense.leases = opnsense.leases.slice(0, 5);
+  const leaseIps = new Set(opnsense.leases.map((lease) => lease.ip));
+  opnsense.neighbors = opnsense.neighbors.filter((neighbor) => leaseIps.has(neighbor.ip)).slice(0, 5);
+  opnsense.portForwards = opnsense.portForwards.slice(0, 1);
+  unifi.networks = unifi.networks.slice(0, 1);
+  unifi.wlans = unifi.wlans.slice(0, 1);
+  unifi.aps = unifi.aps.slice(0, 1);
+}
+
+function applyDegradedProfile({ proxmox, opnsense, unifi }: ScenarioSnapshots): void {
+  if (proxmox.nodes[1]) proxmox.nodes[1].status = "offline";
+  const offlineNode = proxmox.nodes[1]?.name;
+  for (const guest of proxmox.guests) if (guest.node === offlineNode) guest.status = "stopped";
+  proxmox.errors.push(`Node ${offlineNode ?? "pve2"} did not respond`);
+  if (unifi.aps[0]) unifi.aps[0].state = "offline";
+  unifi.errors.push("One access point did not answer the controller");
+  if (opnsense.gateways[1]) opnsense.gateways[1].online = false;
+  opnsense.errors.push("Backup gateway status is unavailable");
+}
+
 function profileSnapshots(profile: ScenarioProfile, size: LabSize): ScenarioSnapshots {
   const proxmox = clone(mockProxmoxSnapshot());
   const opnsense = clone(mockOpnsenseSnapshot());
@@ -356,30 +383,9 @@ function profileSnapshots(profile: ScenarioProfile, size: LabSize): ScenarioSnap
     for (const node of proxmox.nodes) node.status = "online";
     for (const ap of unifi.aps) ap.state = "online";
   } else if (profile === "minimal") {
-    const nodeName = proxmox.nodes[0]?.name;
-    proxmox.nodes = proxmox.nodes.slice(0, 1);
-    proxmox.guests = proxmox.guests.filter((guest) => guest.node === nodeName).slice(0, 4);
-    proxmox.storage = proxmox.storage.filter((storage) => storage.node === nodeName).slice(0, 3);
-    opnsense.interfaces = opnsense.interfaces.filter((iface) => iface.key === "lan" || iface.key === "wan");
-    opnsense.rules = opnsense.rules.filter((rule) => rule.interfaceName === "LAN" || rule.interfaceName === "WAN").slice(0, 8);
-    opnsense.leases = opnsense.leases.slice(0, 5);
-    const leaseIps = new Set(opnsense.leases.map((lease) => lease.ip));
-    opnsense.neighbors = opnsense.neighbors.filter((neighbor) => leaseIps.has(neighbor.ip)).slice(0, 5);
-    opnsense.portForwards = opnsense.portForwards.slice(0, 1);
-    unifi.networks = unifi.networks.slice(0, 1);
-    unifi.wlans = unifi.wlans.slice(0, 1);
-    unifi.aps = unifi.aps.slice(0, 1);
+    applyMinimalProfile({ proxmox, opnsense, unifi });
   } else if (profile === "degraded") {
-    if (proxmox.nodes[1]) proxmox.nodes[1].status = "offline";
-    const offlineNode = proxmox.nodes[1]?.name;
-    for (const guest of proxmox.guests) {
-      if (guest.node === offlineNode) guest.status = "stopped";
-    }
-    proxmox.errors.push(`Node ${offlineNode ?? "pve2"} did not respond`);
-    if (unifi.aps[0]) unifi.aps[0].state = "offline";
-    unifi.errors.push("One access point did not answer the controller");
-    if (opnsense.gateways[1]) opnsense.gateways[1].online = false;
-    opnsense.errors.push("Backup gateway status is unavailable");
+    applyDegradedProfile({ proxmox, opnsense, unifi });
   } else {
     for (const node of proxmox.nodes) node.status = "online";
     for (const ap of unifi.aps) ap.state = "online";

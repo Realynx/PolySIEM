@@ -73,7 +73,7 @@ export default async function NetworkDetailPage({ params }: { params: Promise<{ 
     return <MobileNetworkDetail net={net} detected={detected} initial={initial} />;
   }
 
-  return (
+  const desktopView = () => (
     <div>
       <PageHeader
         title={net.name}
@@ -269,4 +269,5 @@ export default async function NetworkDetailPage({ params }: { params: Promise<{ 
       />
     </div>
   );
+  return desktopView();
 }

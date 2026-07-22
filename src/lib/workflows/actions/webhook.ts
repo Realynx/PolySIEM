@@ -14,6 +14,35 @@ const configSchema = z.object({
 /** Longest response body persisted in step output (chars). */
 const MAX_BODY_CHARS = 4000;
 
+function bodyFor(method: string, body: string | undefined): string | undefined {
+  return method !== "GET" && method !== "DELETE" && body ? body : undefined;
+}
+
+async function sendWebhook(
+  url: string,
+  method: string,
+  headers: Headers,
+  body: string | undefined,
+  timeoutSeconds: number,
+): Promise<Response> {
+  try {
+    return await fetch(url, {
+      method,
+      headers,
+      ...(body === undefined ? {} : { body }),
+      signal: AbortSignal.timeout(timeoutSeconds * 1000),
+      cache: "no-store",
+    });
+  } catch (err) {
+    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      throw new Error(`Request to ${url} timed out after ${timeoutSeconds}s — raise the timeout or check that the endpoint responds`);
+    }
+    const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
+    const detail = cause ?? (err instanceof Error ? err.message : String(err));
+    throw new Error(`Could not reach ${url}: ${detail}. Check the URL and that the host is reachable from the PolySIEM server`);
+  }
+}
+
 /**
  * Parse "Name: value" header lines (one per line, blank lines ignored) into a
  * header record. Throws an actionable error on a line without a name/colon.
@@ -142,32 +171,11 @@ export const httpWebhook: ActionDefinition = {
   async run({ config }) {
     const { url, method, body, headers: headerText, timeoutSeconds } = configSchema.parse(config);
     const headers = new Headers(parseHeaderLines(headerText ?? ""));
-    const sendBody = method !== "GET" && method !== "DELETE" && body !== undefined && body !== "";
-    if (sendBody && !headers.has("content-type")) {
-      headers.set("content-type", isJsonBody(body) ? "application/json" : "text/plain");
+    const requestBody = bodyFor(method, body);
+    if (requestBody && !headers.has("content-type")) {
+      headers.set("content-type", isJsonBody(requestBody) ? "application/json" : "text/plain");
     }
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method,
-        headers,
-        ...(sendBody ? { body } : {}),
-        signal: AbortSignal.timeout(timeoutSeconds * 1000),
-        cache: "no-store",
-      });
-    } catch (err) {
-      if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
-        throw new Error(
-          `Request to ${url} timed out after ${timeoutSeconds}s — raise the timeout or check that the endpoint responds`,
-        );
-      }
-      const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : null;
-      const detail = cause ?? (err instanceof Error ? err.message : String(err));
-      throw new Error(
-        `Could not reach ${url}: ${detail}. Check the URL and that the host is reachable from the PolySIEM server`,
-      );
-    }
+    const res = await sendWebhook(url, method, headers, requestBody, timeoutSeconds);
 
     const text = await res.text().catch(() => "");
     return {

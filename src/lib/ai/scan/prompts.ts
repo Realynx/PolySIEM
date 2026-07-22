@@ -104,21 +104,18 @@ export function scoreTicketRelevance(
     ...(refs?.signatures ?? []),
     ...(refs?.hosts ?? []),
   ];
-  let score = 0;
-  for (const needle of needles) {
+  const indicatorScore = needles.reduce((score, needle) => {
     const value = needle.trim().toLowerCase();
-    // Concrete indicators are much stronger than prose overlap.
-    if (value && haystack.includes(value)) score += 100;
-  }
+    return score + (value && haystack.includes(value) ? 100 : 0);
+  }, 0);
 
   // Titles, summaries, and especially close rationales often contain the
   // stable service/signature name even when an IP changes between scans.
   const terms = rationaleText.toLowerCase().match(/[a-z0-9][a-z0-9._:-]{2,}/g) ?? [];
-  for (const term of new Set(terms)) {
-    if (term.length < 4 || RELEVANCE_STOP_WORDS.has(term)) continue;
-    if (haystack.includes(term)) score++;
-  }
-  return score;
+  const rationaleScore = [...new Set(terms)].filter(
+    (term) => term.length >= 4 && !RELEVANCE_STOP_WORDS.has(term) && haystack.includes(term),
+  ).length;
+  return indicatorScore + rationaleScore;
 }
 
 /**

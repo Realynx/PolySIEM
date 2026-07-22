@@ -77,6 +77,12 @@ interface ApiErrorEnvelope {
   error?: { message?: string };
 }
 
+function actionState(action: InstanceAction | null, password: string, confirmation: string, submitting: boolean) {
+  const selected = action ? ACTION_COPY[action] : null;
+  const expected = action ? INSTANCE_ACTION_CONFIRMATIONS[action] : "";
+  return { selected, expected, canSubmit: Boolean(password) && confirmation === expected && !submitting };
+}
+
 export function DangerArea({
   instanceName,
   adminUsername,
@@ -160,9 +166,7 @@ export function DangerArea({
     }
   }
 
-  const selected = action ? ACTION_COPY[action] : null;
-  const expected = action ? INSTANCE_ACTION_CONFIRMATIONS[action] : "";
-  const canSubmit = Boolean(password) && confirmation === expected && !submitting;
+  const { selected, expected, canSubmit } = actionState(action, password, confirmation, submitting);
 
   return (
     <div className="space-y-6">

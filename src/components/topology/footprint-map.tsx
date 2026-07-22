@@ -69,6 +69,76 @@ function StatChip({
   );
 }
 
+function dyndnsDetailRow(d: FootprintGraph["dyndns"][number]): EdgeDetailRow {
+  const matches = d.resolution?.matchesWan;
+  return {
+    primary: d.hostname,
+    secondary: [
+      `dynamic DNS · ${d.service ?? "?"}`,
+      d.resolution?.resolvedIps?.length ? `→ ${d.resolution.resolvedIps.join(", ")}` : null,
+      matches === true ? "matches WAN ✓" : matches === false ? "MISMATCH — not your WAN" : null,
+      d.enabled ? null : "disabled",
+    ].filter(Boolean).join(" · "),
+    status: matches === true ? "ok" : matches === false ? "warn" : "muted",
+  };
+}
+
+function footprintInternetDetail(
+  graph: FootprintGraph,
+  traffic: ReturnType<typeof scopeTunnelTraffic> | null,
+): EdgeDetail {
+  const rows: EdgeDetailRow[] = [];
+  rows.push(...graph.dyndns.map(dyndnsDetailRow));
+  for (const tunnel of graph.tunnels) {
+    for (const hostname of tunnel.hostnames) {
+      rows.push(hostnameRow(
+        hostname,
+        tunnel.name,
+        traffic?.byHostname.get(hostname.hostname.toLowerCase()),
+      ));
+    }
+  }
+  const activeNat = graph.inbound.filter((edge) => edge.type === "nat" && edge.enabled);
+  for (const edge of activeNat) {
+    rows.push({
+      primary: edge.detail[0]?.primary ?? edge.label,
+      secondary: edge.detail[0]?.secondary ?? edge.label,
+      status: "danger",
+    });
+  }
+  return { title: "Inbound surface from the Internet", rows };
+}
+
+function DesktopOverlay({
+  chromeless,
+  children,
+}: {
+  chromeless: boolean;
+  children: React.ReactNode;
+}) {
+  return chromeless ? null : children;
+}
+
+function DetailOverlay({
+  detail,
+  onClose,
+}: {
+  detail: EdgeDetail | null;
+  onClose: () => void;
+}) {
+  return detail ? <EdgeDetails detail={detail} onClose={onClose} /> : null;
+}
+
+function selectedMapDetail(
+  showInternetDetail: boolean,
+  internetDetail: EdgeDetail,
+  selectedEdgeId: string | null,
+  details: ReadonlyMap<string, EdgeDetail>,
+): EdgeDetail | null {
+  if (showInternetDetail) return internetDetail;
+  return selectedEdgeId ? (details.get(selectedEdgeId) ?? null) : null;
+}
+
 export function FootprintMap({
   graph,
   heightClassName,
@@ -228,51 +298,10 @@ export function FootprintMap({
     );
   }, [bandwidth, positioned, setNodes, graph.lanes]);
 
-  const internetDetail: EdgeDetail = useMemo(() => {
-    const rows: EdgeDetailRow[] = [];
-    for (const d of graph.dyndns) {
-      const matches = d.resolution?.matchesWan;
-      rows.push({
-        primary: d.hostname,
-        secondary: [
-          `dynamic DNS · ${d.service ?? "?"}`,
-          d.resolution?.resolvedIps?.length
-            ? `→ ${d.resolution.resolvedIps.join(", ")}`
-            : null,
-          matches === true
-            ? "matches WAN ✓"
-            : matches === false
-              ? "MISMATCH — not your WAN"
-              : null,
-          d.enabled ? null : "disabled",
-        ]
-          .filter(Boolean)
-          .join(" · "),
-        status: matches === true ? "ok" : matches === false ? "warn" : "muted",
-      });
-    }
-    for (const tunnel of graph.tunnels) {
-      for (const h of tunnel.hostnames) {
-        rows.push(
-          hostnameRow(
-            h,
-            tunnel.name,
-            traffic?.byHostname.get(h.hostname.toLowerCase()),
-          ),
-        );
-      }
-    }
-    for (const e of graph.inbound.filter(
-      (edge) => edge.type === "nat" && edge.enabled,
-    )) {
-      rows.push({
-        primary: e.detail[0]?.primary ?? e.label,
-        secondary: e.detail[0]?.secondary ?? e.label,
-        status: "danger",
-      });
-    }
-    return { title: "Inbound surface from the Internet", rows };
-  }, [graph, traffic]);
+  const internetDetail = useMemo(
+    () => footprintInternetDetail(graph, traffic),
+    [graph, traffic],
+  );
   const [showInternetDetail, setShowInternetDetail] = useState(false);
 
   const trafficTotal = useMemo(
@@ -332,11 +361,12 @@ export function FootprintMap({
     setSelectedEdgeId((current) => (current === edge.id ? null : edge.id));
   };
 
-  const selectedDetail = showInternetDetail
-    ? internetDetail
-    : selectedEdgeId
-      ? (details.get(selectedEdgeId) ?? null)
-      : null;
+  const selectedDetail = selectedMapDetail(
+    showInternetDetail,
+    internetDetail,
+    selectedEdgeId,
+    details,
+  );
 
   return (
     <TopologyCanvas
@@ -382,7 +412,7 @@ export function FootprintMap({
       heightClassName={heightClassName ?? "h-[clamp(600px,72vh,820px)]"}
     >
       {/* Attack-surface summary */}
-      {!chromeless && (
+      <DesktopOverlay chromeless={chromeless}>
       <div className="absolute left-3 top-3 z-10 flex flex-wrap gap-1.5">
         <LiveRefreshControl
           value={refreshMs}
@@ -430,9 +460,9 @@ export function FootprintMap({
           />
         )}
       </div>
-      )}
+      </DesktopOverlay>
 
-      {!chromeless && (
+      <DesktopOverlay chromeless={chromeless}>
       <MapLegend
         className="w-56 max-w-[calc(100%-1.5rem)] transition-[width] duration-200 data-[state=open]:w-[34rem]"
         onResetLayout={clearPositions}
@@ -528,16 +558,14 @@ export function FootprintMap({
           </p>
         )}
       </MapLegend>
-      )}
-      {selectedDetail && (
-        <EdgeDetails
-          detail={selectedDetail}
-          onClose={() => {
-            setSelectedEdgeId(null);
-            setShowInternetDetail(false);
-          }}
-        />
-      )}
+      </DesktopOverlay>
+      <DetailOverlay
+        detail={selectedDetail}
+        onClose={() => {
+          setSelectedEdgeId(null);
+          setShowInternetDetail(false);
+        }}
+      />
     </TopologyCanvas>
   );
 }

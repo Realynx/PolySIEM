@@ -45,17 +45,10 @@ interface ClientRow {
 const ipSortKey = (ip: string) =>
   ip.split(".").reduce((acc, octet) => acc * 256 + (Number(octet) || 0), 0);
 
-export default async function NetworkClientsPage({ searchParams }: { searchParams: Promise<PageSearchParams> }) {
-  const { user } = await requirePageUser();
-  const query = parseListParams(await searchParams);
-  const q = query.q?.toLowerCase().trim() ?? "";
-  const [leases, neighbors] = await anonymizeForDisplay(
-    await Promise.all([listDhcpLeases(), listNetworkNeighbors()]),
-  );
-
-  // One row per address: DHCP leases first (they know static vs dynamic),
-  // enriched with the ARP table's manufacturer; everything else the firewall
-  // has seen becomes a "detected" row.
+function mergeClientRows(
+  leases: Awaited<ReturnType<typeof listDhcpLeases>>,
+  neighbors: Awaited<ReturnType<typeof listNetworkNeighbors>>,
+): ClientRow[] {
   const byIp = new Map<string, ClientRow>();
   for (const lease of leases) {
     byIp.set(lease.ipAddress, {
@@ -90,17 +83,32 @@ export default async function NetworkClientsPage({ searchParams }: { searchParam
       lastSeenAt: neighbor.lastSeenAt,
     });
   }
-  const clients = [...byIp.values()].sort((a, b) => ipSortKey(a.ipAddress) - ipSortKey(b.ipAddress));
+  return [...byIp.values()].sort((a, b) => ipSortKey(a.ipAddress) - ipSortKey(b.ipAddress));
+}
 
-  const matched = q
-    ? clients.filter(
-        (c) =>
-          c.ipAddress.toLowerCase().includes(q) ||
-          (c.macAddress ?? "").toLowerCase().includes(q) ||
-          (c.hostname ?? "").toLowerCase().includes(q) ||
-          (c.manufacturer ?? "").toLowerCase().includes(q),
-      )
-    : clients;
+function filterClientRows(clients: ClientRow[], query: string): ClientRow[] {
+  if (!query) return clients;
+  return clients.filter((client) => [
+    client.ipAddress,
+    client.macAddress,
+    client.hostname,
+    client.manufacturer,
+  ].some((value) => value?.toLowerCase().includes(query)));
+}
+
+export default async function NetworkClientsPage({ searchParams }: { searchParams: Promise<PageSearchParams> }) {
+  const { user } = await requirePageUser();
+  const query = parseListParams(await searchParams);
+  const q = query.q?.toLowerCase().trim() ?? "";
+  const [leases, neighbors] = await anonymizeForDisplay(
+    await Promise.all([listDhcpLeases(), listNetworkNeighbors()]),
+  );
+
+  // One row per address: DHCP leases first (they know static vs dynamic),
+  // enriched with the ARP table's manufacturer; everything else the firewall
+  // has seen becomes a "detected" row.
+  const clients = mergeClientRows(leases, neighbors);
+  const matched = filterClientRows(clients, q);
   const total = matched.length;
   const items = matched.slice((query.page - 1) * query.pageSize, query.page * query.pageSize);
   const activeClients = clients.filter((client) => client.status === "ACTIVE").length;

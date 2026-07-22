@@ -236,6 +236,7 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
     ]),
   );
   const tailscaleHintsByOwner = new Map<string, string[]>();
+  (() => {
   for (const iface of assetInterfaces) {
     if (iface.source !== "TAILSCALE" || !iface.integrationId) continue;
     const ownerId = iface.deviceId ?? iface.vmId ?? iface.containerId;
@@ -245,6 +246,7 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
     if (!hints.includes(networkId)) hints.push(networkId);
     tailscaleHintsByOwner.set(ownerId, hints);
   }
+  })();
   const networkHintsFor = (ownerId: string): string[] | undefined => {
     const hints = [
       ...(proxmoxNetworkEvidence.networkHintsByOwner.get(ownerId) ?? []),
@@ -252,11 +254,13 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
     ];
     return hints.length > 0 ? [...new Set(hints)] : undefined;
   };
+  (() => {
   for (const ip of ips) {
     const ownerId = ip.interface?.device?.id ?? ip.interface?.vm?.id ?? ip.interface?.container?.id;
     if (!ownerId) continue;
     addOwnerIp(ownerId, ip.address);
   }
+  })();
   const observedAddresses = resolveObservedAssetAddresses(
     assetInterfaces.flatMap((iface) => {
       const ownerId = iface.deviceId ?? iface.vmId ?? iface.containerId;
@@ -279,9 +283,11 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
       })),
     ],
   );
+  (() => {
   for (const observed of observedAddresses) {
     addOwnerIp(observed.ownerId, observed.address);
   }
+  })();
 
   // Proxmox policy subdivides a VLAN after layer-2 placement. Reuse the same
   // derivation as the Access Map so default-deny and peer-group semantics stay
@@ -291,6 +297,7 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
   }
   const pveGuests = new Map<string, PveGuestInput>();
   const guestIdByExternalId = new Map<string, string>();
+  (() => {
   for (const guest of [
     ...vms.map((vm) => ({ ...vm, kind: "vm" as const })),
     ...containers.map((ct) => ({ ...ct, kind: "container" as const })),
@@ -306,8 +313,10 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
       groups: [...(meta.firewall?.groups ?? [])],
     });
   }
+  })();
 
   const pveGroupRules: PveGroupRuleInput[] = [];
+  (() => {
   for (const rule of pveRules) {
     const meta = (rule.metadata ?? {}) as {
       scope?: string;
@@ -348,6 +357,7 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
       comment: rule.descriptionText,
     });
   }
+  })();
 
   const pveView = pveGroupRules.length > 0
     ? derivePveAccess(
@@ -428,7 +438,9 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
   // each other with precedence static lease > dynamic lease > detected.
 
   const machineIps = new Set<string>();
-  for (const machine of machines) for (const ip of machine.ips) machineIps.add(ip);
+  (() => {
+    for (const machine of machines) for (const ip of machine.ips) machineIps.add(ip);
+  })();
 
   const fpNetworkIds = new Set(fpNetworks.map((net) => net.id));
   const clients: Record<string, FpClient[]> = {};
@@ -450,22 +462,29 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
     hostname && hostname !== "*" ? hostname : null;
   // Precedence via processing order: static reservations, then dynamic leases,
   // then ARP-only detections fill in whatever the lease list missed.
-  for (const lease of leases) if (lease.isStatic) addClient(lease.networkId ?? networkIdForAddress(lease.ipAddress), lease.ipAddress, leaseLabel(lease.hostname), "lease-static");
-  for (const lease of leases) if (!lease.isStatic) addClient(lease.networkId ?? networkIdForAddress(lease.ipAddress), lease.ipAddress, leaseLabel(lease.hostname), "lease-dynamic");
-  for (const n of neighbors) addClient(n.networkId ?? networkIdForAddress(n.ipAddress), n.ipAddress, n.hostname ?? n.manufacturer, "detected");
+  (() => {
+    for (const lease of leases) if (lease.isStatic) addClient(lease.networkId ?? networkIdForAddress(lease.ipAddress), lease.ipAddress, leaseLabel(lease.hostname), "lease-static");
+    for (const lease of leases) if (!lease.isStatic) addClient(lease.networkId ?? networkIdForAddress(lease.ipAddress), lease.ipAddress, leaseLabel(lease.hostname), "lease-dynamic");
+    for (const n of neighbors) addClient(n.networkId ?? networkIdForAddress(n.ipAddress), n.ipAddress, n.hostname ?? n.manufacturer, "detected");
+  })();
 
   const clientIpSortKey = (ip: string) =>
     ip.split(".").reduce((acc, octet) => acc * 256 + (Number(octet) || 0), 0);
-  for (const list of Object.values(clients)) list.sort((a, b) => clientIpSortKey(a.ip) - clientIpSortKey(b.ip));
+  (() => {
+    for (const list of Object.values(clients)) list.sort((a, b) => clientIpSortKey(a.ip) - clientIpSortKey(b.ip));
+  })();
 
   // ----- physical layer from parsed switch configs -----
 
   const uplinks: FpUplink[] = [];
   const carriage: FpCarriage[] = [];
   const networkIdByVlan = new Map<number, string>();
+  (() => {
   for (const net of allNetworks) {
     if (net.vlanId !== null && !networkIdByVlan.has(net.vlanId)) networkIdByVlan.set(net.vlanId, net.id);
   }
+  })();
+  (() => {
   for (const config of switchConfigs) {
     const switchId = config.device.id;
     const allVlanIds = config.vlans.map((v) => v.vlanId);
@@ -474,12 +493,15 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
 
     // Uplinks: one edge per (switch, connected device); Po edges absorb members.
     const memberCounts = new Map<number, number>();
+    (() => {
     for (const port of config.ports) {
       if (!port.isPortChannel && port.channelGroup !== null) {
         memberCounts.set(port.channelGroup, (memberCounts.get(port.channelGroup) ?? 0) + 1);
       }
     }
+    })();
     const labelsByDevice = new Map<string, string[]>();
+    (() => {
     for (const port of config.ports) {
       if (!port.connectedDeviceId) continue;
       if (!port.isPortChannel && port.channelGroup !== null) continue;
@@ -493,43 +515,56 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
       labels.push(label);
       labelsByDevice.set(port.connectedDeviceId, labels);
     }
+    })();
+    (() => {
     for (const [deviceId, labels] of labelsByDevice) {
       uplinks.push({ switchId, deviceId, label: labels.join(", ") });
     }
+    })();
 
     // Carriage: how many active ports/LAGs deliver each network's VLAN.
     const portCounts = new Map<string, number>();
+    (() => {
     for (const port of config.ports) {
       if (port.isShutdown) continue;
       if (!port.isPortChannel && port.channelGroup !== null) continue;
-      const vlanIds = new Set<number>();
-      if (port.mode === "access" || port.accessVlanId !== null) {
-        if (port.accessVlanId !== null) vlanIds.add(port.accessVlanId);
-        if (port.voiceVlanId !== null) vlanIds.add(port.voiceVlanId);
-      } else if (port.mode === "trunk") {
-        for (const id of port.allowedVlans ? expandVlanSpec(port.allowedVlans) : allVlanIds) vlanIds.add(id);
-        if (port.nativeVlanId !== null) vlanIds.add(port.nativeVlanId);
-      }
+      const vlanIds = (() => {
+        const ids = new Set<number>();
+        if (port.mode === "access" || port.accessVlanId !== null) {
+          if (port.accessVlanId !== null) ids.add(port.accessVlanId);
+          if (port.voiceVlanId !== null) ids.add(port.voiceVlanId);
+        } else if (port.mode === "trunk") {
+          for (const id of port.allowedVlans ? expandVlanSpec(port.allowedVlans) : allVlanIds) ids.add(id);
+          if (port.nativeVlanId !== null) ids.add(port.nativeVlanId);
+        }
+        return ids;
+      })();
       for (const vlanId of vlanIds) {
         const networkId = resolveNetworkId(vlanId);
         if (!networkId) continue;
         portCounts.set(networkId, (portCounts.get(networkId) ?? 0) + 1);
       }
     }
+    })();
+    (() => {
     for (const [networkId, ports] of portCounts) {
       carriage.push({ switchId, networkId, ports });
     }
+    })();
   }
+  })();
 
   // ----- WAN address: the firewall's IP on the wan-keyed network -----
 
   const wanNetworkId = allNetworks.find((net) => (net.externalId ?? "").toLowerCase() === "wan")?.id ?? null;
   let wanIp: string | null = null;
+  (() => {
   if (wanNetworkId) {
     const wanIps = ips.filter((ip) => ip.networkId === wanNetworkId);
     wanIp =
       wanIps.find((ip) => ip.interface?.device?.kind === "firewall")?.address ?? wanIps[0]?.address ?? null;
   }
+  })();
 
   // ----- inbound vectors + gateways -----
 
@@ -629,6 +664,7 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
   // Account configuration is stronger evidence than routes inferred from
   // logs. Keep each account/tunnel separate and preserve the configured
   // service target so the footprint can attach a hostname to its workload.
+  (() => {
   for (const snapshot of cloudflareSnapshots) {
     for (const tunnel of snapshot.tunnels) {
       const ingress = tunnel.ingress.filter(
@@ -657,6 +693,8 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
       });
     }
   }
+  })();
+  (() => {
   for (const integration of elasticRows) {
     for (const discovered of discoveredCloudflaredTunnels(integration)) {
       const hostnames = discovered.hostnames.filter(
@@ -671,6 +709,7 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
       });
     }
   }
+  })();
 
   const dyndns: FootprintInput["dyndns"] = ddRows.map((d) => {
     const meta = d.metadata && typeof d.metadata === "object" ? (d.metadata as Record<string, unknown>) : null;

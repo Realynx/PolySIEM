@@ -89,42 +89,44 @@ export function isEncryptedBackup(buffer: Buffer): boolean {
   return timingSafeEqual(prefix, Buffer.from(MAGIC, "utf8"));
 }
 
-/** Open an encrypted backup. Authentication failures intentionally share one error. */
-export function decodeEncryptedBackup(buffer: Buffer, password?: string): DecodedBackupFile {
-  if (!isEncryptedBackup(buffer)) throw new Error("This is not a password-protected PolySIEM backup.");
-  if (!password) throw new Error("This backup is encrypted. Enter its backup password to continue.");
-  if (password.length > 1024) throw new Error("Backup password must be no more than 1024 characters.");
-
+function parseEncryptedEnvelope(buffer: Buffer): EncryptedEnvelope {
   let envelope: EncryptedEnvelope;
   try {
     envelope = JSON.parse(buffer.subarray(Buffer.byteLength(MAGIC)).toString("utf8")) as EncryptedEnvelope;
   } catch {
     throw new Error("The encrypted backup header is corrupt.");
   }
-  if (
-    envelope.version !== ENVELOPE_VERSION ||
-    envelope.kdf !== "scrypt" ||
-    envelope.n !== SCRYPT_N ||
-    envelope.r !== SCRYPT_R ||
-    envelope.p !== SCRYPT_P
-  ) {
-    throw new Error("This encrypted backup uses an unsupported format or key derivation configuration.");
-  }
+  const supported = envelope.version === ENVELOPE_VERSION && envelope.kdf === "scrypt" &&
+    envelope.n === SCRYPT_N && envelope.r === SCRYPT_R && envelope.p === SCRYPT_P;
+  if (!supported) throw new Error("This encrypted backup uses an unsupported format or key derivation configuration.");
+  return envelope;
+}
+
+function decryptBackupPayload(envelope: EncryptedEnvelope, password: string): Partial<PortablePayload> {
+  const salt = Buffer.from(envelope.salt, "base64");
+  const iv = Buffer.from(envelope.iv, "base64");
+  const tag = Buffer.from(envelope.tag, "base64");
+  if (salt.byteLength !== 16 || iv.byteLength !== 12 || tag.byteLength !== 16) throw new Error("bad header");
+  const decipher = createDecipheriv("aes-256-gcm", deriveKey(password, salt, envelope), iv);
+  decipher.setAAD(Buffer.from(MAGIC, "utf8"));
+  decipher.setAuthTag(tag);
+  const compressed = Buffer.concat([
+    decipher.update(Buffer.from(envelope.ciphertext, "base64")),
+    decipher.final(),
+  ]);
+  return JSON.parse(gunzipSync(compressed).toString("utf8")) as Partial<PortablePayload>;
+}
+
+/** Open an encrypted backup. Authentication failures intentionally share one error. */
+export function decodeEncryptedBackup(buffer: Buffer, password?: string): DecodedBackupFile {
+  if (!isEncryptedBackup(buffer)) throw new Error("This is not a password-protected PolySIEM backup.");
+  if (!password) throw new Error("This backup is encrypted. Enter its backup password to continue.");
+  if (password.length > 1024) throw new Error("Backup password must be no more than 1024 characters.");
+
+  const envelope = parseEncryptedEnvelope(buffer);
 
   try {
-    const salt = Buffer.from(envelope.salt, "base64");
-    const iv = Buffer.from(envelope.iv, "base64");
-    const tag = Buffer.from(envelope.tag, "base64");
-    if (salt.byteLength !== 16 || iv.byteLength !== 12 || tag.byteLength !== 16) throw new Error("bad header");
-    const key = deriveKey(password, salt, envelope);
-    const decipher = createDecipheriv("aes-256-gcm", key, iv);
-    decipher.setAAD(Buffer.from(MAGIC, "utf8"));
-    decipher.setAuthTag(tag);
-    const compressed = Buffer.concat([
-      decipher.update(Buffer.from(envelope.ciphertext, "base64")),
-      decipher.final(),
-    ]);
-    const payload = JSON.parse(gunzipSync(compressed).toString("utf8")) as Partial<PortablePayload>;
+    const payload = decryptBackupPayload(envelope, password);
     if (!payload.archive || typeof payload.appSecret !== "string" || payload.appSecret.length < 32) {
       throw new Error("bad payload");
     }

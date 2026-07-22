@@ -142,6 +142,18 @@ export function aggregateInterfaces(
   const out: InterfaceBandwidth[] = [];
   for (const [key, rows] of byKey) {
     rows.sort((a, b) => a.sampledAt.getTime() - b.sampledAt.getTime());
+    out.push(aggregateInterfaceRows(key, rows, starts, bucketMs));
+  }
+  out.sort((a, b) => b.totalIn + b.totalOut - (a.totalIn + a.totalOut));
+  return out;
+}
+
+function aggregateInterfaceRows(
+  key: string,
+  rows: SampleRow[],
+  starts: number[],
+  bucketMs: number,
+): InterfaceBandwidth {
     const inBuckets = new Map<number, BucketAcc>();
     const outBuckets = new Map<number, BucketAcc>();
     let totalIn = 0;
@@ -171,15 +183,12 @@ export function aggregateInterfaces(
       accOut.seconds += seconds;
       outBuckets.set(t, accOut);
     }
-    out.push({
+    return {
       key,
       totalIn,
       totalOut,
       inBps: observedSeconds > 0 ? (totalIn * 8) / observedSeconds : 0,
       outBps: observedSeconds > 0 ? (totalOut * 8) / observedSeconds : 0,
       series: starts.map((t) => ({ t, inBps: rateOf(inBuckets.get(t)), outBps: rateOf(outBuckets.get(t)) })),
-    });
-  }
-  out.sort((a, b) => b.totalIn + b.totalOut - (a.totalIn + a.totalOut));
-  return out;
+    };
 }

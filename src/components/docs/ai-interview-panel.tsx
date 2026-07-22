@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -257,6 +257,112 @@ export function AiInterviewLauncher() {
   const generateLabel =
     goal === "document" ? "End interview" : "End & review services";
 
+  return <AiInterviewView {...{
+    open, setOpen, input, setInput, interview, scrollRef, nearBottomRef,
+    handleOpenChange, handleSend, handleQuestionAnswers, handleFinish, handleEnd,
+    streaming, visibleTurns, activeQuestion, servicesFailed, canGenerate,
+    generateLabel, router,
+  }} />;
+}
+
+interface AiInterviewViewProps {
+  open: boolean;
+  setOpen: Dispatch<SetStateAction<boolean>>;
+  input: string;
+  setInput: Dispatch<SetStateAction<string>>;
+  interview: ReturnType<typeof useDocInterview>;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  nearBottomRef: RefObject<boolean>;
+  handleOpenChange: (open: boolean) => void;
+  handleSend: () => void;
+  handleQuestionAnswers: (answers: InterviewQuestionAnswer[]) => void;
+  handleFinish: () => void;
+  handleEnd: () => void;
+  streaming: boolean;
+  visibleTurns: ReturnType<typeof useDocInterview>["messages"];
+  activeQuestion: ReturnType<typeof interviewQuestionPrompt>;
+  servicesFailed: boolean;
+  canGenerate: boolean;
+  generateLabel: string;
+  router: ReturnType<typeof useRouter>;
+}
+
+function InterviewConversation({
+  visibleTurns,
+  draft,
+  status,
+  error,
+  goal,
+  onRetry,
+}: {
+  visibleTurns: ReturnType<typeof useDocInterview>["messages"];
+  draft: ReturnType<typeof useDocInterview>["draft"];
+  status: ReturnType<typeof useDocInterview>["status"];
+  error: string | null;
+  goal: DocInterviewGoal;
+  onRetry: () => void;
+}) {
+  return (
+    <>
+      <p className="rounded-lg border border-dashed bg-muted/40 p-3 text-xs text-muted-foreground">
+        The interviewer reads existing pages, cross-checks synced infrastructure, and updates the right focused docs after each answer. It keeps asking through unresolved assumptions and TODOs until you choose End. It does not assume SSH access.
+        {goal !== "document" && <> Any proposed service entries stay in review until you confirm them.</>}
+      </p>
+      {visibleTurns.map((message, index) => (
+        <ChatMessageView
+          key={index}
+          role={message.role}
+          content={message.content}
+          toolCalls={message.toolCalls?.filter((call) => call.name !== "ask_question")}
+        />
+      ))}
+      {draft && <ChatMessageView role="assistant" content={draft.content} toolCalls={draft.toolCalls.filter((call) => call.name !== "ask_question")} streaming />}
+      {status === "error" && error && <ErrorBanner message={error} onRetry={onRetry} />}
+    </>
+  );
+}
+
+function InterviewHeader({
+  hasMessages,
+  onEnd,
+  onReset,
+  onClose,
+}: {
+  hasMessages: boolean;
+  onEnd: () => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 border-b px-4 py-3">
+      <div className="flex size-7 items-center justify-center rounded-full bg-primary/10 text-primary"><Sparkles className="size-4" aria-hidden /></div>
+      <div className="min-w-0 flex-1">
+        <SheetTitle className="truncate text-sm">{hasMessages ? "Infrastructure interview" : "Interview me"}</SheetTitle>
+        <SheetDescription className="sr-only">Interview against real synced infrastructure, then review documentation and service inventory proposals.</SheetDescription>
+      </div>
+      {hasMessages && <Button variant="outline" size="xs" onClick={onEnd} aria-label="End documentation interview"><Flag /> End</Button>}
+      {hasMessages && (
+        <Tooltip>
+          <TooltipTrigger asChild><Button variant="ghost" size="icon-sm" onClick={onReset} aria-label="Start over"><SquarePen /></Button></TooltipTrigger>
+          <TooltipContent side="bottom">Start over</TooltipContent>
+        </Tooltip>
+      )}
+      <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close"><X /></Button>
+    </div>
+  );
+}
+
+function when(active: boolean, content: React.ReactNode): React.ReactNode {
+  return active ? content : null;
+}
+
+function AiInterviewView({
+  open, setOpen, input, setInput, interview, scrollRef, nearBottomRef,
+  handleOpenChange, handleSend, handleQuestionAnswers, handleFinish, handleEnd,
+  streaming, visibleTurns, activeQuestion, servicesFailed, canGenerate,
+  generateLabel, router,
+}: AiInterviewViewProps) {
+  const { phase, status, messages, draft, error, servicePlan, goal } = interview;
   return (
     <>
       <Button variant="outline" onClick={() => handleOpenChange(true)}>
@@ -270,59 +376,12 @@ export function AiInterviewLauncher() {
           showCloseButton={false}
           className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:w-[560px] data-[side=right]:sm:max-w-[560px]"
         >
-          <div className="flex items-center gap-2 border-b px-4 py-3">
-            <div className="flex size-7 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <Sparkles className="size-4" aria-hidden />
-            </div>
-            <div className="min-w-0 flex-1">
-              <SheetTitle className="truncate text-sm">
-                {messages.length === 0
-                  ? "Interview me"
-                  : "Infrastructure interview"}
-              </SheetTitle>
-              <SheetDescription className="sr-only">
-                Interview against real synced infrastructure, then review
-                documentation and service inventory proposals.
-              </SheetDescription>
-            </div>
-            {messages.length > 0 && (
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={handleEnd}
-                aria-label="End documentation interview"
-              >
-                <Flag />
-                End
-              </Button>
-            )}
-            {messages.length > 0 && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => {
-                      interview.reset();
-                      setInput("");
-                    }}
-                    aria-label="Start over"
-                  >
-                    <SquarePen />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">Start over</TooltipContent>
-              </Tooltip>
-            )}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => setOpen(false)}
-              aria-label="Close"
-            >
-              <X />
-            </Button>
-          </div>
+          <InterviewHeader
+            hasMessages={messages.length > 0}
+            onEnd={handleEnd}
+            onReset={() => { interview.reset(); setInput(""); }}
+            onClose={() => setOpen(false)}
+          />
 
           <div
             ref={scrollRef}
@@ -334,54 +393,16 @@ export function AiInterviewLauncher() {
             className="flex-1 overflow-y-auto overscroll-contain"
           >
             <div className="flex flex-col gap-4 px-4 py-4">
-              {messages.length === 0 && (
-                <InterviewSetup onStart={interview.start} />
-              )}
+              {when(messages.length === 0, <InterviewSetup onStart={interview.start} />)}
 
-              {messages.length > 0 && phase === "interview" && (
-                <>
-                  <p className="rounded-lg border border-dashed bg-muted/40 p-3 text-xs text-muted-foreground">
-                    The interviewer reads existing pages, cross-checks synced
-                    infrastructure, and updates the right focused docs after
-                    each answer. It keeps asking through unresolved assumptions
-                    and TODOs until you choose End. It does not assume SSH
-                    access.
-                    {goal !== "document" && (
-                      <>
-                        {" "}
-                        Any proposed service entries stay in review until you
-                        confirm them.
-                      </>
-                    )}
-                  </p>
-                  {visibleTurns.map((message, index) => {
-                    const visibleTools = message.toolCalls?.filter(
-                      (call) => call.name !== "ask_question",
-                    );
-                    return (
-                      <ChatMessageView
-                        key={index}
-                        role={message.role}
-                        content={message.content}
-                        toolCalls={visibleTools}
-                      />
-                    );
-                  })}
-                  {draft && (
-                    <ChatMessageView
-                      role="assistant"
-                      content={draft.content}
-                      toolCalls={draft.toolCalls.filter(
-                        (call) => call.name !== "ask_question",
-                      )}
-                      streaming
-                    />
-                  )}
-                  {status === "error" && error && (
-                    <ErrorBanner message={error} onRetry={interview.retry} />
-                  )}
-                </>
-              )}
+              {messages.length > 0 && phase === "interview" && <InterviewConversation
+                visibleTurns={visibleTurns}
+                draft={draft}
+                status={status}
+                error={error}
+                goal={goal}
+                onRetry={interview.retry}
+              />}
 
               {phase === "services" && (
                 <>

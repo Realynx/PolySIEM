@@ -105,6 +105,50 @@ async function generateStructuredReport(
   }
 }
 
+async function* runMockInvestigation(
+  input: InvestigateInput,
+): AsyncGenerator<AgentStreamEvent, InvestigationReport> {
+  const results: RawToolResult[] = [];
+  const calls: AgentToolCall[] = [];
+  let partialText = "";
+  let generated: InvestigationReport | null = null;
+  for await (const event of mockInvestigate(input.ips, input.context)) {
+    if (event.type === "report") {
+      generated = event.report;
+      continue;
+    }
+    if (event.type === "done") continue;
+    if (event.type === "token") partialText += event.text;
+    if (event.type === "tool_result") {
+      calls.push(event.call);
+      results.push({ name: event.call.name, args: event.call.args, output: parseToolOutput(event.call.resultPreview ?? "") });
+    }
+    yield event;
+  }
+  const report = !shouldForceReportFailure() && generated
+    ? generated
+    : synthesizeReport({
+        ips: input.ips, results, toolCalls: calls, partialText, model: "mock-agent:demo", externalSourcesUsed: [],
+      });
+  yield { type: "report", report };
+  yield { type: "done", content: report.summary, toolCalls: report.meta.toolCalls };
+  return report;
+}
+
+function investigationTask(input: InvestigateInput): string {
+  return [
+    input.ips.length
+      ? `Investigate the following IP address(es): ${input.ips.join(", ")}.`
+      : "Investigate the security concern described below.",
+    input.context ? `\nTicket / context:\n${input.context}` : "",
+    input.seedEvidence ? `\nEvidence from logs:\n${input.seedEvidence}` : "",
+  ].join("");
+}
+
+function emptyInvestigation(state: RunState): boolean {
+  return state.transcript.length === 0 && state.toolCalls.length === 0 && !state.finalText.trim();
+}
+
 /**
  * Run an investigation. Yields stream events and, once complete, a terminal
  * `report` + `done`. The InvestigationReport is also the generator's return
@@ -124,47 +168,7 @@ export async function* runInvestigation(
   const { baseUrl, model } = resolved;
 
   if (resolved.provider === "ollama" && isMockMode(baseUrl)) {
-    // Mock mode still exercises the synthesis fallback (via the force seam) so
-    // the robustness path is demoable without a live model.
-    const mockResults: RawToolResult[] = [];
-    const mockCalls: AgentToolCall[] = [];
-    let partialText = "";
-    let mockReport: InvestigationReport | null = null;
-    for await (const ev of mockInvestigate(input.ips, input.context)) {
-      if (ev.type === "report") {
-        mockReport = ev.report;
-        continue;
-      }
-      if (ev.type === "done") continue;
-      if (ev.type === "token") partialText += ev.text;
-      if (ev.type === "tool_result") {
-        mockCalls.push(ev.call);
-        mockResults.push({
-          name: ev.call.name,
-          args: ev.call.args,
-          output: parseToolOutput(ev.call.resultPreview ?? ""),
-        });
-      }
-      yield ev;
-    }
-    const report =
-      !shouldForceReportFailure() && mockReport
-        ? mockReport
-        : synthesizeReport({
-            ips: input.ips,
-            results: mockResults,
-            toolCalls: mockCalls,
-            partialText,
-            model: "mock-agent:demo",
-            externalSourcesUsed: [],
-          });
-    yield { type: "report", report };
-    yield {
-      type: "done",
-      content: report.summary,
-      toolCalls: report.meta.toolCalls,
-    };
-    return report;
+    return yield* runMockInvestigation(input);
   }
 
   const cfgErr = configErrorFor(
@@ -180,13 +184,7 @@ export async function* runInvestigation(
   const state: RunState = { ctx, toolCalls: [], transcript: [], finalText: "" };
   const chat = buildChatModel(resolved);
 
-  const task = [
-    input.ips.length
-      ? `Investigate the following IP address(es): ${input.ips.join(", ")}.`
-      : "Investigate the security concern described below.",
-    input.context ? `\nTicket / context:\n${input.context}` : "",
-    input.seedEvidence ? `\nEvidence from logs:\n${input.seedEvidence}` : "",
-  ].join("");
+  const task = investigationTask(input);
 
   // Phase 1: tool-calling research.
   let phase1Failed = false;
@@ -229,11 +227,7 @@ export async function* runInvestigation(
       );
   }
   if (!report) {
-    const nothingGathered =
-      state.transcript.length === 0 &&
-      state.toolCalls.length === 0 &&
-      !state.finalText.trim();
-    if (nothingGathered) {
+    if (emptyInvestigation(state)) {
       yield {
         type: "error",
         message: "The investigation could not gather any findings.",

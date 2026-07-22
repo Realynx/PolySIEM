@@ -52,6 +52,11 @@ import type { WorkflowDto } from "@/lib/workflows/types";
 import { useWorkflows, wfKeys } from "@/components/workflows/api";
 import { RunStatusBadge } from "@/components/workflows/meta";
 
+function workflowErrorDescription(error: unknown): string {
+  if (error instanceof Error && !error.message.startsWith("Request failed")) return error.message;
+  return "The workflow engine isn't responding yet — it may still be starting.";
+}
+
 /** Workflow list table: open, enable/disable, duplicate, delete. */
 export function WorkflowList({ isAdmin }: { isAdmin: boolean }) {
   const router = useRouter();
@@ -122,11 +127,7 @@ export function WorkflowList({ isAdmin }: { isAdmin: boolean }) {
       <EmptyState
         icon={Workflow}
         title="Workflows unavailable"
-        description={
-          error instanceof Error && !error.message.startsWith("Request failed")
-            ? error.message
-            : "The workflow engine isn't responding yet — it may still be starting."
-        }
+        description={workflowErrorDescription(error)}
         action={
           <Button variant="outline" onClick={() => refetch()}>
             Retry

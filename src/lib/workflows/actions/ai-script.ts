@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AgentToolCall } from "@/lib/ai/agent/contract";
+import type { AgentStreamEvent, AgentToolCall } from "@/lib/ai/agent/contract";
 import type { ActionDefinition, RunContext } from "../registry";
 
 /**
@@ -41,6 +41,29 @@ const scriptConfigSchema = z.object({
   maxOutputChars: z.coerce.number().int().min(200).max(200_000).default(20_000),
   model: z.string().max(200).optional(),
 });
+
+async function consumeScriptEvents(
+  stream: AsyncIterable<AgentStreamEvent>,
+  ctx: RunContext,
+): Promise<{ toolCalls: AgentToolCall[]; finalText: string; failure: string | null }> {
+  const toolCalls: AgentToolCall[] = [];
+  let finalText = "";
+  let failure: string | null = null;
+  for await (const event of stream) {
+    if (event.type === "tool_call") {
+      ctx.log(`Tool ${toolCalls.length + 1}: ${event.call.label}…`, "DEBUG");
+    } else if (event.type === "tool_result") {
+      toolCalls.push(event.call);
+      const preview = event.call.resultPreview?.slice(0, 180) ?? "";
+      ctx.log(
+        `Tool ${toolCalls.length} ${event.call.status}: ${event.call.name}${preview ? ` → ${preview}` : ""}`,
+        event.call.status === "error" ? "WARN" : "INFO",
+      );
+    } else if (event.type === "done") finalText = event.content;
+    else if (event.type === "error") failure = event.message;
+  }
+  return { toolCalls, finalText, failure };
+}
 
 /**
  * The executor parses the node config with this schema before calling run(),
@@ -202,10 +225,6 @@ export const aiScript: ActionDefinition = {
     );
     if (cfg.model) ctx.log(`Model override: ${cfg.model}`);
 
-    const toolCalls: AgentToolCall[] = [];
-    let finalText = "";
-    let failure: string | null = null;
-
     const stream = runScript(cfg.prompt, {
       role: gates.role,
       userId: gates.userId,
@@ -220,32 +239,7 @@ export const aiScript: ActionDefinition = {
       workflowChain: ctx.chain,
     });
 
-    for await (const event of stream) {
-      switch (event.type) {
-        case "tool_call":
-          ctx.log(`Tool ${toolCalls.length + 1}: ${event.call.label}…`, "DEBUG");
-          break;
-        case "tool_result": {
-          toolCalls.push(event.call);
-          const preview = event.call.resultPreview?.slice(0, 180) ?? "";
-          ctx.log(
-            `Tool ${toolCalls.length} ${event.call.status}: ${event.call.name}${preview ? ` → ${preview}` : ""}`,
-            event.call.status === "error" ? "WARN" : "INFO",
-          );
-          break;
-        }
-        case "done":
-          finalText = event.content;
-          break;
-        case "error":
-          failure = event.message;
-          break;
-        default:
-          // "token" (streamed text) and "report" are not useful as console
-          // lines — the assembled answer is logged once at the end.
-          break;
-      }
-    }
+    const { toolCalls, finalText, failure } = await consumeScriptEvents(stream, ctx);
 
     if (failure) throw new Error(failure);
 

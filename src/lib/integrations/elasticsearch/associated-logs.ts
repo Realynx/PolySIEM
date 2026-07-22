@@ -268,6 +268,31 @@ function tunnelHostname(value: string | null): string | null {
   return value.replace(/^\/+/, "").split(/[/?#]/, 1)[0] || null;
 }
 
+function requestDetails(source: Record<string, unknown>, event: Record<string, unknown> | null) {
+  const url = eventText(source, event, "url.full", "url.original", "url", "request.url", "request.uri", "nextcloud.url");
+  const parsed = urlParts(url);
+  const originService = eventText(source, event, "cloudflared.originService", "originService", "origin_service");
+  const hostname = eventText(source, event, "cloudflared.hostname");
+  const domain = eventText(source, event, "url.domain") ?? parsed.domain ?? tunnelHostname(hostname);
+  const path = eventText(source, event, "url.path", "request.path", "path") ?? parsed.path;
+  const scheme = eventText(source, event, "url.scheme") ?? parsed.scheme ?? (hostname ? "https" : null);
+  const request = url ?? (domain ? `${scheme ? `${scheme}://` : ""}${domain}${path ?? ""}` : path);
+  return { url, originService, domain, path, scheme, request };
+}
+
+function eventIdentity(source: Record<string, unknown>, event: Record<string, unknown> | null) {
+  return {
+    application: eventText(source, event, "service.name", "event.dataset", "nextcloud.app", "app", "application"),
+    user: eventText(source, event, "user.name", "user.id", "nextcloud.user", "user", "username"),
+    requestId: eventText(source, event, "request.id", "event.id", "nextcloud.reqId", "reqId", "requestId"),
+  };
+}
+
+function associatedKind(error: string | null, requestLike: unknown[]): AssociatedLogRow["kind"] {
+  if (error) return "error";
+  return requestLike.some(Boolean) ? "http" : "event";
+}
+
 /** Normalize only useful display fields; the complete ES document never leaves the server. */
 export function associatedHitToRow(
   hit: EsHit,
@@ -286,29 +311,7 @@ export function associatedHitToRow(
     "nextcloud.message",
     "event.original",
   );
-  const url = eventText(
-    source,
-    event,
-    "url.full",
-    "url.original",
-    "url",
-    "request.url",
-    "request.uri",
-    "nextcloud.url",
-  );
-  const parsed = urlParts(url);
-  const originService = eventText(
-    source,
-    event,
-    "cloudflared.originService",
-    "originService",
-    "origin_service",
-  );
-  const cloudflaredHostname = eventText(
-    source,
-    event,
-    "cloudflared.hostname",
-  );
+  const requestInfo = requestDetails(source, event);
   const error = eventText(
     source,
     event,
@@ -342,56 +345,14 @@ export function associatedHitToRow(
     "container.name",
     "agent.name",
   );
-  const application = eventText(
-    source,
-    event,
-    "service.name",
-    "event.dataset",
-    "nextcloud.app",
-    "app",
-    "application",
-  );
-  const user = eventText(
-    source,
-    event,
-    "user.name",
-    "user.id",
-    "nextcloud.user",
-    "user",
-    "username",
-  );
-  const requestId = eventText(
-    source,
-    event,
-    "request.id",
-    "event.id",
-    "nextcloud.reqId",
-    "reqId",
-    "requestId",
-  );
+  const { application, user, requestId } = eventIdentity(source, event);
   const action = eventText(source, event, "event.action", "action");
-  const domain =
-    eventText(source, event, "url.domain") ??
-    parsed.domain ??
-    tunnelHostname(cloudflaredHostname);
-  const path =
-    eventText(source, event, "url.path", "request.path", "path") ??
-    parsed.path;
-  const scheme =
-    eventText(source, event, "url.scheme") ??
-    parsed.scheme ??
-    (cloudflaredHostname ? "https" : null);
-  const request =
-    url ??
-    (domain
-      ? `${scheme ? `${scheme}://` : ""}${domain}${path ?? ""}`
-      : path);
   const summary = eventSummary({
     application,
     user,
     action,
     method,
-    request,
+    request: requestInfo.request,
     statusCode,
     host,
   });
@@ -410,20 +371,15 @@ export function associatedHitToRow(
         "@timestamp",
         "timestamp",
       ) ?? new Date(0).toISOString(),
-    kind:
-      error
-        ? "error"
-        : method || statusCode || url || domain || originService
-          ? "http"
-          : "event",
+    kind: associatedKind(error, [method, statusCode, requestInfo.url, requestInfo.domain, requestInfo.originService]),
     host,
     message,
     error,
-    url,
-    scheme,
-    domain,
-    path,
-    originService,
+    url: requestInfo.url,
+    scheme: requestInfo.scheme,
+    domain: requestInfo.domain,
+    path: requestInfo.path,
+    originService: requestInfo.originService,
     sourceIp: eventText(
       source,
       event,

@@ -140,6 +140,8 @@ export const elasticDocumentSearchSchema = z
   });
 
 export type ElasticDocumentSearchInput = z.input<typeof elasticDocumentSearchSchema>;
+type ParsedDocumentSearch = z.output<typeof elasticDocumentSearchSchema>;
+type DocumentSearchFilter = ParsedDocumentSearch["filters"][number];
 
 interface ResolveIndexResponse {
   indices?: { name?: string; aliases?: string[]; data_stream?: string }[];
@@ -255,19 +257,27 @@ function validIndexToken(value: string): boolean {
   );
 }
 
-function indexCatalog(resolved: ResolveIndexResponse): ElasticIndexSummary[] {
-  const found = new Map<string, ElasticIndexSummary["kind"]>();
-  for (const item of resolved.indices ?? []) {
+function addResolvedIndices(found: Map<string, ElasticIndexSummary["kind"]>, items: ResolveIndexResponse["indices"]): void {
+  for (const item of items ?? []) {
     if (item.name && validIndexToken(item.name)) found.set(item.name, "index");
     if (item.data_stream && validIndexToken(item.data_stream)) found.set(item.data_stream, "data_stream");
     for (const alias of item.aliases ?? []) if (validIndexToken(alias)) found.set(alias, "alias");
   }
-  for (const item of resolved.aliases ?? []) {
-    if (item.name && validIndexToken(item.name)) found.set(item.name, "alias");
-  }
-  for (const item of resolved.data_streams ?? []) {
-    if (item.name && validIndexToken(item.name)) found.set(item.name, "data_stream");
-  }
+}
+
+function addResolvedNames(
+  found: Map<string, ElasticIndexSummary["kind"]>,
+  items: Array<{ name?: string }> | undefined,
+  kind: ElasticIndexSummary["kind"],
+): void {
+  for (const item of items ?? []) if (item.name && validIndexToken(item.name)) found.set(item.name, kind);
+}
+
+function indexCatalog(resolved: ResolveIndexResponse): ElasticIndexSummary[] {
+  const found = new Map<string, ElasticIndexSummary["kind"]>();
+  addResolvedIndices(found, resolved.indices);
+  addResolvedNames(found, resolved.aliases, "alias");
+  addResolvedNames(found, resolved.data_streams, "data_stream");
   const candidates = [...found.entries()]
     .map(([name, kind]) => ({ name, kind }))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -380,6 +390,51 @@ function totalOf(res: SearchResponse): { value: number; relation: string } {
   return { value: total?.value ?? 0, relation: total?.relation ?? "eq" };
 }
 
+async function discoverySampleHits(
+  cfg: DriverConfig,
+  target: string,
+  includeSamples: boolean,
+  fields: string[],
+): Promise<SearchHit[]> {
+  if (!includeSamples || fields.length === 0) return [];
+  if (isMock(cfg)) {
+    return MOCK_DOCUMENTS.map((source, index) => ({ _id: `mock-${index + 1}`, _index: "mock-logs", _source: source }));
+  }
+  const sample = await esFetch<SearchResponse>(cfg, `/${encodeURIComponent(target)}/_search?ignore_unavailable=true&allow_no_indices=true`, {
+    size: SAMPLE_DOCUMENTS,
+    _source: { includes: fields, excludes: ELASTIC_SOURCE_EXCLUDES },
+    query: { match_all: {} },
+    track_total_hits: false,
+    timeout: "5s",
+  });
+  return sample.hits?.hits ?? [];
+}
+
+function summarizeDiscoveredFields(
+  selected: Array<[string, Record<string, FieldCapability>]>,
+  sampleMap: Map<string, unknown[]>,
+): ElasticFieldSummary[] {
+  const fields: ElasticFieldSummary[] = [];
+  let characters = 0;
+  for (const [field, types] of selected) {
+    const capabilities = Object.entries(types).filter(([type]) => type !== "unmapped");
+    const mappedIndices = new Set(capabilities.flatMap(([, capability]) => capability.indices ?? []));
+    const summary: ElasticFieldSummary = {
+      field,
+      types: capabilities.map(([type]) => type).sort(),
+      searchable: capabilities.some(([, capability]) => capability.searchable === true),
+      aggregatable: capabilities.some(([, capability]) => capability.aggregatable === true),
+      indices: mappedIndices.size > 0 ? [...mappedIndices].sort().slice(0, 8) : undefined,
+      samples: sampleMap.get(field) ?? [],
+    };
+    const length = JSON.stringify(summary).length;
+    if (characters + length > MAX_DISCOVERY_CHARACTERS) break;
+    fields.push(summary);
+    characters += length;
+  }
+  return fields;
+}
+
 export async function discoverElasticsearchFields(
   input: ElasticFieldDiscoveryInput,
 ): Promise<ElasticDiscoveryResult> {
@@ -405,44 +460,10 @@ export async function discoverElasticsearchFields(
   const selected = allFields.slice(0, MAX_FIELDS);
   const secrets = Object.values(cfg.credentials).filter((value) => value.length >= 4);
 
-  let sampleHits: SearchHit[] = [];
-  if (parsed.includeSamples && selected.length > 0) {
-    if (isMock(cfg)) {
-      sampleHits = MOCK_DOCUMENTS.map((source, index) => ({ _id: `mock-${index + 1}`, _index: "mock-logs", _source: source }));
-    } else {
-      const sample = await esFetch<SearchResponse>(cfg, `/${encodeURIComponent(scope.target)}/_search?ignore_unavailable=true&allow_no_indices=true`, {
-        size: SAMPLE_DOCUMENTS,
-        _source: {
-          includes: selected.map(([field]) => field),
-          excludes: ELASTIC_SOURCE_EXCLUDES,
-        },
-        query: { match_all: {} },
-        track_total_hits: false,
-        timeout: "5s",
-      });
-      sampleHits = sample.hits?.hits ?? [];
-    }
-  }
+  const selectedNames = selected.map(([field]) => field);
+  const sampleHits = await discoverySampleHits(cfg, scope.target, parsed.includeSamples, selectedNames);
   const sampleMap = samplesFromHits(sampleHits, selected.map(([field]) => field), secrets);
-  const fields: ElasticFieldSummary[] = [];
-  let discoveryCharacters = 0;
-  for (const [field, types] of selected) {
-    const capabilities = Object.entries(types).filter(([type]) => type !== "unmapped");
-    const mappedIndices = new Set<string>();
-    for (const [, cap] of capabilities) for (const index of cap.indices ?? []) mappedIndices.add(index);
-    const summary: ElasticFieldSummary = {
-      field,
-      types: capabilities.map(([type]) => type).sort(),
-      searchable: capabilities.some(([, cap]) => cap.searchable === true),
-      aggregatable: capabilities.some(([, cap]) => cap.aggregatable === true),
-      indices: mappedIndices.size > 0 ? [...mappedIndices].sort().slice(0, 8) : undefined,
-      samples: sampleMap.get(field) ?? [],
-    };
-    const candidateLength = JSON.stringify(summary).length;
-    if (discoveryCharacters + candidateLength > MAX_DISCOVERY_CHARACTERS) break;
-    fields.push(summary);
-    discoveryCharacters += candidateLength;
-  }
+  const fields = summarizeDiscoveredFields(selected, sampleMap);
 
   return {
     source: { id: cfg.id, name: cfg.name },
@@ -478,6 +499,131 @@ function exactFieldQuery(field: string, value: string | number | boolean, fieldT
 
 function fieldTypesFromCaps(caps: FieldCapsResponse, field: string): string[] {
   return Object.keys(caps.fields?.[field] ?? {}).filter((type) => type !== "unmapped");
+}
+
+function requestedSearchFilters(parsed: ParsedDocumentSearch): DocumentSearchFilter[] {
+  const primary: DocumentSearchFilter[] = parsed.field
+    ? [parsed.value === undefined
+        ? { operator: "exists", field: parsed.field }
+        : { operator: "exact", field: parsed.field, value: parsed.value }]
+    : [];
+  return [...primary, ...parsed.filters];
+}
+
+function effectiveSearchFrom(parsed: ParsedDocumentSearch, filters: DocumentSearchFilter[]): string | undefined {
+  const exact = filters.some((item) => item.operator === "exact");
+  const broadDefault = parsed.fullText && !parsed.from && !parsed.to && !exact ? "now-24h" : undefined;
+  return parsed.from ?? broadDefault;
+}
+
+function fieldsRequiredForSearch(
+  parsed: ParsedDocumentSearch,
+  filters: DocumentSearchFilter[],
+  timeField: string,
+  effectiveFrom?: string,
+): Set<string> {
+  const fields = new Set(filters.map((item) => item.field));
+  if (effectiveFrom || parsed.to) fields.add(timeField);
+  parsed.returnFields.forEach((field) => fields.add(field));
+  return fields;
+}
+
+async function validatedFieldCaps(cfg: DriverConfig, target: string, fields: Set<string>): Promise<FieldCapsResponse> {
+  if (isMock(cfg) || fields.size === 0) return {};
+  const caps = await esFetch<FieldCapsResponse>(
+    cfg,
+    `/${encodeURIComponent(target)}/_field_caps?fields=${encodeURIComponent([...fields].join(","))}&ignore_unavailable=true&allow_no_indices=true`,
+  );
+  fields.forEach((field) => {
+    if (fieldTypesFromCaps(caps, field).length === 0) {
+      throw new Error(`Field \"${field}\" is not mapped in the selected index scope`);
+    }
+  });
+  return caps;
+}
+
+function buildSearchClauses(
+  parsed: ParsedDocumentSearch,
+  filters: DocumentSearchFilter[],
+  caps: FieldCapsResponse,
+  mock: boolean,
+  timeField: string,
+  effectiveFrom?: string,
+): { must: Record<string, unknown>[]; filter: Record<string, unknown>[] } {
+  const must: Record<string, unknown>[] = [];
+  const filter: Record<string, unknown>[] = [];
+  if (parsed.fullText) must.push({ simple_query_string: {
+    query: parsed.fullText, fields: ["*"], default_operator: "and", lenient: true,
+    analyze_wildcard: false, flags: "NONE",
+  } });
+  filters.forEach((item) => {
+    if (item.operator === "exists") filter.push({ exists: { field: item.field } });
+    else if (!mock) must.push(exactFieldQuery(item.field, item.value, fieldTypesFromCaps(caps, item.field)));
+  });
+  if (effectiveFrom || parsed.to) filter.push({ range: { [timeField]: {
+    ...(effectiveFrom ? { gte: effectiveFrom } : {}),
+    ...(parsed.to ? { lte: parsed.to } : {}),
+  } } });
+  return { must, filter };
+}
+
+async function executeDocumentSearch(
+  cfg: DriverConfig,
+  parsed: ParsedDocumentSearch,
+  target: string,
+  sourceIncludes: string[],
+  clauses: { must: Record<string, unknown>[]; filter: Record<string, unknown>[] },
+  timeField: string,
+  effectiveFrom?: string,
+): Promise<SearchResponse> {
+  if (isMock(cfg)) return mockSearch(parsed);
+  const settings = settingsOf(cfg);
+  return esFetch<SearchResponse>(cfg, `/${encodeURIComponent(target)}/_search?ignore_unavailable=true&allow_no_indices=true`, {
+    size: parsed.limit,
+    _source: { includes: sourceIncludes, excludes: ELASTIC_SOURCE_EXCLUDES },
+    track_total_hits: 10_000,
+    timeout: "8s",
+    terminate_after: 20_000,
+    sort: effectiveFrom || parsed.to
+      ? [{ [timeField]: { order: "desc", unmapped_type: "date" } }]
+      : ["_score", { [settings.timestampField]: { order: "desc", unmapped_type: "date" } }],
+    query: { bool: clauses },
+  });
+}
+
+function shapeSearchDocuments(
+  hits: SearchHit[],
+  secrets: string[],
+  target: string,
+  timeField: string,
+  timestampField: string,
+): ElasticSearchResult["documents"] {
+  const documents: ElasticSearchResult["documents"] = [];
+  let resultCharacters = 0;
+  for (const hit of hits) {
+    const normalized = flattenSafeDocument(hit._source ?? {}, secrets);
+    const fields: Record<string, unknown> = {};
+    let fieldsTruncated = normalized.truncated;
+    for (const [field, value] of Object.entries(normalized.fields)) {
+      const candidateLength = field.length + JSON.stringify(value).length;
+      if (resultCharacters + candidateLength > MAX_RESULT_CHARACTERS) {
+        fieldsTruncated = true;
+        break;
+      }
+      fields[field] = value;
+      resultCharacters += candidateLength;
+    }
+    if (Object.keys(fields).length === 0 && documents.length > 0) break;
+    documents.push({
+      id: hit._id ?? "unknown",
+      index: hit._index ?? target,
+      score: typeof hit._score === "number" ? hit._score : null,
+      timestamp: fields[timeField] ?? fields[timestampField] ?? null,
+      fields,
+      fieldsTruncated,
+    });
+  }
+  return documents;
 }
 
 function mockSearch(parsed: z.output<typeof elasticDocumentSearchSchema>): SearchResponse {
@@ -520,69 +666,12 @@ export async function searchElasticsearchDocuments(
   const scope = isMock(cfg)
     ? { target: "mock-logs", catalog: [] as ElasticIndexSummary[] }
     : await resolveSearchScope(cfg, parsed.index);
-  const must: Record<string, unknown>[] = [];
-  const filter: Record<string, unknown>[] = [];
-
-  if (parsed.fullText) {
-    must.push({
-      simple_query_string: {
-        query: parsed.fullText,
-        fields: ["*"],
-        default_operator: "and",
-        lenient: true,
-        analyze_wildcard: false,
-        flags: "NONE",
-      },
-    });
-  }
   const timeField = parsed.timeField ?? settings.timestampField;
-  const requestedFilters = [
-    ...(parsed.field
-      ? [{
-          operator: parsed.value === undefined ? "exists" as const : "exact" as const,
-          field: parsed.field,
-          ...(parsed.value === undefined ? {} : { value: parsed.value }),
-        }]
-      : []),
-    ...parsed.filters,
-  ];
-  const hasExactFilter = requestedFilters.some((item) => item.operator === "exact");
-  const defaultBroadFrom = parsed.fullText && !parsed.from && !parsed.to && !hasExactFilter ? "now-24h" : undefined;
-  const effectiveFrom = parsed.from ?? defaultBroadFrom;
-  const fieldsToValidate = new Set(requestedFilters.map((item) => item.field));
-  if (effectiveFrom || parsed.to) fieldsToValidate.add(timeField);
-  for (const field of parsed.returnFields) fieldsToValidate.add(field);
-
-  let caps: FieldCapsResponse = {};
-  if (!isMock(cfg) && fieldsToValidate.size > 0) {
-    caps = await esFetch<FieldCapsResponse>(
-      cfg,
-      `/${encodeURIComponent(scope.target)}/_field_caps?fields=${encodeURIComponent([...fieldsToValidate].join(","))}&ignore_unavailable=true&allow_no_indices=true`,
-    );
-    for (const field of fieldsToValidate) {
-      if (fieldTypesFromCaps(caps, field).length === 0) {
-        throw new Error(`Field \"${field}\" is not mapped in the selected index scope`);
-      }
-    }
-  }
-  for (const item of requestedFilters) {
-    if (item.operator === "exists") {
-      filter.push({ exists: { field: item.field } });
-    } else if (!isMock(cfg)) {
-      if (item.value === undefined) continue;
-      must.push(exactFieldQuery(item.field, item.value, fieldTypesFromCaps(caps, item.field)));
-    }
-  }
-  if (effectiveFrom || parsed.to) {
-    filter.push({
-      range: {
-        [timeField]: {
-          ...(effectiveFrom ? { gte: effectiveFrom } : {}),
-          ...(parsed.to ? { lte: parsed.to } : {}),
-        },
-      },
-    });
-  }
+  const requestedFilters = requestedSearchFilters(parsed);
+  const effectiveFrom = effectiveSearchFrom(parsed, requestedFilters);
+  const fieldsToValidate = fieldsRequiredForSearch(parsed, requestedFilters, timeField, effectiveFrom);
+  const caps = await validatedFieldCaps(cfg, scope.target, fieldsToValidate);
+  const clauses = buildSearchClauses(parsed, requestedFilters, caps, isMock(cfg), timeField, effectiveFrom);
 
   const sourceIncludes = [...new Set([
     settings.timestampField,
@@ -592,47 +681,11 @@ export async function searchElasticsearchDocuments(
     ...requestedFilters.map((item) => item.field),
     ...parsed.returnFields,
   ])];
-  const response = isMock(cfg)
-    ? mockSearch(parsed)
-    : await esFetch<SearchResponse>(cfg, `/${encodeURIComponent(scope.target)}/_search?ignore_unavailable=true&allow_no_indices=true`, {
-        size: parsed.limit,
-        _source: { includes: sourceIncludes, excludes: ELASTIC_SOURCE_EXCLUDES },
-        track_total_hits: 10_000,
-        timeout: "8s",
-        terminate_after: 20_000,
-        sort: effectiveFrom || parsed.to
-          ? [{ [timeField]: { order: "desc", unmapped_type: "date" } }]
-          : ["_score", { [settings.timestampField]: { order: "desc", unmapped_type: "date" } }],
-        query: { bool: { must, filter } },
-      });
+  const response = await executeDocumentSearch(cfg, parsed, scope.target, sourceIncludes, clauses, timeField, effectiveFrom);
   const secrets = Object.values(cfg.credentials).filter((value) => value.length >= 4);
   const hits = response.hits?.hits ?? [];
   const total = totalOf(response);
-  const documents: ElasticSearchResult["documents"] = [];
-  let resultCharacters = 0;
-  for (const hit of hits) {
-    const normalized = flattenSafeDocument(hit._source ?? {}, secrets);
-    const fields: Record<string, unknown> = {};
-    let fieldsTruncated = normalized.truncated;
-    for (const [field, value] of Object.entries(normalized.fields)) {
-      const candidateLength = field.length + JSON.stringify(value).length;
-      if (resultCharacters + candidateLength > MAX_RESULT_CHARACTERS) {
-        fieldsTruncated = true;
-        break;
-      }
-      fields[field] = value;
-      resultCharacters += candidateLength;
-    }
-    if (Object.keys(fields).length === 0 && documents.length > 0) break;
-    documents.push({
-      id: hit._id ?? "unknown",
-      index: hit._index ?? scope.target,
-      score: typeof hit._score === "number" ? hit._score : null,
-      timestamp: fields[timeField] ?? fields[settings.timestampField] ?? null,
-      fields,
-      fieldsTruncated,
-    });
-  }
+  const documents = shapeSearchDocuments(hits, secrets, scope.target, timeField, settings.timestampField);
   return {
     source: { id: cfg.id, name: cfg.name },
     searchedIndex: scope.target,

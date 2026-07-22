@@ -9,6 +9,43 @@ import { toJsonSafe } from "@/lib/serialize";
 import { refreshElasticsearchSourceDiscovery } from "@/lib/services/elasticsearch-discovery";
 import { runSync } from "@/lib/integrations/engine";
 
+type CreateInput = ReturnType<typeof createIntegrationSchema.parse>;
+
+async function probeIntegration(input: CreateInput): Promise<TestResult> {
+  if (input.type === "EDGE_NAT_SERVER") {
+    return {
+      ok: false,
+      detail: "SSH key generated. Open Edge Networks to authorize one setup connection, confirm the host identity, and let PolySIEM install the restricted service.",
+    };
+  }
+  const cfg: DriverConfig = {
+    id: "unsaved", type: input.type, name: input.name, baseUrl: input.baseUrl,
+    credentials: input.credentials as Record<string, string>, verifyTls: input.verifyTls,
+    settings: ("settings" in input ? input.settings ?? {} : {}) as Record<string, unknown>,
+  };
+  try {
+    return await getDriver(input.type).testConnection(cfg);
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function addElasticDiscovery(id: string, test: TestResult): Promise<void> {
+  try {
+    const discovery = await refreshElasticsearchSourceDiscovery(id);
+    if (!discovery) return;
+    const labels = discovery.knownSources.map((source) => source.label);
+    const routeCount = discovery.cloudflaredRoutes.length;
+    const discovered = [
+      labels.length > 0 ? `recognized ${labels.join(", ")}` : "no known log families recognized yet",
+      routeCount > 0 ? `${routeCount} Cloudflared hostname${routeCount === 1 ? "" : "s"}` : null,
+    ].filter(Boolean).join("; ");
+    test.detail = `${test.detail} — source discovery: ${discovered}`;
+  } catch (error) {
+    test.detail = `${test.detail} — source discovery could not finish: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
 export const GET = handleApi(async () => {
   await requireAdmin();
   return jsonOk(toJsonSafe(await listIntegrations()));
@@ -21,46 +58,12 @@ export const POST = handleApi(async (req: NextRequest) => {
   // Probe the target first so the caller immediately sees whether the
   // credentials work — but save regardless (misconfigured targets can be
   // fixed later without re-entering everything).
-  const probeCfg: DriverConfig = {
-    id: "unsaved",
-    type: input.type,
-    name: input.name,
-    baseUrl: input.baseUrl,
-    credentials: input.credentials as Record<string, string>,
-    verifyTls: input.verifyTls,
-    settings: ("settings" in input ? input.settings ?? {} : {}) as Record<string, unknown>,
-  };
-  let test: TestResult;
-  if (input.type === "EDGE_NAT_SERVER") {
-    test = {
-      ok: false,
-      detail: "SSH key generated. Open Edge Networks to authorize one setup connection, confirm the host identity, and let PolySIEM install the restricted service.",
-    };
-  } else {
-    try {
-      test = await getDriver(input.type).testConnection(probeCfg);
-    } catch (err) {
-      test = { ok: false, detail: err instanceof Error ? err.message : String(err) };
-    }
-  }
+  const test = await probeIntegration(input);
 
   let integration = await createIntegration({ type: "user", userId: session.user.id }, input);
   if (input.type === "ELASTICSEARCH" && test.ok) {
-    try {
-      const discovery = await refreshElasticsearchSourceDiscovery(integration.id);
-      if (discovery) {
-        const labels = discovery.knownSources.map((source) => source.label);
-        const routeCount = discovery.cloudflaredRoutes.length;
-        const discovered = [
-          labels.length > 0 ? `recognized ${labels.join(", ")}` : "no known log families recognized yet",
-          routeCount > 0 ? `${routeCount} Cloudflared hostname${routeCount === 1 ? "" : "s"}` : null,
-        ].filter(Boolean).join("; ");
-        test.detail = `${test.detail} — source discovery: ${discovered}`;
-        integration = await getIntegration(integration.id);
-      }
-    } catch (err) {
-      test.detail = `${test.detail} — source discovery could not finish: ${err instanceof Error ? err.message : String(err)}`;
-    }
+    await addElasticDiscovery(integration.id, test);
+    integration = await getIntegration(integration.id);
   }
   if ((input.type === "CLOUDFLARE" || input.type === "TAILSCALE" || input.type === "UNIFI") && test.ok) {
     const { runId } = await runSync(integration.id, "manual", {

@@ -22,6 +22,10 @@ function isBroadScopeToken(t: SnapshotApiToken): boolean {
   return POWERFUL_SCOPE_SET.every((s) => t.scopes.includes(s));
 }
 
+function countForm(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural;
+}
+
 export function checkAccess(snap: SecuritySnapshot): SecurityFinding[] {
   const findings: SecurityFinding[] = [];
   const now = Date.parse(snap.now);
@@ -65,7 +69,7 @@ export function checkAccess(snap: SecuritySnapshot): SecurityFinding[] {
       id: "access-integration-tls-verify-off",
       severity: "medium",
       category: "access",
-      title: `TLS verification disabled on ${tlsOff.length} integration${tlsOff.length === 1 ? "" : "s"}`,
+      title: `TLS verification disabled on ${tlsOff.length} integration${countForm(tlsOff.length, "", "s")}`,
       detail:
         "These integrations connect over HTTPS but skip certificate verification, so the API credentials they carry could be intercepted by anything able to man-in-the-middle the connection.",
       remediation:
@@ -87,7 +91,7 @@ export function checkAccess(snap: SecuritySnapshot): SecurityFinding[] {
       id: "access-unused-write-token",
       severity: "low",
       category: "access",
-      title: `${idleWriteTokens.length} write-scope API token${idleWriteTokens.length === 1 ? " has" : "s have"} never been used`,
+      title: `${idleWriteTokens.length} write-scope API token${countForm(idleWriteTokens.length, " has", "s have")} never been used`,
       detail:
         "Write-capable API tokens that were minted but never used are standing credentials with no purpose — pure attack surface.",
       remediation: "Revoke unused tokens under Settings → API tokens; mint a new one when it is actually needed.",
@@ -103,7 +107,7 @@ export function checkAccess(snap: SecuritySnapshot): SecurityFinding[] {
       id: "access-dormant-user",
       severity: "info",
       category: "access",
-      title: `${dormantUsers.length} account${dormantUsers.length === 1 ? " has" : "s have"} never logged in`,
+      title: `${dormantUsers.length} account${countForm(dormantUsers.length, " has", "s have")} never logged in`,
       detail:
         "Enabled accounts that have never signed in may be leftovers from setup. Every enabled account is a credential set worth auditing.",
       remediation: "Disable or delete accounts nobody uses under Settings → Users.",
@@ -121,7 +125,7 @@ export function checkAccess(snap: SecuritySnapshot): SecurityFinding[] {
       id: "access-weak-ssh-key",
       severity: "medium",
       category: "access",
-      title: `${weakKeys.length} documented SSH key${weakKeys.length === 1 ? " is" : "s are"} weak`,
+      title: `${weakKeys.length} documented SSH key${countForm(weakKeys.length, " is", "s are")} weak`,
       detail:
         "DSA keys and RSA keys under 2048 bits are considered breakable and are rejected by modern OpenSSH defaults.",
       remediation:
@@ -137,7 +141,7 @@ export function checkAccess(snap: SecuritySnapshot): SecurityFinding[] {
       id: "access-broad-token-scope",
       severity: "medium",
       category: "access",
-      title: `${broadTokens.length} API token${broadTokens.length === 1 ? " holds" : "s hold"} a broad, powerful scope`,
+      title: `${broadTokens.length} API token${countForm(broadTokens.length, " holds", "s hold")} a broad, powerful scope`,
       detail:
         "These tokens can read the credential vault or drive the full document/sync surface — anything that gets one of them gets most of PolySIEM. Broad scopes belong to short-lived, purpose-built tokens, not standing ones.",
       remediation:
@@ -155,7 +159,7 @@ export function checkAccess(snap: SecuritySnapshot): SecurityFinding[] {
       id: "access-token-no-expiry",
       severity: "low",
       category: "access",
-      title: `${noExpiryTokens.length} API token${noExpiryTokens.length === 1 ? " has" : "s have"} no expiry`,
+      title: `${noExpiryTokens.length} API token${countForm(noExpiryTokens.length, " has", "s have")} no expiry`,
       detail:
         "Tokens with no expiry live forever — they outlast the reason they were minted, the person who made them, and any memory of where they were pasted. An expiry is a dead-man's switch for a leaked credential.",
       remediation:
@@ -179,7 +183,7 @@ export function checkAccess(snap: SecuritySnapshot): SecurityFinding[] {
       id: "access-token-not-rotated",
       severity: "low",
       category: "access",
-      title: `${staleTokens.length} in-use API token${staleTokens.length === 1 ? " is" : "s are"} over a year old`,
+      title: `${staleTokens.length} in-use API token${countForm(staleTokens.length, " is", "s are")} over a year old`,
       detail:
         "These tokens are still being used but have never been rotated. The longer a secret lives, the more places it has been copied and the higher the odds one of them leaked.",
       remediation:
@@ -197,7 +201,7 @@ export function checkAccess(snap: SecuritySnapshot): SecurityFinding[] {
       id: "access-undeployed-ssh-key",
       severity: "info",
       category: "access",
-      title: `${undeployedKeys.length} documented SSH key${undeployedKeys.length === 1 ? " is" : "s are"} deployed nowhere`,
+      title: `${undeployedKeys.length} documented SSH key${countForm(undeployedKeys.length, " is", "s are")} deployed nowhere`,
       detail:
         "These keys are recorded on the Keys page but not marked as deployed to any machine. They may be leftovers from a decommissioned host, or a deployment nobody documented — either way they muddy the picture of who can log in where.",
       remediation:

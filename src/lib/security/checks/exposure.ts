@@ -77,6 +77,10 @@ function forwardRangeSpan(f: SnapshotPortForward): number {
   return Math.max(widestPortRange(f.destPort), widestPortRange(f.targetPort));
 }
 
+function countForm(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural;
+}
+
 export function checkExposure(snap: SecuritySnapshot): SecurityFinding[] {
   const findings: SecurityFinding[] = [];
 
@@ -109,7 +113,7 @@ export function checkExposure(snap: SecuritySnapshot): SecurityFinding[] {
       id: "exposure-sensitive-forward-restricted",
       severity: "medium",
       category: "exposure",
-      title: `${sensitiveRestricted.length} sensitive port${sensitiveRestricted.length === 1 ? " is" : "s are"} forwarded from WAN (source-restricted)`,
+      title: `${sensitiveRestricted.length} sensitive port${countForm(sensitiveRestricted.length, " is", "s are")} forwarded from WAN (source-restricted)`,
       detail:
         "These forwards expose management/database ports but limit who may connect. The restriction is doing real work — keep it accurate, and prefer the VPN where possible.",
       remediation:
@@ -128,7 +132,7 @@ export function checkExposure(snap: SecuritySnapshot): SecurityFinding[] {
       id: "exposure-open-forward",
       severity: "low",
       category: "exposure",
-      title: `${openForwards.length} port forward${openForwards.length === 1 ? " is" : "s are"} open to any internet source`,
+      title: `${openForwards.length} port forward${countForm(openForwards.length, " is", "s are")} open to any internet source`,
       detail:
         "Each internet-open forward is attack surface that must be patched and hardened forever. None of these hit the classic sensitive ports, but every exposed service deserves a periodic 'is this still needed?'.",
       remediation:
@@ -167,7 +171,7 @@ export function checkExposure(snap: SecuritySnapshot): SecurityFinding[] {
       id: "exposure-wide-port-range",
       severity: "low",
       category: "exposure",
-      title: `${wideRangeForwards.length} WAN forward${wideRangeForwards.length === 1 ? "" : "s"} expose${wideRangeForwards.length === 1 ? "s" : ""} a wide port range`,
+      title: `${wideRangeForwards.length} WAN forward${countForm(wideRangeForwards.length, "", "s")} expose${countForm(wideRangeForwards.length, "s", "")} a wide port range`,
       detail:
         "Each of these forwards a span of more than a hundred ports to an internal host. Broad ranges usually outlive the one game server or protocol they were opened for, and they hand attackers everything the host happens to be listening on.",
       remediation:
@@ -188,7 +192,7 @@ export function checkExposure(snap: SecuritySnapshot): SecurityFinding[] {
       id: "exposure-dyndns-unproxied",
       severity: "medium",
       category: "exposure",
-      title: `${wanDyndns.length} dynamic-DNS hostname${wanDyndns.length === 1 ? "" : "s"} publish${wanDyndns.length === 1 ? "es" : ""} your WAN address`,
+      title: `${wanDyndns.length} dynamic-DNS hostname${countForm(wanDyndns.length, "", "s")} publish${countForm(wanDyndns.length, "es", "")} your WAN address`,
       detail:
         "These names resolve straight to your WAN IP with no CDN proxy in front, permanently linking a memorable hostname to your home connection and skipping any edge protection.",
       remediation:
@@ -207,7 +211,7 @@ export function checkExposure(snap: SecuritySnapshot): SecurityFinding[] {
       id: "exposure-dyndns-unresolved",
       severity: "info",
       category: "exposure",
-      title: `${unresolvedDyndns.length} dynamic-DNS hostname${unresolvedDyndns.length === 1 ? " has" : "s have"} never been resolved`,
+      title: `${unresolvedDyndns.length} dynamic-DNS hostname${countForm(unresolvedDyndns.length, " has", "s have")} never been resolved`,
       detail:
         "The DNS refresher hasn't managed to resolve these names, so PolySIEM can't tell whether they point at your WAN, a proxy, or nothing at all. Unknown exposure is worth a glance.",
       remediation:
@@ -226,7 +230,7 @@ export function checkExposure(snap: SecuritySnapshot): SecurityFinding[] {
       id: "exposure-tunnel-hostname-unproxied",
       severity: "high",
       category: "exposure",
-      title: `${exposedTunnelHostnames.length} tunnel ingress hostname${exposedTunnelHostnames.length === 1 ? "" : "s"} resolve${exposedTunnelHostnames.length === 1 ? "s" : ""} straight to your WAN`,
+      title: `${exposedTunnelHostnames.length} tunnel ingress hostname${countForm(exposedTunnelHostnames.length, "", "s")} resolve${countForm(exposedTunnelHostnames.length, "s", "")} straight to your WAN`,
       detail:
         "These hostnames are documented as tunnel ingress but their public DNS bypasses the provider's edge and points at your WAN address — the tunnel's protection (DDoS shielding, IP hiding, access rules) is not actually in effect.",
       remediation:
@@ -276,7 +280,7 @@ export function checkExposure(snap: SecuritySnapshot): SecurityFinding[] {
       id: "exposure-open-wifi",
       severity: "high",
       category: "exposure",
-      title: `${openWifi.length} WiFi network${openWifi.length === 1 ? " is" : "s are"} open (no encryption)`,
+      title: `${openWifi.length} WiFi network${countForm(openWifi.length, " is", "s are")} open (no encryption)`,
       detail:
         "Open SSIDs let anyone in radio range join the network and observe traffic on it.",
       remediation: "Enable WPA2/WPA3 on the SSID under /network/wifi, or isolate it to a guest VLAN with no lab access.",

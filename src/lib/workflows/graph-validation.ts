@@ -1,12 +1,12 @@
-import type {
-  FieldSpec,
-  GraphIssue,
-  NodeTypeMeta,
-  TriggerParam,
-  WorkflowGraph,
-  WorkflowNodeSpec,
+import {
+  isTriggerKind,
+  type FieldSpec,
+  type GraphIssue,
+  type NodeTypeMeta,
+  type TriggerParam,
+  type WorkflowGraph,
+  type WorkflowNodeSpec,
 } from "./types";
-import { isTriggerKind } from "./types";
 import { ancestorsOf, topologicalOrder } from "./graph-execution";
 import { collectTemplateRefs } from "./template-resolution";
 import { validateTriggerParams } from "./trigger-input";
@@ -172,37 +172,38 @@ function validateNodeAndEdgeStructure(
   }
 
   const kindById = new Map(graph.nodes.map((node) => [node.id, node.kind]));
-  for (const edge of graph.edges) {
-    if (!idSet.has(edge.source)) {
-      issues.push(issue(null, `Edge "${edge.id}" references missing source node "${edge.source}"`));
-      continue;
-    }
-    if (!idSet.has(edge.target)) {
-      issues.push(issue(null, `Edge "${edge.id}" references missing target node "${edge.target}"`));
-      continue;
-    }
-    if (edge.source === edge.target) {
-      issues.push(issue(edge.source, `Edge "${edge.id}" connects node "${edge.source}" to itself`));
-      continue;
-    }
-
-    const sourceIsCondition = kindById.get(edge.source) === CONDITION_KIND;
-    if (sourceIsCondition && edge.branch !== "true" && edge.branch !== "false") {
-      issues.push(
-        issue(edge.source, `Edge "${edge.id}" leaving a condition node must carry a "true" or "false" branch`),
-      );
-    }
-    if (!sourceIsCondition && edge.branch !== null && edge.branch !== undefined) {
-      issues.push(
-        issue(edge.source, `Edge "${edge.id}" carries a branch but its source is not a condition node`),
-      );
-    }
-    if (triggerIds.has(edge.target)) {
-      issues.push(issue(edge.target, "A trigger node cannot have incoming edges"));
-    }
-  }
+  for (const edge of graph.edges) validateEdgeStructure(edge, idSet, kindById, triggerIds, issues);
 
   return triggers;
+}
+
+function validateEdgeStructure(
+  edge: WorkflowGraph["edges"][number],
+  idSet: Set<string>,
+  kindById: Map<string, string>,
+  triggerIds: Set<string>,
+  issues: GraphIssue[],
+): void {
+  if (!idSet.has(edge.source)) {
+    issues.push(issue(null, `Edge "${edge.id}" references missing source node "${edge.source}"`));
+    return;
+  }
+  if (!idSet.has(edge.target)) {
+    issues.push(issue(null, `Edge "${edge.id}" references missing target node "${edge.target}"`));
+    return;
+  }
+  if (edge.source === edge.target) {
+    issues.push(issue(edge.source, `Edge "${edge.id}" connects node "${edge.source}" to itself`));
+    return;
+  }
+  const sourceIsCondition = kindById.get(edge.source) === CONDITION_KIND;
+  if (sourceIsCondition && edge.branch !== "true" && edge.branch !== "false") {
+    issues.push(issue(edge.source, `Edge "${edge.id}" leaving a condition node must carry a "true" or "false" branch`));
+  }
+  if (!sourceIsCondition && edge.branch !== null && edge.branch !== undefined) {
+    issues.push(issue(edge.source, `Edge "${edge.id}" carries a branch but its source is not a condition node`));
+  }
+  if (triggerIds.has(edge.target)) issues.push(issue(edge.target, "A trigger node cannot have incoming edges"));
 }
 
 function validateReachability(

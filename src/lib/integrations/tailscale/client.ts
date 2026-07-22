@@ -230,51 +230,42 @@ function stringListRecord(value: unknown): Record<string, string[]> {
   );
 }
 
-export function normalizeTailscalePolicy(value: unknown): TailscalePolicySnapshot | null {
-  const raw = record(value);
-  if (!raw) return null;
-  const rules: TailscalePolicySnapshot["rules"] = [];
-  for (const item of Array.isArray(raw.grants) ? raw.grants : []) {
+function policyRules(raw: Record<string, unknown>): TailscalePolicySnapshot["rules"] {
+  const grants = (Array.isArray(raw.grants) ? raw.grants : []).flatMap((item) => {
     const row = record(item);
-    if (!row) continue;
-    rules.push({
-      kind: "grant",
-      action: "accept",
-      sources: strings(row.src),
-      destinations: strings(row.dst),
-      protocols: strings(row.ip),
-      via: strings(row.via),
-    });
-  }
-  for (const item of Array.isArray(raw.acls) ? raw.acls : []) {
+    return row ? [{ kind: "grant" as const, action: "accept", sources: strings(row.src), destinations: strings(row.dst), protocols: strings(row.ip), via: strings(row.via) }] : [];
+  });
+  const acls = (Array.isArray(raw.acls) ? raw.acls : []).flatMap((item) => {
     const row = record(item);
-    if (!row) continue;
-    rules.push({
-      kind: "acl",
+    if (!row) return [];
+    const protocol = string(row.proto);
+    return [{
+      kind: "acl" as const,
       action: string(row.action) ?? "accept",
       sources: [...new Set([...strings(row.src), ...strings(row.users)])],
       destinations: [...new Set([...strings(row.dst), ...strings(row.ports)])],
-      protocols: string(row.proto) ? [string(row.proto)!] : ["*"],
+      protocols: protocol ? [protocol] : ["*"],
       via: [],
-    });
-  }
+    }];
+  });
+  return [...grants, ...acls];
+}
 
-  const appConnectors: TailscalePolicySnapshot["appConnectors"] = [];
-  for (const item of Array.isArray(raw.nodeAttrs) ? raw.nodeAttrs : []) {
-    const row = record(item);
-    const app = record(row?.app);
-    const definitions = app?.["tailscale.com/app-connectors"];
-    for (const definition of Array.isArray(definitions) ? definitions : []) {
+function policyAppConnectors(raw: Record<string, unknown>): TailscalePolicySnapshot["appConnectors"] {
+  return (Array.isArray(raw.nodeAttrs) ? raw.nodeAttrs : []).flatMap((item) => {
+    const definitions = record(record(item)?.app)?.["tailscale.com/app-connectors"];
+    return (Array.isArray(definitions) ? definitions : []).flatMap((definition) => {
       const connector = record(definition);
-      if (!connector) continue;
-      appConnectors.push({
-        name: string(connector.name) ?? "App connector",
-        connectors: strings(connector.connectors),
-        domains: strings(connector.domains),
-        routes: strings(connector.routes),
-      });
-    }
-  }
+      return connector ? [{ name: string(connector.name) ?? "App connector", connectors: strings(connector.connectors), domains: strings(connector.domains), routes: strings(connector.routes) }] : [];
+    });
+  });
+}
+
+export function normalizeTailscalePolicy(value: unknown): TailscalePolicySnapshot | null {
+  const raw = record(value);
+  if (!raw) return null;
+  const rules = policyRules(raw);
+  const appConnectors = policyAppConnectors(raw);
   const autoApprovers = record(raw.autoApprovers);
   const services = record(raw.services);
   return {

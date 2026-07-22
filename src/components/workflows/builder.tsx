@@ -45,12 +45,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch } from "@/components/shared/api-client";
-import type {
+import {
+  isTriggerKind,
+  type
   GraphIssue,
   NodeTypeMeta,
   WorkflowDto,
 } from "@/lib/workflows/types";
-import { isTriggerKind } from "@/lib/workflows/types";
 import { useCatalog, useEntityLabels, useWorkflow, wfKeys } from "@/components/workflows/api";
 import {
   graphKey,
@@ -94,6 +95,52 @@ const XY_THEME = {
   "--xy-minimap-mask-background-color": "color-mix(in oklab, var(--color-muted) 55%, transparent)",
   "--xy-attribution-background-color": "transparent",
 } as React.CSSProperties;
+
+function BuilderHeader({
+  workflow, readOnly, dirty, validating, saving, hasTrigger, isAdmin,
+  onBack, onValidate, onHistory, onSave, onRun,
+}: {
+  workflow: WorkflowDto;
+  readOnly: boolean;
+  dirty: boolean;
+  validating: boolean;
+  saving: boolean;
+  hasTrigger: boolean;
+  isAdmin: boolean;
+  onBack: () => void;
+  onValidate: () => void;
+  onHistory: () => void;
+  onSave: () => void;
+  onRun: () => void;
+}) {
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3">
+      <Button variant="ghost" size="icon" className="shrink-0" onClick={onBack} aria-label="Back to workflows"><ArrowLeft className="size-4" /></Button>
+      <div className="min-w-0">
+        <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+          <span className="truncate">{workflow.name}</span>
+          {!workflow.enabled && <Badge variant="outline" className="text-muted-foreground">Disabled</Badge>}
+          {readOnly && <Badge variant="outline" className="gap-1 text-muted-foreground"><Lock className="size-3" /> Read-only</Badge>}
+        </h1>
+        {workflow.description && <p className="truncate text-sm text-muted-foreground">{workflow.description}</p>}
+      </div>
+      <div className="ml-auto flex flex-wrap items-center gap-2">
+        {dirty && <span className="flex items-center gap-1.5 text-xs text-warning"><span className="size-1.5 animate-pulse rounded-full bg-warning" aria-hidden />Unsaved changes</span>}
+        <Button variant="ghost" size="sm" onClick={onValidate} disabled={validating}>{validating ? <Loader2 className="animate-spin" /> : <BadgeCheck data-icon="inline-start" />}Validate</Button>
+        <Button variant="ghost" size="sm" onClick={onHistory}><History data-icon="inline-start" /> History</Button>
+        {isAdmin && <Button variant="outline" size="sm" disabled={!dirty || saving} onClick={onSave} title="Ctrl+S">{saving ? <Loader2 className="animate-spin" /> : <Save data-icon="inline-start" />}Save</Button>}
+        {isAdmin && <Button size="sm" onClick={onRun} disabled={!hasTrigger || saving}><Play data-icon="inline-start" /> Run</Button>}
+      </div>
+    </div>
+  );
+}
+
+function workflowAvailable(
+  isError: boolean,
+  workflow: WorkflowDto | undefined,
+): workflow is WorkflowDto {
+  return !isError && workflow !== undefined;
+}
 
 function BuilderInner({ workflowId, isAdmin }: { workflowId: string; isAdmin: boolean }) {
   const router = useRouter();
@@ -467,7 +514,7 @@ function BuilderInner({ workflowId, isAdmin }: { workflowId: string; isAdmin: bo
     );
   }
 
-  if (workflowQuery.isError || !workflow) {
+  if (!workflowAvailable(workflowQuery.isError, workflow)) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed px-6 py-24 text-center">
         <TriangleAlert className="size-8 text-muted-foreground" />
@@ -503,65 +550,20 @@ function BuilderInner({ workflowId, isAdmin }: { workflowId: string; isAdmin: bo
 
   return (
     <EntityLabelsContext.Provider value={entityLabels}>
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Button variant="ghost" size="icon" className="shrink-0" onClick={goBack} aria-label="Back to workflows">
-          <ArrowLeft className="size-4" />
-        </Button>
-        <div className="min-w-0">
-          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-            <span className="truncate">{workflow.name}</span>
-            {!workflow.enabled && (
-              <Badge variant="outline" className="text-muted-foreground">
-                Disabled
-              </Badge>
-            )}
-            {readOnly && (
-              <Badge variant="outline" className="gap-1 text-muted-foreground">
-                <Lock className="size-3" /> Read-only
-              </Badge>
-            )}
-          </h1>
-          {workflow.description && (
-            <p className="truncate text-sm text-muted-foreground">{workflow.description}</p>
-          )}
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {dirty && (
-            <span className="flex items-center gap-1.5 text-xs text-warning">
-              <span className="size-1.5 animate-pulse rounded-full bg-warning" aria-hidden />
-              Unsaved changes
-            </span>
-          )}
-          <Button variant="ghost" size="sm" onClick={validateNow} disabled={validateMutation.isPending}>
-            {validateMutation.isPending ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <BadgeCheck data-icon="inline-start" />
-            )}
-            Validate
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
-            <History data-icon="inline-start" /> History
-          </Button>
-          {isAdmin && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!dirty || saveMutation.isPending}
-              onClick={() => save()}
-              title="Ctrl+S"
-            >
-              {saveMutation.isPending ? <Loader2 className="animate-spin" /> : <Save data-icon="inline-start" />}
-              Save
-            </Button>
-          )}
-          {isAdmin && (
-            <Button size="sm" onClick={openRun} disabled={!hasTrigger || saveMutation.isPending}>
-              <Play data-icon="inline-start" /> Run
-            </Button>
-          )}
-        </div>
-      </div>
+      <BuilderHeader
+        workflow={workflow}
+        readOnly={readOnly}
+        dirty={dirty}
+        validating={validateMutation.isPending}
+        saving={saveMutation.isPending}
+        hasTrigger={hasTrigger}
+        isAdmin={isAdmin}
+        onBack={goBack}
+        onValidate={validateNow}
+        onHistory={() => setHistoryOpen(true)}
+        onSave={() => save()}
+        onRun={openRun}
+      />
 
       <div
         className="relative w-full overflow-hidden rounded-xl border border-border bg-card/40"

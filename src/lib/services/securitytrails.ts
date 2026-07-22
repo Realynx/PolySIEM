@@ -142,12 +142,16 @@ function normalizePublicIpv4(raw: string): string {
   const ip = raw.trim();
   if (isIP(ip) !== 4) throw new ApiError(400, "invalid_ip", "SecurityTrails IP WHOIS requires an IPv4 address.");
   const [a, b] = ip.split(".").map(Number);
-  if (a === 0 || a === 10 || a === 127 || a >= 224 ||
-    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) {
+  if (isPrivateIpv4Prefix(a, b)) {
     throw new ApiError(400, "private_ip", "SecurityTrails IP WHOIS is limited to public IPv4 addresses.");
   }
   return ip;
+}
+
+function isPrivateIpv4Prefix(first: number, second: number): boolean {
+  return first === 0 || first === 10 || first === 127 || first >= 224 ||
+    (first === 169 && second === 254) || (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) || (first === 100 && second >= 64 && second <= 127);
 }
 
 function normalizedQuery(kind: SecurityTrailsLookupKind, raw: string): string {

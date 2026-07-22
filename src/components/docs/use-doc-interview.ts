@@ -17,6 +17,19 @@ import {
   upsertToolCall,
 } from "./ai-interview-lib";
 
+function interviewerConnectionError(error: unknown): string {
+  if (!(error instanceof Error) || !error.message) {
+    return "Could not reach the documentation interviewer.";
+  }
+  return `Could not reach the interviewer: ${error.message}`;
+}
+
+function hasReadableBody(
+  response: Response,
+): response is Response & { body: ReadableStream<Uint8Array> } {
+  return response.ok && response.body !== null;
+}
+
 export type DocInterviewPhase = "interview" | "services";
 export type DocInterviewStatus = "idle" | "streaming" | "error";
 
@@ -115,7 +128,7 @@ export function useDocInterview(): UseDocInterviewResult {
           signal: controller.signal,
         });
 
-        if (!response.ok || !response.body) {
+        if (!hasReadableBody(response)) {
           setStatus("error");
           setError(interviewFailureMessage(response.status));
           setDraft(null);
@@ -237,11 +250,7 @@ export function useDocInterview(): UseDocInterviewResult {
         } else {
           setDraft(null);
           setStatus("error");
-          setError(
-            error instanceof Error && error.message
-              ? `Could not reach the interviewer: ${error.message}`
-              : "Could not reach the documentation interviewer.",
-          );
+          setError(interviewerConnectionError(error));
         }
       } finally {
         if (abortRef.current === controller) abortRef.current = null;

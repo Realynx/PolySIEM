@@ -168,6 +168,13 @@ export const EMPTY_EDGE_NETWORKS_OVERVIEW: EdgeNetworksOverview = {
   otherNetworks: [],
 };
 
+function firstPresent<T>(...values: readonly (T | null | undefined)[]): T | null {
+  for (const value of values) {
+    if (value !== null && value !== undefined) return value;
+  }
+  return null;
+}
+
 export interface NatRuleInput {
   name: string;
   protocol: NatProtocol;
@@ -216,25 +223,18 @@ export function edgeReconciliation(server: EdgeNatServer): Required<Pick<EdgeNat
   const settings = server.settings ?? {};
   const reported = typeof server.reconciliation === "object" && server.reconciliation !== null ? server.reconciliation : {};
   const reportedState = typeof server.reconciliation === "string" ? server.reconciliation : undefined;
-  const desiredHash = reported.desiredHash ?? server.desiredHash ?? settings.desiredRulesHash ?? null;
-  const appliedHash = reported.appliedHash ?? server.appliedHash ?? settings.appliedRulesHash ?? settings.syncedSnapshot?.appliedHash ?? null;
-  const desiredRevision = reported.desiredRevision ?? server.desiredRevision ?? server.revision ?? settings.rulesRevision ?? null;
-  const appliedRevision = reported.appliedRevision ?? server.appliedRevision ?? settings.appliedRevision ?? settings.syncedSnapshot?.appliedRevision ?? settings.syncedSnapshot?.revision ?? null;
+  const desiredHash = firstPresent(reported.desiredHash, server.desiredHash, settings.desiredRulesHash);
+  const appliedHash = firstPresent(reported.appliedHash, server.appliedHash, settings.appliedRulesHash, settings.syncedSnapshot?.appliedHash);
+  const desiredRevision = firstPresent(reported.desiredRevision, server.desiredRevision, server.revision, settings.rulesRevision);
+  const appliedRevision = firstPresent(reported.appliedRevision, server.appliedRevision, settings.appliedRevision,
+    settings.syncedSnapshot?.appliedRevision, settings.syncedSnapshot?.revision);
   const desiredRuleCount = reported.desiredRuleCount ?? server.rules.filter((rule) => rule.enabled).length;
   const managedRules = settings.syncedSnapshot?.managedRules;
   const snapshotRuleCount = Array.isArray(managedRules) ? managedRules.length : typeof managedRules === "number" ? managedRules : null;
-  const appliedRuleCount = reported.appliedRuleCount ?? server.remoteRuleCount ?? server.appliedRuleCount ?? settings.appliedRuleCount ?? snapshotRuleCount;
-  const drift = reported.drift ?? reportedState ?? server.drift ?? (
-    server.lifecycleState === "disabled_clean"
-      ? "in_sync"
-      : server.lifecycleState === "drift" || server.lifecycleState === "disabled_with_live_rules"
-        ? "drifted"
-        : settings.pendingChanges || server.lifecycleState === "pending"
-      ? "pending"
-      : desiredHash && appliedHash
-        ? desiredHash === appliedHash ? "in_sync" : "drifted"
-        : "unknown"
-  );
+  const appliedRuleCount = firstPresent(reported.appliedRuleCount, server.remoteRuleCount,
+    server.appliedRuleCount, settings.appliedRuleCount, snapshotRuleCount);
+  const drift = firstPresent(reported.drift, reportedState, server.drift) ??
+    inferredReconciliation(server, Boolean(settings.pendingChanges), desiredHash, appliedHash);
   return {
     ...reported,
     desiredHash,
@@ -243,10 +243,26 @@ export function edgeReconciliation(server: EdgeNatServer): Required<Pick<EdgeNat
     appliedRevision,
     desiredRuleCount,
     appliedRuleCount,
-    observedAt: reported.observedAt ?? settings.syncedSnapshot?.capturedAt ?? null,
+    observedAt: firstPresent(reported.observedAt, settings.syncedSnapshot?.capturedAt),
     drift,
-    cleanupRequired: reported.cleanupRequired ?? server.cleanupRequired ?? (!server.enabled && (appliedRuleCount === null || appliedRuleCount > 0)),
+    cleanupRequired: cleanupRequired(server, reported, appliedRuleCount),
   };
+}
+
+function inferredReconciliation(
+  server: EdgeNatServer, pendingChanges: boolean, desiredHash: string | null, appliedHash: string | null,
+): EdgeNatDriftState {
+  if (server.lifecycleState === "disabled_clean") return "in_sync";
+  if (server.lifecycleState === "drift" || server.lifecycleState === "disabled_with_live_rules") return "drifted";
+  if (pendingChanges || server.lifecycleState === "pending") return "pending";
+  if (!desiredHash || !appliedHash) return "unknown";
+  return desiredHash === appliedHash ? "in_sync" : "drifted";
+}
+
+function cleanupRequired(server: EdgeNatServer, reported: EdgeNatReconciliation, appliedRuleCount: number | null) {
+  const explicit = firstPresent(reported.cleanupRequired, server.cleanupRequired);
+  if (explicit !== null) return explicit;
+  return !server.enabled && (appliedRuleCount === null || appliedRuleCount > 0);
 }
 
 export function isRuleApplied(rule: EdgeNatRule, lastAppliedAt?: string | null): boolean {
@@ -282,19 +298,19 @@ export function tailscaleDetails(network: TailscaleEdgeNetwork) {
       : [],
   );
   const exitNodes = devices.filter((device) => routesFor(device).some((route) => route === "0.0.0.0/0" || route === "::/0"));
+  const discoveredDomain = firstPresent(stringValue(dns.tailnetDomain), stringValue(snapshot.tailnet), network.tailnet);
+  const normalizedExitNodes = (network.exitNodes ?? exitNodes.map((device) => ({
+    name: firstPresent(stringValue(device.hostname), stringValue(device.name)) ?? "Exit node",
+    online: device.online === true,
+    addresses: stringArray(device.addresses),
+  }))).map((node) => typeof node === "string" ? { name: node } : node);
   return {
-    domain: network.domain ?? network.dnsDomain ?? stringValue(dns.tailnetDomain) ?? stringValue(snapshot.tailnet) ?? network.tailnet ?? null,
-    magicDnsEnabled: network.magicDnsEnabled ?? booleanValue(dns.magicDnsEnabled),
-    deviceCount: network.deviceCount ?? devices.length,
-    onlineDeviceCount: network.onlineDeviceCount ?? devices.filter((device) => device.online === true).length,
-    subnetRoutes: network.subnetRoutes ?? [...new Set(routes.filter((route) => route !== "0.0.0.0/0" && route !== "::/0"))],
-    exitNodes: (network.exitNodes ?? exitNodes.map((device) => ({
-      name: stringValue(device.hostname) ?? stringValue(device.name) ?? "Exit node",
-      online: device.online === true,
-      addresses: Array.isArray(device.addresses)
-        ? device.addresses.filter((address): address is string => typeof address === "string")
-        : [],
-    }))).map((node) => typeof node === "string" ? { name: node } : node),
+    domain: firstPresent(network.domain, network.dnsDomain, discoveredDomain),
+    magicDnsEnabled: firstPresent(network.magicDnsEnabled, booleanValue(dns.magicDnsEnabled)),
+    deviceCount: firstPresent(network.deviceCount, devices.length),
+    onlineDeviceCount: firstPresent(network.onlineDeviceCount, devices.filter((device) => device.online === true).length),
+    subnetRoutes: network.subnetRoutes ?? Array.from(new Set(routes.filter((route) => route !== "0.0.0.0/0" && route !== "::/0"))),
+    exitNodes: normalizedExitNodes,
     nameservers: network.nameservers ?? stringArray(dns.nameservers),
   };
 }
@@ -312,28 +328,38 @@ export function otherEdgeDetails(network: OtherEdgeNetwork) {
   const loggedRoutes = Array.isArray(discovery.cloudflaredRoutes)
     ? discovery.cloudflaredRoutes as Array<Record<string, unknown>>
     : [];
-  const publishedHostnames = network.publishedHostnames ?? [
+  const discoveredHostnames = [
     ...rawTunnels.flatMap((tunnel) => Array.isArray(tunnel.ingress)
       ? (tunnel.ingress as Array<Record<string, unknown>>).map((ingress) => stringValue(ingress.hostname))
       : []),
     ...loggedRoutes.map((route) => stringValue(route.hostname)),
   ].filter((hostname): hostname is string => Boolean(hostname));
-  const privateRoutes = network.privateRoutes ?? rawPrivateRoutes
+  const publishedHostnames = network.publishedHostnames ?? discoveredHostnames;
+  const discoveredPrivateRoutes = rawPrivateRoutes
     .map((route) => stringValue(route.network))
     .filter((route): route is string => Boolean(route));
-  const provider = network.provider ?? (
-    network.type === "CLOUDFLARE" ? "Cloudflare"
-      : network.type === "ELASTICSEARCH" ? "Elasticsearch observations"
-        : network.type === "OPNSENSE" ? "OPNsense"
-          : network.type === "PROXMOX" ? "Proxmox"
-            : "Edge provider"
-  );
+  const privateRoutes = network.privateRoutes ?? discoveredPrivateRoutes;
   return {
-    provider,
-    tunnelCount: Array.isArray(network.tunnels) ? network.tunnels.length : network.tunnels ?? rawTunnels.length,
-    publishedHostnames: [...new Set(publishedHostnames.length > 0 ? publishedHostnames : network.entryPoints ?? [])],
-    privateRoutes: [...new Set(privateRoutes.length > 0 ? privateRoutes : network.routes ?? [])],
+    provider: network.provider ?? providerLabel(network.type),
+    tunnelCount: firstPresent(Array.isArray(network.tunnels) ? network.tunnels.length : network.tunnels, rawTunnels.length),
+    publishedHostnames: uniquePreferred(publishedHostnames, network.entryPoints),
+    privateRoutes: uniquePreferred(privateRoutes, network.routes),
   };
+}
+
+function uniquePreferred(primary: string[], fallback: string[] | undefined): string[] {
+  if (primary.length > 0) return Array.from(new Set(primary));
+  return Array.from(new Set(fallback ?? []));
+}
+
+function providerLabel(type: string | undefined): string {
+  const labels: Record<string, string> = {
+    CLOUDFLARE: "Cloudflare",
+    ELASTICSEARCH: "Elasticsearch observations",
+    OPNSENSE: "OPNsense",
+    PROXMOX: "Proxmox",
+  };
+  return type ? (labels[type] ?? "Edge provider") : "Edge provider";
 }
 
 export function infrastructureEdgeDetails(network: OtherEdgeNetwork) {

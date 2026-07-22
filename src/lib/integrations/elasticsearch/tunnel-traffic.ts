@@ -1,7 +1,6 @@
 import "server-only";
 
-import type { DriverConfig } from "../types";
-import { isMock } from "../types";
+import { isMock, type DriverConfig } from "../types";
 import { esFetch } from "./client";
 import { detectSources } from "./detect";
 import { elasticsearchSettingsSchema } from "@/lib/validators/integrations";
@@ -52,6 +51,53 @@ function hostAliases(tunnel: TunnelTrafficInput): string[] {
   return [...aliases];
 }
 
+function hostnameTraffic(
+  window: string,
+  total: number,
+  buckets: TermBucket[],
+  tunnels: TunnelTrafficInput[],
+): TunnelTrafficResult {
+  const owner = new Map<string, string>();
+  for (const tunnel of tunnels) {
+    for (const hostname of tunnel.ingressHostnames) {
+      const key = hostname.trim().toLowerCase();
+      if (key && !owner.has(key)) owner.set(key, tunnel.id);
+    }
+  }
+  const rows = new Map(tunnels.map((tunnel) => [tunnel.id, { tunnelId: tunnel.id, name: tunnel.name, total: 0 } as TunnelTrafficRow]));
+  let unattributed = 0;
+  for (const bucket of buckets) {
+    const tunnelId = owner.get(bucket.key.trim().toLowerCase());
+    if (!tunnelId) {
+      unattributed += bucket.doc_count;
+      continue;
+    }
+    const row = rows.get(tunnelId)!;
+    row.total += bucket.doc_count;
+    (row.byHostname ??= []).push({ hostname: bucket.key, count: bucket.doc_count });
+  }
+  for (const row of rows.values()) row.byHostname?.sort((a, b) => b.count - a.count);
+  return { window, mode: "hostname", total, unattributed, tunnels: [...rows.values()].sort((a, b) => b.total - a.total) };
+}
+
+function hostTraffic(
+  window: string,
+  total: number,
+  buckets: TermBucket[],
+  tunnels: TunnelTrafficInput[],
+): TunnelTrafficResult {
+  const aliases = new Map<string, string>();
+  for (const tunnel of tunnels) for (const alias of hostAliases(tunnel)) aliases.set(alias, tunnel.id);
+  const rows = new Map(tunnels.map((tunnel) => [tunnel.id, { tunnelId: tunnel.id, name: tunnel.name, total: 0 } as TunnelTrafficRow]));
+  let unattributed = 0;
+  for (const bucket of buckets) {
+    const tunnelId = aliases.get(bucket.key.trim().toLowerCase());
+    if (!tunnelId) unattributed += bucket.doc_count;
+    else rows.get(tunnelId)!.total += bucket.doc_count;
+  }
+  return { window, mode: "tunnel", total, unattributed, tunnels: [...rows.values()].sort((a, b) => b.total - a.total) };
+}
+
 /**
  * Pure attribution of ES term-agg buckets to tunnels. Prefers per-hostname
  * buckets; falls back to per-host buckets. Hostnames/hosts matching no tunnel
@@ -65,60 +111,12 @@ export function buildTrafficResult(params: {
   tunnels: TunnelTrafficInput[];
 }): TunnelTrafficResult {
   const { window, total, hostnameBuckets, hostBuckets, tunnels } = params;
-  const base = () =>
-    new Map<string, TunnelTrafficRow>(tunnels.map((t) => [t.id, { tunnelId: t.id, name: t.name, total: 0 }]));
-
   if (hostnameBuckets.length > 0) {
-    // hostname -> tunnel id (case-insensitive; first tunnel wins on overlap).
-    const owner = new Map<string, string>();
-    for (const tunnel of tunnels) {
-      for (const h of tunnel.ingressHostnames) {
-        const key = h.trim().toLowerCase();
-        if (key && !owner.has(key)) owner.set(key, tunnel.id);
-      }
-    }
-    const rows = base();
-    let unattributed = 0;
-    for (const bucket of hostnameBuckets) {
-      const tunnelId = owner.get(bucket.key.trim().toLowerCase());
-      if (!tunnelId) {
-        unattributed += bucket.doc_count;
-        continue;
-      }
-      const row = rows.get(tunnelId)!;
-      row.total += bucket.doc_count;
-      (row.byHostname ??= []).push({ hostname: bucket.key, count: bucket.doc_count });
-    }
-    for (const row of rows.values()) row.byHostname?.sort((a, b) => b.count - a.count);
-    return {
-      window,
-      mode: "hostname",
-      total,
-      unattributed,
-      tunnels: [...rows.values()].sort((a, b) => b.total - a.total),
-    };
+    return hostnameTraffic(window, total, hostnameBuckets, tunnels);
   }
 
   if (hostBuckets.length > 0) {
-    const alias = new Map<string, string>();
-    for (const tunnel of tunnels) for (const a of hostAliases(tunnel)) alias.set(a, tunnel.id);
-    const rows = base();
-    let unattributed = 0;
-    for (const bucket of hostBuckets) {
-      const tunnelId = alias.get(bucket.key.trim().toLowerCase());
-      if (!tunnelId) {
-        unattributed += bucket.doc_count;
-        continue;
-      }
-      rows.get(tunnelId)!.total += bucket.doc_count;
-    }
-    return {
-      window,
-      mode: "tunnel",
-      total,
-      unattributed,
-      tunnels: [...rows.values()].sort((a, b) => b.total - a.total),
-    };
+    return hostTraffic(window, total, hostBuckets, tunnels);
   }
 
   return { window, mode: "unavailable", total, unattributed: 0, tunnels: [], reason: "no tunnel events in range" };

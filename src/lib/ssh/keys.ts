@@ -122,7 +122,7 @@ export function parsePublicKey(rawLine: string): ParsedPublicKey {
   if (typeIndex === -1) {
     throw new SshKeyParseError(
       "unknown_type",
-      `No recognized key type found (expected one of ${[...KNOWN_KEY_TYPES.slice(0, 4)].join(", ")}, …)`,
+      `No recognized key type found (expected one of ${KNOWN_KEY_TYPES.slice(0, 4).join(", ")}, …)`,
     );
   }
   const keyType = tokens[typeIndex];

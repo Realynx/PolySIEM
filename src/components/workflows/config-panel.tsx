@@ -13,8 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import type { NodeTypeMeta } from "@/lib/workflows/types";
-import { isTriggerKind } from "@/lib/workflows/types";
+import { isTriggerKind, type NodeTypeMeta } from "@/lib/workflows/types";
 import { CopyButton } from "@/components/ssh/copy-button";
 import { parseTriggerParams, type TemplateVarGroup } from "@/components/workflows/lib";
 import { categoryMeta } from "@/components/workflows/meta";
@@ -45,6 +44,71 @@ function WebhookUrlBlock({ token }: { token: string }) {
           </p>
         </>
       )}
+    </div>
+  );
+}
+
+function NodeIssues({ issues }: { issues: string[] }) {
+  if (issues.length === 0) return null;
+  return (
+    <div className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-2.5">
+      {issues.map((issue, index) => <p key={index} className="flex items-start gap-1.5 text-xs text-destructive"><TriangleAlert className="mt-px size-3.5 shrink-0" />{issue}</p>)}
+    </div>
+  );
+}
+
+function NodeDescription({ description }: { description?: string }) {
+  if (!description) return null;
+  return <p className="text-xs leading-snug text-muted-foreground">{description}</p>;
+}
+
+function NodeConfigurationFields({
+  node, meta, paramsTrigger, readOnly, templateGroups, onChangeConfig, setField,
+}: {
+  node: BuilderFlowNode;
+  meta: NodeTypeMeta | null;
+  paramsTrigger: boolean;
+  readOnly: boolean;
+  templateGroups: TemplateVarGroup[];
+  onChangeConfig: (nodeId: string, config: Record<string, unknown>) => void;
+  setField: (key: string, value: unknown) => void;
+}) {
+  if (paramsTrigger) {
+    return <div className="space-y-2"><p className="text-xs font-medium">Run parameters</p><TriggerParamsEditor params={parseTriggerParams(node.data.config)} disabled={readOnly} onChange={(params) => onChangeConfig(node.id, { ...node.data.config, params })} /></div>;
+  }
+  if (!meta) return <p className="text-xs text-muted-foreground">Unknown node type — the catalog does not describe it.</p>;
+  if (meta.inputs.length === 0) return <p className="text-xs text-muted-foreground">This node has no settings.</p>;
+  return meta.inputs.map((field) => <FieldInput key={field.key} field={field} value={node.data.config[field.key]} onChange={(value) => setField(field.key, value)} templateGroups={templateGroups} disabled={readOnly} />);
+}
+
+function NodeOutputs({ node, meta }: { node: BuilderFlowNode; meta: NodeTypeMeta | null }) {
+  if (!meta || meta.outputs.length === 0) return null;
+  return <><Separator /><div className="space-y-1.5"><p className="text-xs font-medium">Outputs</p><ul className="space-y-1">{meta.outputs.map((output) => (
+    <li key={output.key} className="flex items-center gap-1.5 text-xs">
+      <span className="min-w-0 flex-1 truncate text-muted-foreground">{output.label}</span>
+      {output.secret && <span title="Secret — shown once after a run, never stored"><KeyRound className="size-3 shrink-0 text-warning" /></span>}
+      <code className="max-w-44 shrink-0 truncate rounded bg-muted/60 px-1 py-0.5 font-mono text-[10px] text-muted-foreground">{`{{nodes.${node.id}.${output.key}}}`}</code>
+    </li>
+  ))}</ul><p className="text-[11px] leading-snug text-muted-foreground/70">Downstream nodes can reference these from their template picker.</p></div></>;
+}
+
+function TriggerKindSelector({
+  trigger, triggerKinds, node, readOnly, onChangeKind,
+}: {
+  trigger: boolean;
+  triggerKinds: NodeTypeMeta[];
+  node: BuilderFlowNode;
+  readOnly: boolean;
+  onChangeKind: (nodeId: string, kind: string) => void;
+}) {
+  if (!trigger || triggerKinds.length <= 1) return null;
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor="wf-trigger-kind" className="text-xs">Trigger type</Label>
+      <Select value={node.data.kind} onValueChange={(kind) => { if (kind !== node.data.kind) onChangeKind(node.id, kind); }} disabled={readOnly}>
+        <SelectTrigger id="wf-trigger-kind" className="w-full"><SelectValue placeholder="Select a trigger type…" /></SelectTrigger>
+        <SelectContent>{triggerKinds.map((kind) => <SelectItem key={kind.kind} value={kind.kind}>{kind.title}</SelectItem>)}</SelectContent>
+      </Select>
     </div>
   );
 }
@@ -109,20 +173,9 @@ export function ConfigPanel({
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-        {node.data.issues.length > 0 && (
-          <div className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-2.5">
-            {node.data.issues.map((issue, i) => (
-              <p key={i} className="flex items-start gap-1.5 text-xs text-destructive">
-                <TriangleAlert className="mt-px size-3.5 shrink-0" />
-                {issue}
-              </p>
-            ))}
-          </div>
-        )}
+        <NodeIssues issues={node.data.issues} />
 
-        {meta?.description && (
-          <p className="text-xs leading-snug text-muted-foreground">{meta.description}</p>
-        )}
+        <NodeDescription description={meta?.description} />
 
         <div className="space-y-1.5">
           <Label htmlFor="wf-node-label" className="text-xs">
@@ -139,29 +192,7 @@ export function ConfigPanel({
 
         <Separator />
 
-        {trigger && triggerKinds.length > 1 && (
-          <div className="space-y-1.5">
-            <Label htmlFor="wf-trigger-kind" className="text-xs">
-              Trigger type
-            </Label>
-            <Select
-              value={node.data.kind}
-              onValueChange={(kind) => kind !== node.data.kind && onChangeKind(node.id, kind)}
-              disabled={readOnly}
-            >
-              <SelectTrigger id="wf-trigger-kind" className="w-full">
-                <SelectValue placeholder="Select a trigger type…" />
-              </SelectTrigger>
-              <SelectContent>
-                {triggerKinds.map((t) => (
-                  <SelectItem key={t.kind} value={t.kind}>
-                    {t.title}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
+        <TriggerKindSelector {...{ trigger, triggerKinds, node, readOnly, onChangeKind }} />
 
         {node.data.kind === "trigger.webhook" && !readOnly && (
           <WebhookUrlBlock
@@ -169,60 +200,9 @@ export function ConfigPanel({
           />
         )}
 
-        {paramsTrigger ? (
-          <div className="space-y-2">
-            <p className="text-xs font-medium">Run parameters</p>
-            <TriggerParamsEditor
-              params={parseTriggerParams(node.data.config)}
-              disabled={readOnly}
-              onChange={(params) => onChangeConfig(node.id, { ...node.data.config, params })}
-            />
-          </div>
-        ) : meta && meta.inputs.length > 0 ? (
-          meta.inputs.map((field) => (
-            <FieldInput
-              key={field.key}
-              field={field}
-              value={node.data.config[field.key]}
-              onChange={(value) => setField(field.key, value)}
-              templateGroups={templateGroups}
-              disabled={readOnly}
-            />
-          ))
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            {meta ? "This node has no settings." : "Unknown node type — the catalog does not describe it."}
-          </p>
-        )}
+        <NodeConfigurationFields {...{ node, meta, paramsTrigger, readOnly, templateGroups, onChangeConfig, setField }} />
 
-        {meta && meta.outputs.length > 0 && (
-          <>
-            <Separator />
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium">Outputs</p>
-              <ul className="space-y-1">
-                {meta.outputs.map((output) => (
-                  <li key={output.key} className="flex items-center gap-1.5 text-xs">
-                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                      {output.label}
-                    </span>
-                    {output.secret && (
-                      <span title="Secret — shown once after a run, never stored">
-                        <KeyRound className="size-3 shrink-0 text-warning" />
-                      </span>
-                    )}
-                    <code className="max-w-44 shrink-0 truncate rounded bg-muted/60 px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
-                      {`{{nodes.${node.id}.${output.key}}}`}
-                    </code>
-                  </li>
-                ))}
-              </ul>
-              <p className="text-[11px] leading-snug text-muted-foreground/70">
-                Downstream nodes can reference these from their template picker.
-              </p>
-            </div>
-          </>
-        )}
+        <NodeOutputs node={node} meta={meta} />
       </div>
 
       {!readOnly && (

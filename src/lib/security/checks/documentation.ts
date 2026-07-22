@@ -8,6 +8,20 @@ import type { AffectedEntity, SecurityFinding, SecuritySnapshot } from "../types
 
 const STALE_MS = 3 * 86_400_000; // synced but unseen for 3+ days while still marked ACTIVE
 
+function countForm(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural;
+}
+
+function staleInventory(snap: SecuritySnapshot, now: number): AffectedEntity[] {
+  const staleGuests = snap.guests
+    .filter((guest) => guest.source !== "MANUAL" && guest.status === "ACTIVE" && guest.lastSeenAt !== null && now - Date.parse(guest.lastSeenAt) > STALE_MS)
+    .map((guest): AffectedEntity => ({ kind: guest.kind, id: guest.id, name: guest.name }));
+  const staleHosts = snap.hosts
+    .filter((host) => host.source !== "MANUAL" && host.status === "ACTIVE" && host.lastSeenAt !== null && now - Date.parse(host.lastSeenAt) > STALE_MS)
+    .map((host): AffectedEntity => ({ kind: "device", id: host.id, name: host.name }));
+  return [...staleGuests, ...staleHosts];
+}
+
 export function checkDocumentation(snap: SecuritySnapshot): SecurityFinding[] {
   const findings: SecurityFinding[] = [];
   const now = Date.parse(snap.now);
@@ -19,7 +33,7 @@ export function checkDocumentation(snap: SecuritySnapshot): SecurityFinding[] {
       id: "docs-undocumented-guests",
       severity: "low",
       category: "documentation",
-      title: `${undocumentedGuests.length} running guest${undocumentedGuests.length === 1 ? " has" : "s have"} no description`,
+      title: `${undocumentedGuests.length} running guest${countForm(undocumentedGuests.length, " has", "s have")} no description`,
       detail:
         "Workloads are running with no note about what they do, who depends on them, or how to rebuild them. Undocumented services are the ones that turn incidents into archaeology.",
       remediation:
@@ -39,7 +53,7 @@ export function checkDocumentation(snap: SecuritySnapshot): SecurityFinding[] {
       id: "docs-undocumented-hosts",
       severity: "low",
       category: "documentation",
-      title: `${undocumentedHosts.length} host${undocumentedHosts.length === 1 ? " has" : "s have"} no description`,
+      title: `${undocumentedHosts.length} host${countForm(undocumentedHosts.length, " has", "s have")} no description`,
       detail:
         "Physical hosts and network devices without descriptions leave hardware roles, locations and quirks undocumented.",
       remediation: "Describe each host: role, physical location, and anything special about its setup.",
@@ -61,7 +75,7 @@ export function checkDocumentation(snap: SecuritySnapshot): SecurityFinding[] {
       id: "docs-undocumented-stopped-guests",
       severity: "info",
       category: "documentation",
-      title: `${stoppedUndocumented.length} stopped guest${stoppedUndocumented.length === 1 ? " has" : "s have"} no description`,
+      title: `${stoppedUndocumented.length} stopped guest${countForm(stoppedUndocumented.length, " has", "s have")} no description`,
       detail:
         "Powered-off VMs and containers with no note are the easiest to forget entirely — was it a failed experiment, a template, or something you meant to bring back? A one-liner keeps it from becoming a mystery.",
       remediation:
@@ -74,33 +88,13 @@ export function checkDocumentation(snap: SecuritySnapshot): SecurityFinding[] {
     });
   }
 
-  const staleEntities: AffectedEntity[] = [];
-  for (const g of snap.guests) {
-    if (
-      g.source !== "MANUAL" &&
-      g.status === "ACTIVE" &&
-      g.lastSeenAt !== null &&
-      now - Date.parse(g.lastSeenAt) > STALE_MS
-    ) {
-      staleEntities.push({ kind: g.kind, id: g.id, name: g.name });
-    }
-  }
-  for (const h of snap.hosts) {
-    if (
-      h.source !== "MANUAL" &&
-      h.status === "ACTIVE" &&
-      h.lastSeenAt !== null &&
-      now - Date.parse(h.lastSeenAt) > STALE_MS
-    ) {
-      staleEntities.push({ kind: "device", id: h.id, name: h.name });
-    }
-  }
+  const staleEntities = staleInventory(snap, now);
   if (staleEntities.length > 0) {
     findings.push({
       id: "docs-stale-inventory",
       severity: "medium",
       category: "documentation",
-      title: `${staleEntities.length} synced entit${staleEntities.length === 1 ? "y hasn't" : "ies haven't"} been seen in days but still show ACTIVE`,
+      title: `${staleEntities.length} synced entit${countForm(staleEntities.length, "y hasn't", "ies haven't")} been seen in days but still show ACTIVE`,
       detail:
         "The inventory claims these are live, but their integration hasn't reported them recently. Either the sync is broken or the documentation has drifted from reality — both undermine trust in this dashboard.",
       remediation:

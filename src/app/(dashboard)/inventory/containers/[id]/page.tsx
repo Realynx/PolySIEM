@@ -39,6 +39,122 @@ import { listLogSources } from "@/lib/services/logs";
 import { isMobileView } from "@/lib/device";
 import { MobileContainerDetail } from "@/components/mobile/pages/inventory-detail/mobile-container-detail";
 
+type Container = NonNullable<Awaited<ReturnType<typeof getContainer>>>;
+type LogSources = Awaited<ReturnType<typeof listLogSources>>;
+
+function containerInitial(ct: Container) {
+  return {
+    name: ct.name,
+    runtime: ct.runtime,
+    hostId: ct.host?.id ?? "",
+    vmId: ct.vm?.id ?? "",
+    powerState: ct.powerState,
+    cpuCores: ct.cpuCores?.toString() ?? "",
+    memoryGib: bytesToGibString(ct.memoryBytes),
+    diskGib: bytesToGibString(ct.diskBytes),
+    osName: ct.osName ?? "",
+    description: ct.description ?? "",
+  };
+}
+
+function ContainerHeader({ ct, initial }: { ct: Container; initial: ReturnType<typeof containerInitial> }) {
+  const parentHref = ct.vm
+    ? `/inventory/vms/${ct.vm.id}`
+    : ct.host
+      ? `/inventory/hosts/${ct.host.id}`
+      : null;
+  return (
+    <PageHeader
+      title={ct.name}
+      actions={
+        <>
+          <EntityFormDialog
+            entity="containers"
+            mode="edit"
+            entityId={ct.id}
+            initial={initial}
+            source={ct.source}
+            trigger={<Button variant="outline"><Pencil />Edit</Button>}
+          />
+          <DeleteEntityButton
+            apiPath={`/api/inventory/containers/${ct.id}`}
+            entityLabel={`container “${ct.name}”`}
+            redirectTo="/inventory/containers"
+          />
+        </>
+      }
+    >
+      <div className="-mt-2 flex flex-wrap items-center gap-2">
+        <PowerBadge state={ct.powerState} />
+        <Badge variant="secondary" className="uppercase">{ct.runtime}</Badge>
+        <SourceBadge source={ct.source} />
+        <StatusBadge status={ct.status} />
+        {parentHref && (
+          <span className="text-xs text-muted-foreground">
+            on{" "}<Link href={parentHref} className="font-medium text-foreground hover:text-primary hover:underline underline-offset-4">
+              {ct.vm?.name ?? ct.host?.name}
+            </Link>
+          </span>
+        )}
+        {ct.lastSeenAt && <span className="text-xs text-muted-foreground">Last seen {formatRelative(ct.lastSeenAt)}</span>}
+      </div>
+    </PageHeader>
+  );
+}
+
+function ContainerMain({ ct, logSources }: { ct: Container; logSources: LogSources }) {
+  return (
+    <>
+      <SectionCard title="Network interfaces" count={ct.interfaces.length} flush>
+        <InterfacesTable rows={ct.interfaces} />
+      </SectionCard>
+      <SectionCard title="Services" count={ct.services.length} flush>
+        <ServicesTable rows={ct.services} />
+      </SectionCard>
+      <SectionCard title="Description">
+        <DescriptionEditor apiPath={`/api/inventory/containers/${ct.id}`} initialValue={ct.description} entity={{ type: "container", id: ct.id }} />
+      </SectionCard>
+      {logSources.length > 0 && <AssociatedLogsPanel entity="containers" entityId={ct.id} subjectName={ct.name} sources={logSources} />}
+    </>
+  );
+}
+
+function ContainerSide({ ct }: { ct: Container }) {
+  return (
+    <>
+      <SectionCard title="Details">
+        <SpecList>
+          <SpecItem label="Host">{ct.host ? <EntityLink href={`/inventory/hosts/${ct.host.id}`}>{ct.host.name}</EntityLink> : <Muted />}</SpecItem>
+          <SpecItem label="VM">{ct.vm ? <EntityLink href={`/inventory/vms/${ct.vm.id}`}>{ct.vm.name}</EntityLink> : <Muted />}</SpecItem>
+          <SpecItem label="VMID"><Muted>{ct.vmid}</Muted></SpecItem>
+          <SpecItem label="CPU cores"><Muted>{ct.cpuCores}</Muted></SpecItem>
+          <SpecItem label="Memory">{formatBytes(ct.memoryBytes)}</SpecItem>
+          <SpecItem label="Disk">{formatBytes(ct.diskBytes)}</SpecItem>
+          <SpecItem label="OS / image"><Muted>{ct.osName}</Muted></SpecItem>
+          {ct.integration && <SpecItem label="Integration">{ct.integration.name}</SpecItem>}
+          <SpecItem label="Created">{formatRelative(ct.createdAt)}</SpecItem>
+          <SpecItem label="Updated">{formatRelative(ct.updatedAt)}</SpecItem>
+        </SpecList>
+      </SectionCard>
+      <SectionCard title="Tags">
+        <TagPicker entityType="container" entityId={ct.id} assigned={ct.tags.map(({ tag }) => ({ id: tag.id, name: tag.name, color: tag.color }))} />
+      </SectionCard>
+      <MetadataCard metadata={ct.metadata} />
+      <AuditTrail entityType="container" entityId={ct.id} />
+    </>
+  );
+}
+
+function DesktopContainerDetail({ ct, logSources, initial }: { ct: Container; logSources: LogSources; initial: ReturnType<typeof containerInitial> }) {
+  return (
+    <div>
+      <ContainerHeader ct={ct} initial={initial} />
+      <FocusedFootprint targetId={ct.id} />
+      <DetailGrid main={<ContainerMain ct={ct} logSources={logSources} />} side={<ContainerSide ct={ct} />} />
+    </div>
+  );
+}
+
 export async function generateMetadata({
   params,
 }: {
@@ -66,174 +182,11 @@ export default async function ContainerDetailPage({
     logSources: logSourcesData,
   });
 
-  const initial = {
-    name: ct.name,
-    runtime: ct.runtime,
-    hostId: ct.host?.id ?? "",
-    vmId: ct.vm?.id ?? "",
-    powerState: ct.powerState,
-    cpuCores: ct.cpuCores?.toString() ?? "",
-    memoryGib: bytesToGibString(ct.memoryBytes),
-    diskGib: bytesToGibString(ct.diskBytes),
-    osName: ct.osName ?? "",
-    description: ct.description ?? "",
-  };
+  const initial = containerInitial(ct);
 
   if (await isMobileView()) {
     return <MobileContainerDetail ct={ct} logSources={logSources} initial={initial} />;
   }
 
-  return (
-    <div>
-      <PageHeader
-        title={ct.name}
-        actions={
-          <>
-            <EntityFormDialog
-              entity="containers"
-              mode="edit"
-              entityId={ct.id}
-              initial={initial}
-              source={ct.source}
-              trigger={
-                <Button variant="outline">
-                  <Pencil />
-                  Edit
-                </Button>
-              }
-            />
-            <DeleteEntityButton
-              apiPath={`/api/inventory/containers/${ct.id}`}
-              entityLabel={`container “${ct.name}”`}
-              redirectTo="/inventory/containers"
-            />
-          </>
-        }
-      >
-        <div className="-mt-2 flex flex-wrap items-center gap-2">
-          <PowerBadge state={ct.powerState} />
-          <Badge variant="secondary" className="uppercase">
-            {ct.runtime}
-          </Badge>
-          <SourceBadge source={ct.source} />
-          <StatusBadge status={ct.status} />
-          {(ct.vm || ct.host) && (
-            <span className="text-xs text-muted-foreground">
-              on{" "}
-              <Link
-                href={
-                  ct.vm
-                    ? `/inventory/vms/${ct.vm.id}`
-                    : `/inventory/hosts/${ct.host!.id}`
-                }
-                className="font-medium text-foreground hover:text-primary hover:underline underline-offset-4"
-              >
-                {ct.vm?.name ?? ct.host?.name}
-              </Link>
-            </span>
-          )}
-          {ct.lastSeenAt && (
-            <span className="text-xs text-muted-foreground">
-              Last seen {formatRelative(ct.lastSeenAt)}
-            </span>
-          )}
-        </div>
-      </PageHeader>
-
-      <FocusedFootprint targetId={ct.id} />
-
-      <DetailGrid
-        main={
-          <>
-            <SectionCard
-              title="Network interfaces"
-              count={ct.interfaces.length}
-              flush
-            >
-              <InterfacesTable rows={ct.interfaces} />
-            </SectionCard>
-            <SectionCard title="Services" count={ct.services.length} flush>
-              <ServicesTable rows={ct.services} />
-            </SectionCard>
-            <SectionCard title="Description">
-              <DescriptionEditor
-                apiPath={`/api/inventory/containers/${ct.id}`}
-                initialValue={ct.description}
-                entity={{ type: "container", id: ct.id }}
-              />
-            </SectionCard>
-            {logSources.length > 0 && (
-              <AssociatedLogsPanel
-                entity="containers"
-                entityId={ct.id}
-                subjectName={ct.name}
-                sources={logSources}
-              />
-            )}
-          </>
-        }
-        side={
-          <>
-            <SectionCard title="Details">
-              <SpecList>
-                <SpecItem label="Host">
-                  {ct.host ? (
-                    <EntityLink href={`/inventory/hosts/${ct.host.id}`}>
-                      {ct.host.name}
-                    </EntityLink>
-                  ) : (
-                    <Muted />
-                  )}
-                </SpecItem>
-                <SpecItem label="VM">
-                  {ct.vm ? (
-                    <EntityLink href={`/inventory/vms/${ct.vm.id}`}>
-                      {ct.vm.name}
-                    </EntityLink>
-                  ) : (
-                    <Muted />
-                  )}
-                </SpecItem>
-                <SpecItem label="VMID">
-                  <Muted>{ct.vmid}</Muted>
-                </SpecItem>
-                <SpecItem label="CPU cores">
-                  <Muted>{ct.cpuCores}</Muted>
-                </SpecItem>
-                <SpecItem label="Memory">
-                  {formatBytes(ct.memoryBytes)}
-                </SpecItem>
-                <SpecItem label="Disk">{formatBytes(ct.diskBytes)}</SpecItem>
-                <SpecItem label="OS / image">
-                  <Muted>{ct.osName}</Muted>
-                </SpecItem>
-                {ct.integration && (
-                  <SpecItem label="Integration">{ct.integration.name}</SpecItem>
-                )}
-                <SpecItem label="Created">
-                  {formatRelative(ct.createdAt)}
-                </SpecItem>
-                <SpecItem label="Updated">
-                  {formatRelative(ct.updatedAt)}
-                </SpecItem>
-              </SpecList>
-            </SectionCard>
-            <SectionCard title="Tags">
-              <TagPicker
-                entityType="container"
-                entityId={ct.id}
-                assigned={ct.tags.map((t) => ({
-                  id: t.tag.id,
-                  name: t.tag.name,
-                  color: t.tag.color,
-                }))}
-              />
-            </SectionCard>
-            <MetadataCard metadata={ct.metadata} />
-            <AuditTrail entityType="container" entityId={ct.id} />
-          </>
-        }
-      />
-    </div>
-  );
+  return <DesktopContainerDetail ct={ct} logSources={logSources} initial={initial} />;
 }

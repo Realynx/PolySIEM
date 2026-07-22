@@ -26,6 +26,10 @@ function isProxmoxGuest(source: string): boolean {
   return /prox/i.test(source);
 }
 
+function countForm(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural;
+}
+
 export function checkFirewall(snap: SecuritySnapshot): SecurityFinding[] {
   const findings: SecurityFinding[] = [];
   const active = snap.firewallRules.filter((r) => r.enabled && r.status === "ACTIVE");
@@ -37,7 +41,7 @@ export function checkFirewall(snap: SecuritySnapshot): SecurityFinding[] {
       id: "firewall-pass-any-any",
       severity: "high",
       category: "firewall",
-      title: `${anyAny.length} enabled PASS rule${anyAny.length === 1 ? "" : "s"} allow any source to any destination`,
+      title: `${anyAny.length} enabled PASS rule${countForm(anyAny.length, "", "s")} allow any source to any destination`,
       detail:
         "Any-to-any allow rules make the firewall a formality on that interface — every host and port is reachable, and later hardening rules are easy to bypass.",
       remediation:
@@ -54,7 +58,7 @@ export function checkFirewall(snap: SecuritySnapshot): SecurityFinding[] {
       id: "firewall-wan-pass-any-source",
       severity: "high",
       category: "firewall",
-      title: `${wanOpen.length} WAN rule${wanOpen.length === 1 ? "" : "s"} accept${wanOpen.length === 1 ? "s" : ""} traffic from any internet source`,
+      title: `${wanOpen.length} WAN rule${countForm(wanOpen.length, "", "s")} accept${countForm(wanOpen.length, "s", "")} traffic from any internet source`,
       detail:
         "Inbound WAN PASS rules with an unrestricted source expose the destination service to the whole internet, not just the peers that need it.",
       remediation:
@@ -80,7 +84,7 @@ export function checkFirewall(snap: SecuritySnapshot): SecurityFinding[] {
       id: "firewall-wan-broad-pass",
       severity: "low",
       category: "firewall",
-      title: `${wanBroad.length} WAN PASS rule${wanBroad.length === 1 ? "" : "s"} allow all protocols to any destination`,
+      title: `${wanBroad.length} WAN PASS rule${countForm(wanBroad.length, "", "s")} allow all protocols to any destination`,
       detail:
         "The source is pinned to known peers, but once through the edge they may reach any internal host on any protocol. A stolen peer key or a mistyped alias becomes a foothold across the whole LAN.",
       remediation:
@@ -99,7 +103,7 @@ export function checkFirewall(snap: SecuritySnapshot): SecurityFinding[] {
       id: "firewall-pass-no-description",
       severity: "low",
       category: "firewall",
-      title: `${noDescription.length} PASS rule${noDescription.length === 1 ? " has" : "s have"} no description`,
+      title: `${noDescription.length} PASS rule${countForm(noDescription.length, " has", "s have")} no description`,
       detail:
         "Undescribed allow rules are the ones nobody dares to delete. Six months from now, no one will remember why the traffic is allowed.",
       remediation: "Give every PASS rule a description in OPNsense that says what it allows and why.",
@@ -122,7 +126,7 @@ export function checkFirewall(snap: SecuritySnapshot): SecurityFinding[] {
       id: "firewall-broad-pass",
       severity: "low",
       category: "firewall",
-      title: `${broad.length} PASS rule${broad.length === 1 ? "" : "s"} allow all protocols to any destination`,
+      title: `${broad.length} PASS rule${countForm(broad.length, "", "s")} allow all protocols to any destination`,
       detail:
         "These rules restrict the source but then allow every protocol and port to anywhere. That is often intentional (trusted-network egress), but each one deserves a conscious decision.",
       remediation:
@@ -141,7 +145,7 @@ export function checkFirewall(snap: SecuritySnapshot): SecurityFinding[] {
       id: "firewall-disabled-rule-clutter",
       severity: "info",
       category: "firewall",
-      title: `${disabledRules.length} firewall rule${disabledRules.length === 1 ? " is" : "s are"} disabled but still present`,
+      title: `${disabledRules.length} firewall rule${countForm(disabledRules.length, " is", "s are")} disabled but still present`,
       detail:
         "Disabled rules pile up as a graveyard of 'might need this again'. They make the real ruleset harder to read and occasionally get re-enabled by accident during a late-night change.",
       remediation:
@@ -180,7 +184,7 @@ export function checkFirewall(snap: SecuritySnapshot): SecurityFinding[] {
       id: "firewall-guest-disabled",
       severity: "medium",
       category: "firewall",
-      title: `${guestsNoFw.length} Proxmox guest${guestsNoFw.length === 1 ? " has" : "s have"} the guest firewall disabled`,
+      title: `${guestsNoFw.length} Proxmox guest${countForm(guestsNoFw.length, " has", "s have")} the guest firewall disabled`,
       detail:
         "The cluster runs a datacenter firewall, but these guests opted out — they sit outside the guest-isolation policy the rest of the fleet gets.",
       remediation:

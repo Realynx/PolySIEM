@@ -263,35 +263,35 @@ export async function loadAccessMapData() {
     string,
     { assetId: string; assetKind: "device" | "vm" | "container" }
   >();
-  for (const ip of ips) {
-    const tailscaleNetworkId =
-      ip.interface?.source === "TAILSCALE" && ip.interface.integrationId
-        ? `tailscale:${ip.interface.integrationId}`
-        : null;
-    const networkId = tailscaleNetworkId ?? ip.networkId ?? networkIdForAddress(ip.address);
-    if (!networkId) continue;
+  const interfaceAsset = (ip: (typeof ips)[number]) => {
     const owner = ip.interface?.container ?? ip.interface?.vm ?? ip.interface?.device;
-    const assetKind = ip.interface?.container
-      ? ("container" as const)
-      : ip.interface?.vm
-        ? ("vm" as const)
-        : owner
-          ? ("device" as const)
-          : undefined;
+    const assetKind = ip.interface?.container ? ("container" as const)
+      : ip.interface?.vm ? ("vm" as const) : owner ? ("device" as const) : undefined;
+    return { owner, assetKind };
+  };
+  const ipMemberContext = (ip: (typeof ips)[number]) => {
+    const tailscaleNetworkId = ip.interface?.source === "TAILSCALE" && ip.interface.integrationId
+      ? `tailscale:${ip.interface.integrationId}`
+      : null;
+    const networkId = tailscaleNetworkId ?? ip.networkId ?? networkIdForAddress(ip.address);
+    const { owner, assetKind } = interfaceAsset(ip);
     const metadata = ip.interface?.metadata && typeof ip.interface.metadata === "object"
       ? ip.interface.metadata as { tailscaleDeviceId?: unknown; dnsName?: unknown }
       : null;
-    if (
-      tailscaleNetworkId &&
-      owner?.id &&
-      assetKind &&
-      typeof metadata?.tailscaleDeviceId === "string"
-    ) {
-      tailscaleAssetByDeviceId.set(metadata.tailscaleDeviceId, {
-        assetId: owner.id,
-        assetKind,
-      });
-    }
+    return { tailscaleNetworkId, networkId, owner, assetKind, metadata };
+  };
+  const rememberTailscaleAsset = (context: ReturnType<typeof ipMemberContext>) => {
+    const { tailscaleNetworkId, owner, assetKind, metadata } = context;
+    if (!tailscaleNetworkId || !owner?.id || !assetKind ||
+      typeof metadata?.tailscaleDeviceId !== "string") return;
+    tailscaleAssetByDeviceId.set(metadata.tailscaleDeviceId, { assetId: owner.id, assetKind });
+  };
+  const collectIpMembers = () => {
+  for (const ip of ips) {
+    const context = ipMemberContext(ip);
+    const { networkId, owner, assetKind, metadata } = context;
+    if (!networkId) continue;
+    rememberTailscaleAsset(context);
     (members[networkId] ??= []).push({
       ip: ip.address,
       label: owner?.name ?? ip.description ?? null,
@@ -302,6 +302,9 @@ export async function loadAccessMapData() {
     });
     seen.add(`${networkId}|${ip.address}`);
   }
+  };
+  collectIpMembers();
+  const collectLeaseMembers = () => {
   for (const lease of leases) {
     const networkId = lease.networkId ?? networkIdForAddress(lease.ipAddress);
     if (!networkId) continue;
@@ -322,8 +325,11 @@ export async function loadAccessMapData() {
       assetKind: observedGuest?.kind,
     });
   }
+  };
+  collectLeaseMembers();
   // ARP-detected devices fill in everything the lease list misses (static-IP
   // devices, other routers, anything that talked through the firewall).
+  const collectNeighborMembers = () => {
   for (const neighbor of neighbors) {
     const networkId = neighbor.networkId ?? networkIdForAddress(neighbor.ipAddress);
     if (!networkId) continue;
@@ -345,21 +351,29 @@ export async function loadAccessMapData() {
       assetKind: observedGuest?.kind,
     });
   }
+  };
+  collectNeighborMembers();
   const physical = buildPhysicalNetworkData(
     networks,
     switchConfigs,
     wifiSsids,
     wifiAps,
   );
+  const collectSviMembers = () => {
   for (const { networkId, member } of physical.sviMembers) {
     const key = `${networkId}|${member.ip}`;
     if (seen.has(key)) continue;
     seen.add(key);
     (members[networkId] ??= []).push(member);
   }
+  };
+  collectSviMembers();
+  const sortMembers = () => {
   for (const list of Object.values(members)) {
     list.sort((a, b) => ipSortKey(a.ip) - ipSortKey(b.ip));
   }
+  };
+  sortMembers();
 
   const tailscale = buildTailscaleTailnets(
     tailscaleSnapshots,

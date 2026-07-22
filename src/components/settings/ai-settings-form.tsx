@@ -77,6 +77,49 @@ function normalizeModels(data: unknown): string[] {
   return list.filter((model): model is string => typeof model === "string");
 }
 
+function asHostedProvider(provider: AiProvider): HostedProvider | null {
+  return provider === "openai" || provider === "deepseek" || provider === "anthropic" ? provider : null;
+}
+
+function announceAiTest(result: { provider: AiProvider; models?: number }) {
+  if (result.provider === "ollama") toast.success(`Ollama reachable — ${result.models ?? 0} models available`);
+  else toast.success(`${PROVIDER_LABELS[result.provider]} responded successfully`);
+}
+
+function buildAiRequest(config: {
+  enabled: boolean; provider: AiProvider; baseUrl: string; model: string;
+  azure: { endpoint: string; apiKey: string; deployment: string; apiVersion: string };
+  hostedProvider: HostedProvider | null; activeHosted: EditableHosted | null;
+}) {
+  const { enabled, provider, baseUrl, model, azure, hostedProvider, activeHosted } = config;
+  return {
+    enabled, provider, baseUrl: baseUrl.trim(), model: model.trim(),
+    ...(provider === "azure" ? { azure: { endpoint: azure.endpoint.trim(), deployment: azure.deployment.trim(), apiVersion: azure.apiVersion.trim() || DEFAULT_AZURE_API_VERSION, ...(azure.apiKey.trim() ? { apiKey: azure.apiKey.trim() } : {}) } } : {}),
+    ...(hostedProvider && activeHosted ? { [hostedProvider]: { baseUrl: activeHosted.baseUrl.trim(), model: activeHosted.model.trim(), ...(activeHosted.apiKey.trim() ? { apiKey: activeHosted.apiKey.trim() } : {}) } } : {}),
+  };
+}
+
+function OllamaFields({ show, baseUrl, setBaseUrl, model, setModel, models }: { show: boolean; baseUrl: string; setBaseUrl: (value: string) => void; model: string; setModel: (value: string) => void; models: string[] }) {
+  if (!show) return null;
+  return <><div className="grid gap-2"><Label htmlFor="ai-base-url">Ollama base URL</Label><Input id="ai-base-url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="http://localhost:11434" className="max-w-sm" /></div><div className="grid gap-2"><Label htmlFor="ai-model">Model</Label>{models.length > 0 ? <Select value={model || undefined} onValueChange={setModel}><SelectTrigger id="ai-model" className="max-w-sm"><SelectValue placeholder="Choose a model" /></SelectTrigger><SelectContent>{models.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}{model && !models.includes(model) && <SelectItem value={model}>{model} (saved)</SelectItem>}</SelectContent></Select> : <Input id="ai-model" value={model} onChange={(event) => setModel(event.target.value)} placeholder="e.g. qwen3:8b" className="max-w-sm" />}</div></>;
+}
+
+function hostedModelPlaceholder(provider: HostedProvider) {
+  if (provider === "openai") return "e.g. gpt-5.4-mini";
+  if (provider === "deepseek") return "deepseek-v4-flash";
+  return "claude-sonnet-5";
+}
+
+function HostedFields({ provider, config, update }: { provider: HostedProvider | null; config: EditableHosted | null; update: (target: HostedProvider, patch: Partial<EditableHosted>) => void }) {
+  if (!provider || !config) return null;
+  return <><div className="grid gap-2"><Label htmlFor="ai-hosted-url">{PROVIDER_LABELS[provider]} base URL</Label><Input id="ai-hosted-url" value={config.baseUrl} onChange={(event) => update(provider, { baseUrl: event.target.value })} className="max-w-sm" /><p className="text-xs text-muted-foreground">Change this only when using a compatible proxy or gateway.</p></div><div className="grid gap-2"><Label htmlFor="ai-hosted-key">API key</Label><Input id="ai-hosted-key" type="password" value={config.apiKey} onChange={(event) => update(provider, { apiKey: event.target.value })} placeholder={config.hasKey ? "•••••••• (leave blank to keep)" : `${PROVIDER_LABELS[provider]} API key`} autoComplete="off" className="max-w-sm" /><p className="text-xs text-muted-foreground">{config.hasKey ? "A key is stored. Leave blank to keep it, or enter a replacement." : "Stored encrypted at rest and never shown again."}</p></div><div className="grid gap-2"><Label htmlFor="ai-hosted-model">Model</Label><Input id="ai-hosted-model" value={config.model} onChange={(event) => update(provider, { model: event.target.value })} placeholder={hostedModelPlaceholder(provider)} className="max-w-sm" />{provider === "deepseek" && <p className="text-xs text-muted-foreground">Use deepseek-v4-flash or deepseek-v4-pro; legacy chat and reasoner aliases are being retired.</p>}</div></>;
+}
+
+function AzureFields({ show, endpoint, setEndpoint, apiKey, setApiKey, deployment, setDeployment, apiVersion, setApiVersion, hasKey }: { show: boolean; endpoint: string; setEndpoint: (value: string) => void; apiKey: string; setApiKey: (value: string) => void; deployment: string; setDeployment: (value: string) => void; apiVersion: string; setApiVersion: (value: string) => void; hasKey: boolean }) {
+  if (!show) return null;
+  return <><div className="grid gap-2"><Label htmlFor="ai-az-endpoint">Azure endpoint</Label><Input id="ai-az-endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="https://my-resource.openai.azure.com/" className="max-w-sm" /></div><div className="grid gap-2"><Label htmlFor="ai-az-key">API key</Label><Input id="ai-az-key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={hasKey ? "•••••••• (leave blank to keep)" : "Azure OpenAI API key"} autoComplete="off" className="max-w-sm" /></div><div className="grid gap-2"><Label htmlFor="ai-az-deployment">Deployment name</Label><Input id="ai-az-deployment" value={deployment} onChange={(event) => setDeployment(event.target.value)} placeholder="e.g. gpt-5.4-mini" className="max-w-sm" /><p className="text-xs text-muted-foreground">Use the deployment name from your Azure resource, which may differ from the underlying model name.</p></div><div className="grid gap-2"><Label htmlFor="ai-az-version">API version</Label><Input id="ai-az-version" value={apiVersion} onChange={(event) => setApiVersion(event.target.value)} placeholder={DEFAULT_AZURE_API_VERSION} className="max-w-sm" /></div></>;
+}
+
 export function AiSettingsForm({
   initialConfig,
   onSaved,
@@ -127,10 +170,7 @@ export function AiSettingsForm({
 
   const isOllama = provider === "ollama";
   const isAzure = provider === "azure";
-  const hostedProvider =
-    provider === "openai" || provider === "deepseek" || provider === "anthropic"
-      ? provider
-      : null;
+  const hostedProvider = asHostedProvider(provider);
   const activeHosted = hostedProvider ? hosted[hostedProvider] : null;
 
   const updateHosted = (
@@ -142,33 +182,7 @@ export function AiSettingsForm({
       [target]: { ...current[target], ...patch },
     }));
 
-  const requestConfig = () => ({
-    enabled,
-    provider,
-    baseUrl: baseUrl.trim(),
-    model: model.trim(),
-    ...(isAzure
-      ? {
-          azure: {
-            endpoint: azEndpoint.trim(),
-            deployment: azDeployment.trim(),
-            apiVersion: azApiVersion.trim() || DEFAULT_AZURE_API_VERSION,
-            ...(azApiKey.trim() ? { apiKey: azApiKey.trim() } : {}),
-          },
-        }
-      : {}),
-    ...(hostedProvider && activeHosted
-      ? {
-          [hostedProvider]: {
-            baseUrl: activeHosted.baseUrl.trim(),
-            model: activeHosted.model.trim(),
-            ...(activeHosted.apiKey.trim()
-              ? { apiKey: activeHosted.apiKey.trim() }
-              : {}),
-          },
-        }
-      : {}),
-  });
+  const requestConfig = () => buildAiRequest({ enabled, provider, baseUrl, model, azure: { endpoint: azEndpoint, apiKey: azApiKey, deployment: azDeployment, apiVersion: azApiVersion }, hostedProvider, activeHosted });
 
   const debouncedBaseUrl = useDebounced(baseUrl, 500);
   const modelsQuery = useQuery({
@@ -213,17 +227,7 @@ export function AiSettingsForm({
           body: JSON.stringify(requestConfig()),
         },
       ),
-    onSuccess: (result) => {
-      if (result.provider === "ollama") {
-        toast.success(
-          `Ollama reachable — ${result.models ?? 0} models available`,
-        );
-      } else {
-        toast.success(
-          `${PROVIDER_LABELS[result.provider]} responded successfully`,
-        );
-      }
-    },
+    onSuccess: announceAiTest,
     onError: (error: Error) =>
       toast.error(`Connection test failed: ${error.message}`),
   });
@@ -278,177 +282,9 @@ export function AiSettingsForm({
             </Select>
           </div>
 
-          {isOllama && (
-            <>
-              <div className="grid gap-2">
-                <Label htmlFor="ai-base-url">Ollama base URL</Label>
-                <Input
-                  id="ai-base-url"
-                  value={baseUrl}
-                  onChange={(event) => setBaseUrl(event.target.value)}
-                  placeholder="http://localhost:11434"
-                  className="max-w-sm"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ai-model">Model</Label>
-                {models.length > 0 ? (
-                  <Select value={model || undefined} onValueChange={setModel}>
-                    <SelectTrigger id="ai-model" className="max-w-sm">
-                      <SelectValue placeholder="Choose a model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {models.map((name) => (
-                        <SelectItem key={name} value={name}>
-                          {name}
-                        </SelectItem>
-                      ))}
-                      {model && !models.includes(model) && (
-                        <SelectItem value={model}>{model} (saved)</SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input
-                    id="ai-model"
-                    value={model}
-                    onChange={(event) => setModel(event.target.value)}
-                    placeholder="e.g. qwen3:8b"
-                    className="max-w-sm"
-                  />
-                )}
-              </div>
-            </>
-          )}
-
-          {hostedProvider && activeHosted && (
-            <>
-              <div className="grid gap-2">
-                <Label htmlFor="ai-hosted-url">
-                  {PROVIDER_LABELS[hostedProvider]} base URL
-                </Label>
-                <Input
-                  id="ai-hosted-url"
-                  value={activeHosted.baseUrl}
-                  onChange={(event) =>
-                    updateHosted(hostedProvider, {
-                      baseUrl: event.target.value,
-                    })
-                  }
-                  className="max-w-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Change this only when using a compatible proxy or gateway.
-                </p>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ai-hosted-key">API key</Label>
-                <Input
-                  id="ai-hosted-key"
-                  type="password"
-                  value={activeHosted.apiKey}
-                  onChange={(event) =>
-                    updateHosted(hostedProvider, {
-                      apiKey: event.target.value,
-                    })
-                  }
-                  placeholder={
-                    activeHosted.hasKey
-                      ? "•••••••• (leave blank to keep)"
-                      : `${PROVIDER_LABELS[hostedProvider]} API key`
-                  }
-                  autoComplete="off"
-                  className="max-w-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  {activeHosted.hasKey
-                    ? "A key is stored. Leave blank to keep it, or enter a replacement."
-                    : "Stored encrypted at rest and never shown again."}
-                </p>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ai-hosted-model">Model</Label>
-                <Input
-                  id="ai-hosted-model"
-                  value={activeHosted.model}
-                  onChange={(event) =>
-                    updateHosted(hostedProvider, {
-                      model: event.target.value,
-                    })
-                  }
-                  placeholder={
-                    hostedProvider === "openai"
-                      ? "e.g. gpt-5.4-mini"
-                      : hostedProvider === "deepseek"
-                        ? "deepseek-v4-flash"
-                        : "claude-sonnet-5"
-                  }
-                  className="max-w-sm"
-                />
-                {hostedProvider === "deepseek" && (
-                  <p className="text-xs text-muted-foreground">
-                    Use deepseek-v4-flash or deepseek-v4-pro; legacy chat and
-                    reasoner aliases are being retired.
-                  </p>
-                )}
-              </div>
-            </>
-          )}
-
-          {isAzure && (
-            <>
-              <div className="grid gap-2">
-                <Label htmlFor="ai-az-endpoint">Azure endpoint</Label>
-                <Input
-                  id="ai-az-endpoint"
-                  value={azEndpoint}
-                  onChange={(event) => setAzEndpoint(event.target.value)}
-                  placeholder="https://my-resource.openai.azure.com/"
-                  className="max-w-sm"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ai-az-key">API key</Label>
-                <Input
-                  id="ai-az-key"
-                  type="password"
-                  value={azApiKey}
-                  onChange={(event) => setAzApiKey(event.target.value)}
-                  placeholder={
-                    azHasKey
-                      ? "•••••••• (leave blank to keep)"
-                      : "Azure OpenAI API key"
-                  }
-                  autoComplete="off"
-                  className="max-w-sm"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ai-az-deployment">Deployment name</Label>
-                <Input
-                  id="ai-az-deployment"
-                  value={azDeployment}
-                  onChange={(event) => setAzDeployment(event.target.value)}
-                  placeholder="e.g. gpt-5.4-mini"
-                  className="max-w-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Use the deployment name from your Azure resource, which may
-                  differ from the underlying model name.
-                </p>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ai-az-version">API version</Label>
-                <Input
-                  id="ai-az-version"
-                  value={azApiVersion}
-                  onChange={(event) => setAzApiVersion(event.target.value)}
-                  placeholder={DEFAULT_AZURE_API_VERSION}
-                  className="max-w-sm"
-                />
-              </div>
-            </>
-          )}
+          <OllamaFields show={isOllama} baseUrl={baseUrl} setBaseUrl={setBaseUrl} model={model} setModel={setModel} models={models} />
+          <HostedFields provider={hostedProvider} config={activeHosted} update={updateHosted} />
+          <AzureFields show={isAzure} endpoint={azEndpoint} setEndpoint={setAzEndpoint} apiKey={azApiKey} setApiKey={setAzApiKey} deployment={azDeployment} setDeployment={setAzDeployment} apiVersion={azApiVersion} setApiVersion={setAzApiVersion} hasKey={azHasKey} />
         </CardContent>
         <CardFooter className="gap-2">
           <Button type="submit" disabled={save.isPending || test.isPending}>

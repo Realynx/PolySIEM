@@ -40,6 +40,91 @@ function cloudflareEvidence(metadata: unknown) {
   };
 }
 
+type Service = NonNullable<Awaited<ReturnType<typeof getService>>>;
+type CloudflareEvidence = NonNullable<ReturnType<typeof cloudflareEvidence>>;
+
+function serviceInitial(svc: Service) {
+  return {
+    name: svc.name,
+    url: svc.url ?? "",
+    port: svc.port?.toString() ?? "",
+    protocol: svc.protocol ?? "",
+    deviceId: svc.device?.id ?? "",
+    vmId: svc.vm?.id ?? "",
+    containerId: svc.container?.id ?? "",
+    description: svc.description ?? "",
+  };
+}
+
+function ServiceHeader({ svc, initial }: { svc: Service; initial: ReturnType<typeof serviceInitial> }) {
+  return (
+    <PageHeader
+      title={svc.name}
+      actions={
+        <>
+          {svc.url && <Button variant="outline" asChild><a href={svc.url} target="_blank" rel="noreferrer"><ExternalLink />Open</a></Button>}
+          <EntityFormDialog entity="services" mode="edit" entityId={svc.id} initial={initial} source={svc.source} trigger={<Button variant="outline"><Pencil />Edit</Button>} />
+          {svc.source === "MANUAL" && <DeleteEntityButton apiPath={`/api/inventory/services/${svc.id}`} entityLabel={`service “${svc.name}”`} redirectTo="/inventory/services" />}
+        </>
+      }
+    >
+      <div className="-mt-2 flex flex-wrap items-center gap-2">
+        {svc.protocol && <Badge variant="secondary" className="uppercase">{svc.protocol}</Badge>}
+        <SourceBadge source={svc.source} />
+        <StatusBadge status={svc.status} />
+      </div>
+    </PageHeader>
+  );
+}
+
+function ServiceDetails({ svc }: { svc: Service }) {
+  return (
+    <SectionCard title="Details">
+      <SpecList>
+        <SpecItem label="URL">{svc.url ? <a href={svc.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline underline-offset-4"><span className="max-w-52 truncate">{svc.url}</span><ExternalLink className="size-3.5 shrink-0" /></a> : <Muted />}</SpecItem>
+        <SpecItem label="Port"><Muted>{svc.port}</Muted></SpecItem>
+        <SpecItem label="Protocol"><Muted>{svc.protocol?.toUpperCase()}</Muted></SpecItem>
+        <SpecItem label="Host">{svc.device ? <EntityLink href={`/inventory/hosts/${svc.device.id}`}>{svc.device.name}</EntityLink> : <Muted />}</SpecItem>
+        <SpecItem label="VM">{svc.vm ? <EntityLink href={`/inventory/vms/${svc.vm.id}`}>{svc.vm.name}</EntityLink> : <Muted />}</SpecItem>
+        <SpecItem label="Container">{svc.container ? <EntityLink href={`/inventory/containers/${svc.container.id}`}>{svc.container.name}</EntityLink> : <Muted />}</SpecItem>
+        <SpecItem label="Created">{formatRelative(svc.createdAt)}</SpecItem>
+        <SpecItem label="Updated">{formatRelative(svc.updatedAt)}</SpecItem>
+      </SpecList>
+    </SectionCard>
+  );
+}
+
+function DiscoveryEvidence({ evidence }: { evidence: CloudflareEvidence }) {
+  return (
+    <SectionCard title="Discovery evidence">
+      <SpecList>
+        <SpecItem label="Evidence"><EntityLink href="/network/edge-networks">Cloudflare published route</EntityLink></SpecItem>
+        <SpecItem label="Account"><Muted>{evidence.accountName}</Muted></SpecItem>
+        <SpecItem label="Tunnel"><Muted>{evidence.tunnelName}</Muted></SpecItem>
+        <SpecItem label="Published as"><Muted>{evidence.hostname}{evidence.path ? ` ${evidence.path}` : ""}</Muted></SpecItem>
+        <SpecItem label="Origin"><Muted>{evidence.originService}</Muted></SpecItem>
+        <SpecItem label="Observed">{evidence.capturedAt ? formatRelative(evidence.capturedAt) : <Muted />}</SpecItem>
+      </SpecList>
+    </SectionCard>
+  );
+}
+
+function ServiceSide({ svc, evidence }: { svc: Service; evidence: ReturnType<typeof cloudflareEvidence> }) {
+  return (
+    <>
+      <ServiceDetails svc={svc} />
+      {evidence && <DiscoveryEvidence evidence={evidence} />}
+      <SectionCard title="Tags"><TagPicker entityType="service" entityId={svc.id} assigned={svc.tags.map(({ tag }) => ({ id: tag.id, name: tag.name, color: tag.color }))} /></SectionCard>
+      <AuditTrail entityType="service" entityId={svc.id} />
+    </>
+  );
+}
+
+function DesktopServiceDetail({ svc, evidence, initial }: { svc: Service; evidence: ReturnType<typeof cloudflareEvidence>; initial: ReturnType<typeof serviceInitial> }) {
+  const description = <SectionCard title="Description"><DescriptionEditor apiPath={`/api/inventory/services/${svc.id}`} initialValue={svc.description} entity={{ type: "service", id: svc.id }} /></SectionCard>;
+  return <div><ServiceHeader svc={svc} initial={initial} /><DetailGrid main={description} side={<ServiceSide svc={svc} evidence={evidence} />} /></div>;
+}
+
 export async function generateMetadata({
   params,
 }: {
@@ -58,160 +143,11 @@ export default async function ServiceDetailPage({ params }: { params: Promise<{ 
   const svc = await anonymizeForDisplay(svcData);
   const evidence = cloudflareEvidence(svc.metadata);
 
-  const initial = {
-    name: svc.name,
-    url: svc.url ?? "",
-    port: svc.port?.toString() ?? "",
-    protocol: svc.protocol ?? "",
-    deviceId: svc.device?.id ?? "",
-    vmId: svc.vm?.id ?? "",
-    containerId: svc.container?.id ?? "",
-    description: svc.description ?? "",
-  };
+  const initial = serviceInitial(svc);
 
   if (await isMobileView()) {
     return <MobileServiceDetail svc={svc} evidence={evidence} initial={initial} />;
   }
 
-  return (
-    <div>
-      <PageHeader
-        title={svc.name}
-        actions={
-          <>
-            {svc.url && (
-              <Button variant="outline" asChild>
-                <a href={svc.url} target="_blank" rel="noreferrer">
-                  <ExternalLink />
-                  Open
-                </a>
-              </Button>
-            )}
-            <EntityFormDialog
-              entity="services"
-              mode="edit"
-              entityId={svc.id}
-              initial={initial}
-              source={svc.source}
-              trigger={
-                <Button variant="outline">
-                  <Pencil />
-                  Edit
-                </Button>
-              }
-            />
-            {svc.source === "MANUAL" && (
-              <DeleteEntityButton
-                apiPath={`/api/inventory/services/${svc.id}`}
-                entityLabel={`service “${svc.name}”`}
-                redirectTo="/inventory/services"
-              />
-            )}
-          </>
-        }
-      >
-        <div className="-mt-2 flex flex-wrap items-center gap-2">
-          {svc.protocol && (
-            <Badge variant="secondary" className="uppercase">
-              {svc.protocol}
-            </Badge>
-          )}
-          <SourceBadge source={svc.source} />
-          <StatusBadge status={svc.status} />
-        </div>
-      </PageHeader>
-
-      <DetailGrid
-        main={
-          <SectionCard title="Description">
-            <DescriptionEditor
-              apiPath={`/api/inventory/services/${svc.id}`}
-              initialValue={svc.description}
-              entity={{ type: "service", id: svc.id }}
-            />
-          </SectionCard>
-        }
-        side={
-          <>
-            <SectionCard title="Details">
-              <SpecList>
-                <SpecItem label="URL">
-                  {svc.url ? (
-                    <a
-                      href={svc.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-primary hover:underline underline-offset-4"
-                    >
-                      <span className="max-w-52 truncate">{svc.url}</span>
-                      <ExternalLink className="size-3.5 shrink-0" />
-                    </a>
-                  ) : (
-                    <Muted />
-                  )}
-                </SpecItem>
-                <SpecItem label="Port">
-                  <Muted>{svc.port}</Muted>
-                </SpecItem>
-                <SpecItem label="Protocol">
-                  <Muted>{svc.protocol?.toUpperCase()}</Muted>
-                </SpecItem>
-                <SpecItem label="Host">
-                  {svc.device ? (
-                    <EntityLink href={`/inventory/hosts/${svc.device.id}`}>{svc.device.name}</EntityLink>
-                  ) : (
-                    <Muted />
-                  )}
-                </SpecItem>
-                <SpecItem label="VM">
-                  {svc.vm ? (
-                    <EntityLink href={`/inventory/vms/${svc.vm.id}`}>{svc.vm.name}</EntityLink>
-                  ) : (
-                    <Muted />
-                  )}
-                </SpecItem>
-                <SpecItem label="Container">
-                  {svc.container ? (
-                    <EntityLink href={`/inventory/containers/${svc.container.id}`}>
-                      {svc.container.name}
-                    </EntityLink>
-                  ) : (
-                    <Muted />
-                  )}
-                </SpecItem>
-                <SpecItem label="Created">{formatRelative(svc.createdAt)}</SpecItem>
-                <SpecItem label="Updated">{formatRelative(svc.updatedAt)}</SpecItem>
-              </SpecList>
-            </SectionCard>
-            {evidence && (
-              <SectionCard title="Discovery evidence">
-                <SpecList>
-                  <SpecItem label="Evidence">
-                    <EntityLink href="/network/edge-networks">Cloudflare published route</EntityLink>
-                  </SpecItem>
-                  <SpecItem label="Account"><Muted>{evidence.accountName}</Muted></SpecItem>
-                  <SpecItem label="Tunnel"><Muted>{evidence.tunnelName}</Muted></SpecItem>
-                  <SpecItem label="Published as"><Muted>{evidence.hostname}{evidence.path ? ` ${evidence.path}` : ""}</Muted></SpecItem>
-                  <SpecItem label="Origin"><Muted>{evidence.originService}</Muted></SpecItem>
-                  <SpecItem label="Observed">{evidence.capturedAt ? formatRelative(evidence.capturedAt) : <Muted />}</SpecItem>
-                </SpecList>
-              </SectionCard>
-            )}
-            <SectionCard title="Tags">
-              <TagPicker
-                entityType="service"
-                entityId={svc.id}
-                assigned={svc.tags.map((t) => ({
-                  id: t.tag.id,
-                  name: t.tag.name,
-                  color: t.tag.color,
-                }))}
-              />
-            </SectionCard>
-            <AuditTrail entityType="service" entityId={svc.id} />
-          </>
-        }
-      />
-    </div>
-  );
+  return <DesktopServiceDetail svc={svc} evidence={evidence} initial={initial} />;
 }

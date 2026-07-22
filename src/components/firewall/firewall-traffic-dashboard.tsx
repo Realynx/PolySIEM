@@ -161,6 +161,10 @@ const PLOT_TOP = 16;
 const PLOT_HEIGHT = 188;
 const PLOT_BOTTOM = PLOT_TOP + PLOT_HEIGHT;
 
+function selectedPoint(points: TrafficPoint[], index: number | null): TrafficPoint | null {
+  return index === null ? null : points[index];
+}
+
 function linePath(
   points: TrafficPoint[],
   key: "inBps" | "outBps",
@@ -197,7 +201,7 @@ function TrafficChart({ points, windowMs }: { points: TrafficPoint[]; windowMs: 
   const rangeStart = rangeEnd - windowMs;
   const inbound = linePath(points, "inBps", maximum, chartWidth, rangeStart, rangeEnd);
   const outbound = linePath(points, "outBps", maximum, chartWidth, rangeStart, rangeEnd);
-  const activePoint = activeIndex === null ? null : points[activeIndex];
+  const activePoint = selectedPoint(points, activeIndex);
   const activeRatio = activePoint ? Math.min(1, Math.max(0, (activePoint.t - rangeStart) / windowMs)) : 0.5;
   const plotWidth = chartWidth - PLOT_LEFT - PLOT_RIGHT;
   const activeX = PLOT_LEFT + activeRatio * plotWidth;
@@ -313,6 +317,56 @@ const REFRESH_OPTIONS = [
   { value: 60_000, label: "1 minute" },
 ] as const;
 
+function TrafficContent({
+  bandwidth, selectedName, summaryInterfaces, inboundRate, outboundRate, inboundBytes, outboundBytes,
+  topRules, labels, maxRuleRate, liveRateAt, window, animatedSeries,
+}: {
+  bandwidth: NonNullable<ReturnType<typeof useBandwidth>> | null;
+  selectedName?: string;
+  summaryInterfaces: InterfaceBw[];
+  inboundRate: number;
+  outboundRate: number;
+  inboundBytes: number;
+  outboundBytes: number;
+  topRules: NonNullable<ReturnType<typeof useBandwidth>>["rules"];
+  labels: Map<string, string>;
+  maxRuleRate: number;
+  liveRateAt?: string;
+  window: BandwidthWindow;
+  animatedSeries: TrafficPoint[];
+}) {
+  if (!bandwidth) return <div className="space-y-3"><Skeleton className="h-14 w-full" /><Skeleton className="h-56 w-full" /></div>;
+  if (!bandwidth.status.enabled || bandwidth.interfaces.length === 0 || summaryInterfaces.length === 0) return (
+    <div className="rounded-lg border border-dashed p-8 text-center">
+      <Activity className="mx-auto size-7 text-muted-foreground" />
+      <p className="mt-3 font-medium">Internet traffic counters are not flowing yet</p>
+      <p className="mx-auto mt-1 max-w-xl text-sm text-muted-foreground">Enable bandwidth polling for {selectedName}. The overview will begin charting its internet-facing interface after two readings.</p>
+    </div>
+  );
+  return <>
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <TrafficMetric icon={ArrowDownToLine} label="Average inbound" value={formatBps(inboundRate)} detail={`${formatBytes(inboundBytes)} observed`} />
+      <TrafficMetric icon={ArrowUpFromLine} label="Average outbound" value={formatBps(outboundRate)} detail={`${formatBytes(outboundBytes)} observed`} />
+      <TrafficMetric icon={Activity} label="Measured interfaces" value={String(bandwidth.interfaces.length)} detail={`${topRules.length} active rule counters`} />
+      <TrafficMetric icon={Clock3} label="Last sample" value={formatRelative(liveRateAt ?? bandwidth.status.lastPollAt)} detail={`${window} analysis window`} />
+    </div>
+    <div className="space-y-5">
+      <TrafficChart points={animatedSeries} windowMs={WINDOW_MS[window]} />
+      <div className="space-y-3 border-t pt-5">
+        <div className="flex items-center justify-between"><p className="text-sm font-medium">Busiest rules</p><Badge variant="outline">average</Badge></div>
+        {topRules.length === 0 ? <p className="text-sm text-muted-foreground">No per-rule samples yet.</p> : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">{topRules.map((rule) => (
+            <div key={rule.externalId} className="space-y-2 rounded-lg border bg-muted/10 p-3">
+              <div className="flex items-center justify-between gap-3 text-xs"><span className="truncate">{labels.get(rule.externalId) ?? rule.externalId}</span><span className="shrink-0 tabular-nums text-muted-foreground">{formatBps(rule.avgBps)}</span></div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-chart-3" style={{ width: `${Math.max(2, (rule.avgBps / maxRuleRate) * 100)}%` }} /></div>
+            </div>
+          ))}</div>
+        )}
+      </div>
+    </div>
+  </>;
+}
+
 export function FirewallTrafficDashboard({ providers }: { providers: FirewallTrafficProvider[] }) {
   const [providerId, setProviderId] = useState(providers[0]?.id ?? "");
   const [window, setWindow] = useState<BandwidthWindow>("24h");
@@ -352,12 +406,16 @@ export function FirewallTrafficDashboard({ providers }: { providers: FirewallTra
   const averagedSeries = useMemo(() => averageSeries(liveSeries, WINDOW_MS[window]), [liveSeries, window]);
   const animatedSeries = useAnimatedSeries(averagedSeries, animationDuration(refreshMs));
   const labels = useMemo(() => new Map(selected?.rules.map((rule) => [rule.externalId, rule.label]) ?? []), [selected]);
-  const inboundRate = liveRate?.inBps ?? summaryInterfaces.reduce((sum, iface) => sum + iface.inBps, 0);
-  const outboundRate = liveRate?.outBps ?? summaryInterfaces.reduce((sum, iface) => sum + iface.outBps, 0);
-  const inboundBytes = summaryInterfaces.reduce((sum, iface) => sum + iface.totalIn, 0);
-  const outboundBytes = summaryInterfaces.reduce((sum, iface) => sum + iface.totalOut, 0);
-  const topRules = (bandwidth?.rules ?? []).filter((rule) => rule.externalId !== "system").slice(0, 5);
-  const maxRuleRate = Math.max(1, ...topRules.map((rule) => rule.avgBps));
+  const totals = (() => {
+    const inboundRate = liveRate?.inBps ?? summaryInterfaces.reduce((sum, iface) => sum + iface.inBps, 0);
+    const outboundRate = liveRate?.outBps ?? summaryInterfaces.reduce((sum, iface) => sum + iface.outBps, 0);
+    const inboundBytes = summaryInterfaces.reduce((sum, iface) => sum + iface.totalIn, 0);
+    const outboundBytes = summaryInterfaces.reduce((sum, iface) => sum + iface.totalOut, 0);
+    const topRules = (bandwidth?.rules ?? []).filter((rule) => rule.externalId !== "system").slice(0, 5);
+    const maxRuleRate = Math.max(1, ...topRules.map((rule) => rule.avgBps));
+    return { inboundRate, outboundRate, inboundBytes, outboundBytes, topRules, maxRuleRate };
+  })();
+  const { inboundRate, outboundRate, inboundBytes, outboundBytes, topRules, maxRuleRate } = totals;
 
   return (
     <Card>
@@ -390,40 +448,7 @@ export function FirewallTrafficDashboard({ providers }: { providers: FirewallTra
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
-        {!bandwidth ? (
-          <div className="space-y-3"><Skeleton className="h-14 w-full" /><Skeleton className="h-56 w-full" /></div>
-        ) : !bandwidth.status.enabled || bandwidth.interfaces.length === 0 || summaryInterfaces.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-8 text-center">
-            <Activity className="mx-auto size-7 text-muted-foreground" />
-            <p className="mt-3 font-medium">Internet traffic counters are not flowing yet</p>
-            <p className="mx-auto mt-1 max-w-xl text-sm text-muted-foreground">Enable bandwidth polling for {selected?.name}. The overview will begin charting its internet-facing interface after two readings.</p>
-          </div>
-        ) : (
-          <>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <TrafficMetric icon={ArrowDownToLine} label="Average inbound" value={formatBps(inboundRate)} detail={`${formatBytes(inboundBytes)} observed`} />
-              <TrafficMetric icon={ArrowUpFromLine} label="Average outbound" value={formatBps(outboundRate)} detail={`${formatBytes(outboundBytes)} observed`} />
-              <TrafficMetric icon={Activity} label="Measured interfaces" value={String(bandwidth.interfaces.length)} detail={`${topRules.length} active rule counters`} />
-              <TrafficMetric icon={Clock3} label="Last sample" value={formatRelative(liveRate?.sampledAt ?? bandwidth.status.lastPollAt)} detail={`${window} analysis window`} />
-            </div>
-            <div className="space-y-5">
-              <TrafficChart points={animatedSeries} windowMs={WINDOW_MS[window]} />
-              <div className="space-y-3 border-t pt-5">
-                <div className="flex items-center justify-between"><p className="text-sm font-medium">Busiest rules</p><Badge variant="outline">average</Badge></div>
-                {topRules.length === 0 ? <p className="text-sm text-muted-foreground">No per-rule samples yet.</p> : (
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                    {topRules.map((rule) => (
-                      <div key={rule.externalId} className="space-y-2 rounded-lg border bg-muted/10 p-3">
-                        <div className="flex items-center justify-between gap-3 text-xs"><span className="truncate">{labels.get(rule.externalId) ?? rule.externalId}</span><span className="shrink-0 tabular-nums text-muted-foreground">{formatBps(rule.avgBps)}</span></div>
-                        <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-chart-3" style={{ width: `${Math.max(2, (rule.avgBps / maxRuleRate) * 100)}%` }} /></div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </>
-        )}
+        <TrafficContent {...{ bandwidth, selectedName: selected?.name, summaryInterfaces, inboundRate, outboundRate, inboundBytes, outboundBytes, topRules, labels, maxRuleRate, liveRateAt: liveRate?.sampledAt, window, animatedSeries }} />
       </CardContent>
     </Card>
   );
