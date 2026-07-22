@@ -57,6 +57,7 @@ jobs:
           test -f LICENSE
           test -f deploy/auto-update.sh
           test -f deploy/native-auto-update.sh
+          test -f deploy/helm/polysiem/Chart.yaml
           test -f deploy/standalone-entrypoint.sh
           test -f deploy/standalone-entrypoint.ps1
           test -f server/tls-server.js
@@ -242,6 +243,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
       - name: Stage release assets
         shell: bash
         run: |
@@ -254,8 +258,20 @@ jobs:
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg image "ghcr.io/${IMAGE_REPOSITORY}:${{ needs.validate.outputs.version }}" \
             --arg nativeLinuxX64Bundle "polysiem-${{ needs.validate.outputs.version }}-standalone-linux-x64.tar.gz" \
-            '{schemaVersion: 1, version: $version, repository: $repository, image: $image, platforms: {docker: ["linux/amd64", "linux/arm64"], installers: ["linux", "windows"]}, assets: {compose: "docker-compose.yml", demoCompose: "docker-compose.demo.yml", linuxInstaller: "install.sh", windowsInstaller: "install.ps1", linuxUpdater: "update.sh", linuxAutoUpdater: "auto-update.sh", nativeLinuxAutoUpdater: "native-auto-update.sh", windowsUpdater: "update.ps1", nativeLinuxInstaller: "install-vm.sh", nativeLinuxX64Bundle: $nativeLinuxX64Bundle}}' \
+            '{schemaVersion: 1, version: $version, repository: $repository, image: $image, platforms: {docker: ["linux/amd64", "linux/arm64"], kubernetes: ["linux/amd64", "linux/arm64"], installers: ["linux", "windows"]}, assets: {compose: "docker-compose.yml", demoCompose: "docker-compose.demo.yml", helmChart: "polysiem-chart.tgz", linuxInstaller: "install.sh", windowsInstaller: "install.ps1", linuxUpdater: "update.sh", linuxAutoUpdater: "auto-update.sh", nativeLinuxAutoUpdater: "native-auto-update.sh", windowsUpdater: "update.ps1", nativeLinuxInstaller: "install-vm.sh", nativeLinuxX64Bundle: $nativeLinuxX64Bundle}}' \
             > release/release-manifest.json
+
+      - name: Validate and package Helm chart
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          helm lint deploy/helm/polysiem
+          helm template polysiem deploy/helm/polysiem --namespace polysiem > /dev/null
+          helm package deploy/helm/polysiem \
+            --version "$VERSION" \
+            --app-version "$VERSION" \
+            --destination release
+          mv "release/polysiem-${VERSION}.tgz" release/polysiem-chart.tgz
 
       - name: Upload deployment assets
         uses: actions/upload-artifact@v7

@@ -1,0 +1,30 @@
+PolySIEM has been installed in namespace {{ .Release.Namespace }}.
+
+{{- if eq .Values.service.type "LoadBalancer" }}
+Wait for an external address:
+  kubectl --namespace {{ .Release.Namespace }} get service {{ include "polysiem.fullname" . }} --watch
+{{- else if eq .Values.service.type "NodePort" }}
+Find the allocated node port:
+  kubectl --namespace {{ .Release.Namespace }} get service {{ include "polysiem.fullname" . }}
+{{- else }}
+Open a local connection:
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "polysiem.fullname" . }} 3000:{{ .Values.service.port }}
+
+Then visit {{ .Values.config.appUrl }}.
+{{- end }}
+
+Check the rollout:
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "polysiem.fullname" . }}
+
+{{- if and (not .Values.secrets.existingSecret) .Values.secrets.keep }}
+The generated credential Secret is retained on uninstall.
+{{- end }}
+{{- if .Values.secrets.existingSecret }}
+After changing data in Secret {{ .Values.secrets.existingSecret }}, change rolloutRevision in the next Helm upgrade to restart the pods.
+{{- end }}
+{{- if and .Values.persistence.enabled .Values.persistence.keep }}
+The application PVC is retained on uninstall.
+{{- end }}
+{{- if and .Values.postgresql.enabled .Values.postgresql.persistence.enabled }}
+Back up PostgreSQL before manually deleting its StatefulSet PVC.
+{{- end }}

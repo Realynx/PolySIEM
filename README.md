@@ -35,6 +35,10 @@ For a Debian or Ubuntu VM/LXC where you'd rather skip Docker:
 curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash
 ```
 
+### Kubernetes
+
+[Install with Helm →](#kubernetes--helm)
+
 ## About PolySIEM
 
 If your homelab is anything like ours, the truth about it lives in a dozen places: the Proxmox UI, the firewall, a wiki that's six months stale, and your head. PolySIEM pulls that state into one place. It documents hosts, VMs, containers, services, networks, firewall policy, storage, and runbooks, and it remembers where each fact came from.
@@ -63,7 +67,7 @@ See [Security and threat intelligence](docs/SECURITY.md) for setup, privacy boun
 
 Every installer does the same basic job: generate secrets, start PostgreSQL and PolySIEM, and wait for the health check. When setup finishes, open `https://<your-server>:3000` and create the first administrator account.
 
-PolySIEM serves HTTPS out of the box with a self-signed certificate generated on first boot — your browser warns once until you trust or replace it. Admins can generate a new self-signed certificate (with your own hostnames) or upload one from an internal CA under **Settings → Web certificate**; changes apply live, no restart. Plain `http://` requests on the same port are redirected. Running behind your own TLS-terminating reverse proxy? Set `POLYSIEM_TLS=off` to serve plain HTTP instead.
+PolySIEM serves HTTPS out of the box with a self-signed certificate generated on first boot — your browser warns once until you trust or replace it. Admins can generate a new self-signed certificate (with your own hostnames) or upload one from an internal CA under **Settings → Web certificate**; changes apply live, no restart. Plain `http://` requests on the same port are redirected. Running behind your own TLS-terminating reverse proxy? Set `POLYSIEM_TLS=off` to serve plain HTTP instead. The Helm chart uses that HTTP mode by default so an Ingress can terminate TLS; set `config.tls=true` to use PolySIEM's built-in certificate instead.
 
 ### Linux — Docker (recommended)
 
@@ -82,6 +86,26 @@ irm https://github.com/Realynx/PolySIEM/releases/latest/download/install.ps1 | i
 ```
 
 The installation is stored under `%LOCALAPPDATA%\PolySIEM`.
+
+### Kubernetes — Helm
+
+Requires Helm 3 and a default StorageClass. The chart installs PolySIEM and PostgreSQL in the `polysiem` namespace:
+
+```bash
+helm upgrade --install polysiem https://github.com/Realynx/PolySIEM/releases/latest/download/polysiem-chart.tgz \
+  --namespace polysiem \
+  --create-namespace
+```
+
+From a source checkout, use `./deploy/helm/polysiem` in place of the release URL.
+
+When the rollout finishes, open a local connection:
+
+```bash
+kubectl --namespace polysiem port-forward service/polysiem 3000:3000
+```
+
+Visit `http://localhost:3000` and create the first administrator account. For an Ingress, external PostgreSQL, existing Secrets, and storage settings, see the chart's [`values.yaml`](deploy/helm/polysiem/values.yaml).
 
 ### Linux VM or LXC — Native
 

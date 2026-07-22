@@ -1,0 +1,3 @@
+{{- if and .Values.ingress.enabled (or (contains "localhost" .Values.config.appUrl) (contains "127.0.0.1" .Values.config.appUrl)) -}}
+{{- fail "config.appUrl must be the externally reachable URL when ingress.enabled is true" -}}
+{{- end -}}

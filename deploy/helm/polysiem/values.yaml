@@ -1,0 +1,179 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/realynx/polysiem
+  # Defaults to the chart appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+config:
+  # The default matches the port-forward command printed after installation.
+  # Set this to the externally reachable URL before exposing PolySIEM.
+  appUrl: http://localhost:3000
+  # Kubernetes commonly terminates TLS at an Ingress. Set true to use the
+  # container's built-in self-signed or administrator-provided certificate.
+  tls: false
+  githubRepository: Realynx/PolySIEM
+  # Required only when postgresql.enabled is false and secrets.existingSecret
+  # is empty. Prefer supplying sensitive values through an existing Secret.
+  databaseUrl: ""
+  # Leave empty to generate and retain a 64-character secret on first install.
+  appSecret: ""
+
+secrets:
+  # When set, this Secret must contain appSecret and databaseUrl. It must also
+  # contain databasePassword when the bundled PostgreSQL instance is enabled.
+  # The chart does not create or modify an existing Secret.
+  existingSecret: ""
+  keep: true
+  keys:
+    appSecret: app-secret
+    databaseUrl: database-url
+    databasePassword: database-password
+
+extraEnv: []
+extraEnvFrom: []
+
+migration:
+  maxAttempts: 90
+  retryDelaySeconds: 2
+
+# Increment this to restart pods after changing the contents of an existing
+# Secret referenced by secrets.existingSecret.
+rolloutRevision: ""
+
+service:
+  type: ClusterIP
+  annotations: {}
+  port: 3000
+  nodePort: null
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: polysiem.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+persistence:
+  enabled: true
+  keep: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: 17-alpine
+    pullPolicy: IfNotPresent
+  auth:
+    # These identity values are immutable after the bundled database initializes.
+    # Changing a password also requires an explicit ALTER ROLE inside PostgreSQL;
+    # the chart rejects a values-only rotation to prevent an application lockout.
+    username: polysiem
+    database: polysiem
+    # Leave empty to generate and retain a password on first install.
+    password: ""
+  service:
+    port: 5432
+  startupProbe:
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 60
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 8Gi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 70
+    runAsGroup: 70
+    fsGroup: 70
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop:
+        - ALL
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+startupProbe:
+  httpGet:
+    path: /api/health
+    port: http
+    scheme: HTTP
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 36
+
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+    scheme: HTTP
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+livenessProbe:
+  tcpSocket:
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+terminationGracePeriodSeconds: 30
