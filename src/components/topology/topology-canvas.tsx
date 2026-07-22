@@ -70,6 +70,8 @@ interface TopologyCanvasProps<NodeType extends Node> {
   /** fitView padding — maps tune this slightly for their density. */
   fitPadding?: number;
   edgesFocusable?: boolean;
+  /** Cull nodes and edges outside the viewport on especially dense maps. */
+  onlyRenderVisibleElements?: boolean;
   /** Height utilities for the outer card; content fills it. */
   heightClassName?: string;
   /** Overlays (legend, detail panels) rendered above the canvas. */
@@ -98,6 +100,7 @@ export function TopologyCanvas<NodeType extends Node>({
   onPaneClick,
   fitPadding = 0.1,
   edgesFocusable,
+  onlyRenderVisibleElements = false,
   heightClassName = "h-[calc(100vh-13rem)] min-h-[600px]",
   children,
 }: TopologyCanvasProps<NodeType>) {
@@ -136,6 +139,7 @@ export function TopologyCanvas<NodeType extends Node>({
         nodesConnectable={false}
         elementsSelectable={false}
         edgesFocusable={edgesFocusable}
+        onlyRenderVisibleElements={onlyRenderVisibleElements}
         // Exact layers prevent React Flow from automatically raising traces
         // connected to nested nodes above unrelated draggable cards.
         zIndexMode="manual"

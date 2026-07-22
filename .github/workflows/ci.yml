@@ -33,6 +33,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Code quality gate
+        run: npm run codefactor:check
+
       - name: Typecheck
         run: npm run typecheck
 

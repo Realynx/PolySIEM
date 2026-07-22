@@ -1,0 +1,4 @@
+interface:
+  display_name: "Enforce Code Quality"
+  short_description: "Audit and refactor repositories to strict gates"
+  default_prompt: "Use $enforce-code-quality to audit this repository, reduce complexity, and leave all quality gates passing."

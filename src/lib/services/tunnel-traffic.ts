@@ -53,7 +53,20 @@ export async function tunnelTraffic(window: string, now: number = Date.now()): P
   const documentedHostnames = new Set(
     inputs.flatMap((tunnel) => tunnel.ingressHostnames.map((hostname) => hostname.toLowerCase())),
   );
+  const documentedOwner = new Map(
+    inputs.flatMap((tunnel) => tunnel.ingressHostnames.map((hostname) => [hostname.toLowerCase(), tunnel.id] as const)),
+  );
+  const inputsById = new Map(inputs.map((tunnel) => [tunnel.id, tunnel]));
   for (const discovered of discoveredCloudflaredTunnels(integration)) {
+    const owners = new Set(
+      discovered.ingressHostnames
+        .map((hostname) => documentedOwner.get(hostname.toLowerCase()))
+        .filter((owner): owner is string => Boolean(owner)),
+    );
+    if (owners.size === 1) {
+      const owner = inputsById.get([...owners][0]);
+      if (owner) owner.connectorAliases = [...new Set([...(owner.connectorAliases ?? []), discovered.name])];
+    }
     const ingressHostnames = discovered.ingressHostnames.filter(
       (hostname) => !documentedHostnames.has(hostname.toLowerCase()),
     );

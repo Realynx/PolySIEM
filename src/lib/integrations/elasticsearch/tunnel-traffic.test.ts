@@ -57,6 +57,31 @@ describe("buildTrafficResult — hostname mode", () => {
     expect(result.tunnels.find((t) => t.tunnelId === "t1")!.total).toBe(10);
   });
 
+  it("normalizes URL-shaped hostname buckets", () => {
+    const result = buildTrafficResult({
+      window: "24h",
+      total: 10,
+      hostnameBuckets: [{ key: "https://F0X.APP:443/path", doc_count: 10 }],
+      hostBuckets: [],
+      tunnels: TUNNELS,
+    });
+    expect(result.tunnels.find((t) => t.tunnelId === "t1")!.total).toBe(10);
+  });
+
+  it("uses Cloudflared hostname buckets when the configured field cannot be attributed", () => {
+    const result = buildTrafficResult({
+      window: "24h",
+      total: 10,
+      hostnameBuckets: [{ key: "unknown.example.com", doc_count: 10 }],
+      fallbackHostnameBuckets: [{ key: "f0x.app", doc_count: 10 }],
+      hostBuckets: [],
+      tunnels: TUNNELS,
+    });
+
+    expect(result.mode).toBe("hostname");
+    expect(result.tunnels.find((t) => t.tunnelId === "t1")!.total).toBe(10);
+  });
+
   it("sorts tunnels by total desc", () => {
     const result = buildTrafficResult({
       window: "24h",
@@ -88,6 +113,58 @@ describe("buildTrafficResult — tunnel fallback mode", () => {
     expect(result.tunnels.find((t) => t.tunnelId === "t1")!.total).toBe(49);
     expect(result.tunnels.find((t) => t.tunnelId === "t2")!.total).toBe(30);
     expect(result.tunnels[0].byHostname).toBeUndefined();
+  });
+
+  it("matches connector hosts by origin IP and discovered aliases", () => {
+    const tunnels = [
+      { ...TUNNELS[0], connectorAliases: ["cloudflared-edge"] },
+      TUNNELS[1],
+    ];
+    const byIp = buildTrafficResult({
+      window: "24h",
+      total: 20,
+      hostnameBuckets: [],
+      hostBuckets: [{ key: "10.0.3.59", doc_count: 20 }],
+      tunnels,
+    });
+    const byAlias = buildTrafficResult({
+      window: "24h",
+      total: 30,
+      hostnameBuckets: [],
+      hostBuckets: [{ key: "CLOUDFLARED-EDGE", doc_count: 30 }],
+      tunnels,
+    });
+
+    expect(byIp.tunnels.find((t) => t.tunnelId === "t1")!.total).toBe(20);
+    expect(byAlias.tunnels.find((t) => t.tunnelId === "t1")!.total).toBe(30);
+  });
+
+  it("uses connector attribution when hostname buckets do not match", () => {
+    const result = buildTrafficResult({
+      window: "24h",
+      total: 79,
+      hostnameBuckets: [{ key: "unknown.example.com", doc_count: 79 }],
+      hostBuckets: [{ key: "obsidiancloudflared", doc_count: 79 }],
+      tunnels: TUNNELS,
+    });
+
+    expect(result.mode).toBe("tunnel");
+    expect(result.tunnels.find((t) => t.tunnelId === "t1")!.total).toBe(79);
+  });
+
+  it("does not present wholly unattributed events as zero traffic", () => {
+    const result = buildTrafficResult({
+      window: "24h",
+      total: 79,
+      hostnameBuckets: [{ key: "unknown.example.com", doc_count: 79 }],
+      hostBuckets: [{ key: "unknown-connector", doc_count: 79 }],
+      tunnels: TUNNELS,
+    });
+
+    expect(result.mode).toBe("unavailable");
+    expect(result.total).toBe(79);
+    expect(result.unattributed).toBe(79);
+    expect(result.reason).toContain("could not be attributed");
   });
 
   it("is unavailable when there are no buckets at all", () => {

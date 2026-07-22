@@ -13,12 +13,16 @@ import { MapLegend } from "@/components/topology/map-legend";
 import { EdgeDetails, type EdgeDetail, type EdgeDetailRow } from "@/components/topology/edge-details";
 import { useSavedPositions } from "@/components/topology/use-saved-positions";
 import { useBandwidth } from "@/components/topology/use-bandwidth";
+import {
+  applyFootprintBandwidth,
+  footprintBackgroundRefreshMs,
+} from "@/components/topology/footprint-live-updates";
 import { LiveRefreshControl } from "@/components/topology/live-refresh-control";
 import { FOOTPRINT_REFRESH_STORAGE_KEY, useRefreshInterval } from "@/components/topology/use-refresh-interval";
 import type { FootprintGraph, FootprintLane, FootprintMachine } from "@/lib/topology/footprint";
 import { FirewallNode, GatewayNode, InternetNode, LaneLabelNode, LaneNode, MachineNode, PolicyGroupNode } from "@/components/topology/footprint-lane-nodes";
 import { FpSwitchNode, RouteNode, TunnelNode, UnknownNode } from "@/components/topology/footprint-route-nodes";
-import { CLIENT_COLLAPSED_MAX, type FirewallNodeType, type FootprintFlowNode, type LaneLabelNodeType, type LaneNodeType } from "@/components/topology/footprint-node-model";
+import { CLIENT_COLLAPSED_MAX, type FootprintFlowNode } from "@/components/topology/footprint-node-model";
 import {
   applyFootprintTraffic,
   buildFlow,
@@ -158,6 +162,7 @@ export function FootprintMap({
 }) {
   const router = useRouter();
   const draggingRef = useRef(false);
+  const trafficRawRef = useRef<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(
     initialFocusId,
@@ -168,21 +173,22 @@ export function FootprintMap({
     FOOTPRINT_REFRESH_STORAGE_KEY,
   );
   const [isRefreshing, startRefresh] = useTransition();
+  const backgroundRefreshMs = footprintBackgroundRefreshMs(refreshMs);
   // v6 introduces Proxmox-derived VLAN lanes. Older child positions were
   // relative to "Unassigned" and would be invalid under their new parents.
   const { positions, savePosition, clearPositions, hasSaved } =
     useSavedPositions(storageKey);
 
-  // Refresh the server-derived footprint on the selected cadence. This keeps
-  // newly synced assets, network evidence, and published routes current without
-  // rebuilding the graph more often than the user requests.
+  // Structural data is expensive: a page refresh replaces the graph prop and
+  // reruns dagre + route geometry. Keep it fresh in the background without
+  // coupling that work to the 1–10s live-metric cadence.
   useEffect(() => {
     const timer = window.setInterval(() => {
       if (isRefreshing) return;
       startRefresh(() => router.refresh());
-    }, refreshMs);
+    }, backgroundRefreshMs);
     return () => window.clearInterval(timer);
-  }, [isRefreshing, refreshMs, router]);
+  }, [backgroundRefreshMs, isRefreshing, router]);
 
   // Live tunnel traffic loads after the map paints — DNS/exposure is already
   // baked into `graph`, so the map is fully useful before this resolves.
@@ -198,20 +204,22 @@ export function FootprintMap({
         if (!response.ok) throw new Error(String(response.status));
         const body = (await response.json()) as { data: TunnelTrafficPayload };
         const data = body.data;
-        if (data.mode !== "unavailable") {
-          setTrafficPayload(data);
+        const raw = JSON.stringify(data);
+        if (raw !== trafficRawRef.current) {
+          trafficRawRef.current = raw;
+          setTrafficPayload(data.mode === "unavailable" ? null : data);
         }
       } catch {
         /* offline / no ES source — counters just stay hidden */
       }
-      if (!controller.signal.aborted) timer = setTimeout(load, refreshMs);
+      if (!controller.signal.aborted) timer = setTimeout(load, backgroundRefreshMs);
     };
     void load();
     return () => {
       controller.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [graph.tunnels, refreshMs]);
+  }, [backgroundRefreshMs, graph.tunnels.length]);
 
   const traffic = useMemo(
     () =>
@@ -261,42 +269,7 @@ export function FootprintMap({
   const bandwidth = useBandwidth("1h", graph.lanes.length > 0, refreshMs);
   useEffect(() => {
     if (!bandwidth || !bandwidth.status.enabled) return;
-    const wanLaneNames = new Set(
-      graph.lanes.filter((l) => l.category === "wan").map((l) => l.name),
-    );
-    const wanIface =
-      bandwidth.interfaceByKey.get("wan") ??
-      bandwidth.interfaces.find(
-        (i) => i.name !== null && wanLaneNames.has(i.name),
-      ) ??
-      null;
-    setNodes((current) =>
-      current.map((node) => {
-        if (node.type === "lane" || node.type === "laneLabel") {
-          const laneNode = node as LaneNodeType | LaneLabelNodeType;
-          const iface = bandwidth.interfaceByName.get(laneNode.data.lane.name);
-          if (!iface) return node;
-          return {
-            ...laneNode,
-            data: {
-              ...laneNode.data,
-              bw: { inBps: iface.inBps, outBps: iface.outBps },
-            },
-          } as FootprintFlowNode;
-        }
-        if (node.type === "firewall" && wanIface) {
-          const fwNode = node as FirewallNodeType;
-          return {
-            ...fwNode,
-            data: {
-              ...fwNode.data,
-              wanBw: { inBps: wanIface.inBps, outBps: wanIface.outBps },
-            },
-          } as FootprintFlowNode;
-        }
-        return node;
-      }),
-    );
+    setNodes((current) => applyFootprintBandwidth(current, bandwidth, graph.lanes));
   }, [bandwidth, positioned, setNodes, graph.lanes]);
 
   const internetDetail = useMemo(
@@ -410,6 +383,7 @@ export function FootprintMap({
         setShowInternetDetail(false);
       }}
       fitPadding={0.08}
+      onlyRenderVisibleElements
       heightClassName={heightClassName ?? "h-[clamp(600px,72vh,820px)]"}
     >
       {/* Attack-surface summary */}

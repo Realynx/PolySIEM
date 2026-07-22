@@ -34,8 +34,10 @@ Then open `http://localhost:3000` and walk through the first-run installer to cr
 | `npm run db:studio` | Open Prisma Studio. |
 | `npm run typecheck` | Check TypeScript without emitting files. |
 | `npm run lint` | Run ESLint. |
+| `npm run codefactor:check` | Enforce zero warnings, complexity ≤15, and no duplicate imports. |
 | `npm test` | Run the Vitest suite once. |
 | `npm run check` | Run type checking, linting, and tests. |
+| `npm run quality:check` | Run every local quality gate, all tests, and the production build. |
 
 ## Architecture
 
@@ -67,8 +69,7 @@ A startup guard refuses to convert an existing PolySIEM database into a public d
 Run whatever focused tests are relevant while you iterate. Before opening a change for review, run the full check and a build:
 
 ```bash
-npm run check
-npm run build
+npm run quality:check
 ```
 
 Back to the [documentation hub](README.md).

@@ -18,7 +18,7 @@
     "start": "next start",
     "codefactor:collect": "node scripts/collect-codefactor-issues.mjs",
     "codefactor:collect:browser": "node scripts/collect-codefactor-issues.mjs --browser",
-    "codefactor:check": "eslint --rule \"complexity: [error, 15]\" --rule \"no-duplicate-imports: error\"",
+    "codefactor:check": "eslint . --max-warnings=0 --rule \"complexity: [error, 15]\" --rule \"no-duplicate-imports: error\"",
     "lint": "eslint",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
@@ -29,7 +29,8 @@
     "demo:down": "docker compose -f deploy/docker-compose.demo.yml down",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run lint && npm run test"
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "quality:check": "npm run typecheck && npm run lint -- --max-warnings=0 && npm run codefactor:check && npm test && npm run build"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.5.1",

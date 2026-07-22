@@ -3,6 +3,7 @@ import "server-only";
 import { isMock, type DriverConfig } from "../types";
 import { esFetch } from "./client";
 import { detectSources } from "./detect";
+import { normalizePublishedHostname } from "./discovery";
 import { elasticsearchSettingsSchema } from "@/lib/validators/integrations";
 
 /**
@@ -22,6 +23,7 @@ export interface TunnelTrafficInput {
   name: string;
   originIp?: string | null;
   ingressHostnames: string[];
+  connectorAliases?: string[];
 }
 
 export interface TunnelTrafficRow {
@@ -47,8 +49,19 @@ interface TermBucket {
 
 /** Candidate `host.name` values a tunnel's connector logs under. */
 function hostAliases(tunnel: TunnelTrafficInput): string[] {
-  const aliases = new Set<string>([tunnel.name.toLowerCase(), tunnel.name.toLowerCase().replace(/\s+/g, "")]);
+  const names = [tunnel.name, tunnel.originIp, ...(tunnel.connectorAliases ?? [])];
+  const aliases = new Set<string>();
+  for (const name of names) {
+    const normalized = name?.trim().toLowerCase();
+    if (!normalized) continue;
+    aliases.add(normalized);
+    aliases.add(normalized.replace(/\s+/g, ""));
+  }
   return [...aliases];
+}
+
+function attributedTotal(result: TunnelTrafficResult): number {
+  return result.tunnels.reduce((sum, tunnel) => sum + tunnel.total, 0);
 }
 
 function hostnameTraffic(
@@ -60,14 +73,15 @@ function hostnameTraffic(
   const owner = new Map<string, string>();
   for (const tunnel of tunnels) {
     for (const hostname of tunnel.ingressHostnames) {
-      const key = hostname.trim().toLowerCase();
+      const key = normalizePublishedHostname(hostname);
       if (key && !owner.has(key)) owner.set(key, tunnel.id);
     }
   }
   const rows = new Map(tunnels.map((tunnel) => [tunnel.id, { tunnelId: tunnel.id, name: tunnel.name, total: 0 } as TunnelTrafficRow]));
   let unattributed = 0;
   for (const bucket of buckets) {
-    const tunnelId = owner.get(bucket.key.trim().toLowerCase());
+    const normalizedHostname = normalizePublishedHostname(bucket.key);
+    const tunnelId = normalizedHostname ? owner.get(normalizedHostname) : undefined;
     if (!tunnelId) {
       unattributed += bucket.doc_count;
       continue;
@@ -77,6 +91,8 @@ function hostnameTraffic(
     (row.byHostname ??= []).push({ hostname: bucket.key, count: bucket.doc_count });
   }
   for (const row of rows.values()) row.byHostname?.sort((a, b) => b.count - a.count);
+  const attributed = [...rows.values()].reduce((sum, row) => sum + row.total, 0);
+  unattributed = Math.max(unattributed, total - attributed);
   return { window, mode: "hostname", total, unattributed, tunnels: [...rows.values()].sort((a, b) => b.total - a.total) };
 }
 
@@ -95,6 +111,7 @@ function hostTraffic(
     if (!tunnelId) unattributed += bucket.doc_count;
     else rows.get(tunnelId)!.total += bucket.doc_count;
   }
+  unattributed = Math.max(unattributed, total - [...rows.values()].reduce((sum, row) => sum + row.total, 0));
   return { window, mode: "tunnel", total, unattributed, tunnels: [...rows.values()].sort((a, b) => b.total - a.total) };
 }
 
@@ -107,25 +124,31 @@ export function buildTrafficResult(params: {
   window: string;
   total: number;
   hostnameBuckets: TermBucket[];
+  fallbackHostnameBuckets?: TermBucket[];
   hostBuckets: TermBucket[];
   tunnels: TunnelTrafficInput[];
 }): TunnelTrafficResult {
-  const { window, total, hostnameBuckets, hostBuckets, tunnels } = params;
-  if (hostnameBuckets.length > 0) {
-    return hostnameTraffic(window, total, hostnameBuckets, tunnels);
+  const { window, total, hostnameBuckets, fallbackHostnameBuckets = [], hostBuckets, tunnels } = params;
+  for (const buckets of [hostnameBuckets, fallbackHostnameBuckets]) {
+    if (buckets.length === 0) continue;
+    const hostnameResult = hostnameTraffic(window, total, buckets, tunnels);
+    if (attributedTotal(hostnameResult) > 0) return hostnameResult;
   }
 
   if (hostBuckets.length > 0) {
-    return hostTraffic(window, total, hostBuckets, tunnels);
+    const hostResult = hostTraffic(window, total, hostBuckets, tunnels);
+    if (attributedTotal(hostResult) > 0) return hostResult;
   }
 
-  return { window, mode: "unavailable", total, unattributed: 0, tunnels: [], reason: "no tunnel events in range" };
+  const reason = total > 0 ? "tunnel events could not be attributed" : "no tunnel events in range";
+  return { window, mode: "unavailable", total, unattributed: total, tunnels: [], reason };
 }
 
 interface EsAggResponse {
   hits?: { total?: { value?: number } | number };
   aggregations?: {
     by_hostname?: { buckets?: TermBucket[] };
+    by_cloudflared_hostname?: { buckets?: TermBucket[] };
     by_host?: { buckets?: TermBucket[] };
   };
 }
@@ -133,6 +156,37 @@ interface EsAggResponse {
 function totalOf(res: EsAggResponse): number {
   const total = res.hits?.total;
   return typeof total === "number" ? total : (total?.value ?? 0);
+}
+
+const hostnameAgg = (field: string) => ({ terms: { field, size: 500 } });
+const hostAgg = (field: string) => ({ terms: { field, size: 50 } });
+const keywordField = (field: string) => field.endsWith(".keyword") ? field : `${field}.keyword`;
+
+function retryAggs(hostnameField: string, hostField: string) {
+  return {
+    by_hostname: hostnameAgg(keywordField(hostnameField)),
+    by_cloudflared_hostname: hostnameAgg("cloudflared.hostname.keyword"),
+    by_host: hostAgg(keywordField(hostField)),
+  };
+}
+
+async function fetchTrafficAggs(
+  cfg: DriverConfig,
+  path: string,
+  body: Record<string, unknown>,
+  hostnameField: string,
+  hostField: string,
+): Promise<EsAggResponse> {
+  try {
+    return await esFetch<EsAggResponse>(cfg, path, body);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/fielddata|keyword|text field|illegal_argument/i.test(message)) throw err;
+    return esFetch<EsAggResponse>(cfg, path, {
+      ...body,
+      aggs: retryAggs(hostnameField, hostField),
+    });
+  }
 }
 
 /** Query cloudflared-* for per-hostname (and per-host fallback) counts in the window. */
@@ -150,34 +204,21 @@ export async function fetchTunnelTraffic(
     track_total_hits: true,
     query: { range: { [s.timestampField]: { gte: `now-${window}` } } },
     aggs: {
-      by_hostname: { terms: { field: s.tunnelHostnameField, size: 500 } },
-      by_host: { terms: { field: s.tunnelHostField, size: 50 } },
+      by_hostname: hostnameAgg(s.tunnelHostnameField),
+      by_cloudflared_hostname: hostnameAgg("cloudflared.hostname"),
+      by_host: hostAgg(s.tunnelHostField),
     },
   };
 
-  let res: EsAggResponse;
-  try {
-    res = await esFetch<EsAggResponse>(cfg, path, body);
-  } catch (err) {
-    // Field may be analyzed text — retry the hostname agg on .keyword once.
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!s.tunnelHostnameField.endsWith(".keyword") && /fielddata|keyword|text field|illegal_argument/i.test(msg)) {
-      res = await esFetch<EsAggResponse>(cfg, path, {
-        ...body,
-        aggs: {
-          by_hostname: { terms: { field: `${s.tunnelHostnameField}.keyword`, size: 500 } },
-          by_host: { terms: { field: `${s.tunnelHostField}.keyword`, size: 50 } },
-        },
-      });
-    } else {
-      throw err;
-    }
-  }
+  // Terms cannot aggregate analyzed text. Retry all candidate fields on their
+  // keyword subfields so one shipper-specific mapping cannot sink the query.
+  const res = await fetchTrafficAggs(cfg, path, body, s.tunnelHostnameField, s.tunnelHostField);
 
   return buildTrafficResult({
     window,
     total: totalOf(res),
     hostnameBuckets: res.aggregations?.by_hostname?.buckets ?? [],
+    fallbackHostnameBuckets: res.aggregations?.by_cloudflared_hostname?.buckets ?? [],
     hostBuckets: res.aggregations?.by_host?.buckets ?? [],
     tunnels,
   });
