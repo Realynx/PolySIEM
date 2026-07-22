@@ -2,6 +2,10 @@
   <img src="public/brand/polysiem-readme.svg" width="760" alt="PolySIEM — Homelab intelligence, documented">
 </p>
 
+<h3 align="center">
+  <a href="https://demo-polysiem.f0x.app/">Explore the live demo</a> · Login: <code>demo</code> / <code>demo</code>
+</h3>
+
 <p align="center">
   Self-hosted inventory, network context, security visibility, and runbooks—kept in sync with your homelab.
 </p>
@@ -15,9 +19,21 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-<p align="center">
-  <a href="https://demo-polysiem.f0x.app/"><strong>Explore the live demo</strong></a> · Login: <code>demo</code> / <code>demo</code>
-</p>
+### Linux — Docker (recommended)
+
+For Debian, Ubuntu, Fedora, and RHEL-family hosts:
+
+```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install.sh | bash
+```
+
+### Linux VM or LXC — Native
+
+For a Debian or Ubuntu VM/LXC where you'd rather skip Docker:
+
+```bash
+curl -fsSL https://github.com/Realynx/PolySIEM/releases/latest/download/install-vm.sh | bash
+```
 
 ## About PolySIEM
 
@@ -26,11 +42,11 @@ If your homelab is anything like ours, the truth about it lives in a dozen place
 It connects to Proxmox, OPNsense, UniFi, Cloudflare, Tailscale, Elasticsearch, OTX, Censys, and SecurityTrails. Once things are wired up you can search and annotate the inventory (with audit history and network context stitched across integrations), dig through logs, investigate threats, build workflows, and expose scoped documentation through MCP. It runs entirely on your own infrastructure, with encrypted credentials, roles, and no default accounts.
 
 <p align="center">
-  <img src="docs/images/about-page.png" width="700" alt="PolySIEM about page: a neofetch-style terminal reporting cluster, CPU, memory, storage, container, and VM totals">
+  <img src="docs/images/demo-dashboard.png" width="1200" alt="PolySIEM demo dashboard showing the lab network map, inventory summary, and integration health">
 </p>
 
 <p align="center">
-  <sub>The in-app about page — a live <code>neofetch</code> for your lab.</sub>
+  <sub>The PolySIEM dashboard — live inventory, network context, and integration health in one view.</sub>
 </p>
 
 ## Security, AI, and Suricata
