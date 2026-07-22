@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { Loader2, LockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -40,7 +41,7 @@ export function LoginForm({
       const next = searchParams.get("next");
       const safeNext =
         next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : "/";
-      router.push(safeNext);
+      pushWithNavigationFeedback(router, safeNext);
       router.refresh();
     } catch {
       setError("Could not reach the server");

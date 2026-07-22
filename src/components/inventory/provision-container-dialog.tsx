@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Box, Info, Loader2, Rocket } from "lucide-react";
 import { toast } from "sonner";
@@ -157,7 +158,9 @@ function useProvisionContainerForm() {
     onSuccess: (result) => {
       toast.success(`Provisioned ${result.hostname} as CT ${result.vmid}`);
       setOpen(false);
-      if (result.inventoryId) router.push(`/inventory/containers/${result.inventoryId}`);
+      if (result.inventoryId) {
+        pushWithNavigationFeedback(router, `/inventory/containers/${result.inventoryId}`);
+      }
       else router.refresh();
     },
     onError: (err: Error) => toast.error(err.message, { duration: 10_000 }),

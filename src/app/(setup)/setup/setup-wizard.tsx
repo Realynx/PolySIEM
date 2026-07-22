@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import {
   ArrowLeft,
   ArrowRight,
@@ -206,7 +207,7 @@ export function SetupWizard({
 
   async function finishInstaller(tutorialSkipped: boolean) {
     if (!(await updateInstaller({ action: "complete", tutorialSkipped }))) return;
-    router.push("/");
+    pushWithNavigationFeedback(router, "/");
     router.refresh();
   }
 

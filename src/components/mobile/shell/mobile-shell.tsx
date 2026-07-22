@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import { LockKeyhole } from "lucide-react";
-import { NavigationProgress } from "@/components/shell/navigation-progress";
 import { MobileTabBar } from "./mobile-tab-bar";
 import type { MobileShellUser } from "./mobile-more-sheet";
 
@@ -22,7 +21,6 @@ export function MobileShell({
 }) {
   return (
     <div className="flex min-h-svh flex-col">
-      <NavigationProgress />
       {demoLocked && (
         <div className="flex items-center justify-center gap-2 border-b border-violet-500/20 bg-violet-500/10 px-4 py-2 text-center text-xs font-medium text-violet-700 dark:text-violet-300">
           <LockKeyhole className="size-3.5 shrink-0" /> Public demo — persistent changes are locked.

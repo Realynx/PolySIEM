@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation } from "@tanstack/react-query";
 import { Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -40,7 +41,7 @@ export function DeleteKeyButton({
     onSuccess: () => {
       toast.success(`Deleted ${name}`);
       setOpen(false);
-      if (pathname !== "/keys") router.push("/keys");
+      if (pathname !== "/keys") pushWithNavigationFeedback(router, "/keys");
       router.refresh();
     },
     onError: (err: Error) => toast.error(err.message),

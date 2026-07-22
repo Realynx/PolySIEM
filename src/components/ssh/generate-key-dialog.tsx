@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation } from "@tanstack/react-query";
 import { Download, KeyRound, Loader2, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
@@ -73,7 +74,7 @@ export function GenerateKeyDialog() {
     setName("");
     setComment("");
     setOwnerLabel("");
-    if (keyId) router.push(`/keys/${keyId}`);
+    if (keyId) pushWithNavigationFeedback(router, `/keys/${keyId}`);
   }
 
   return (

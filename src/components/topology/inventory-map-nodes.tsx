@@ -2,6 +2,7 @@
 
 import { memo } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { Cable, Container, HardDrive, Monitor, Server, ShieldCheck, type LucideIcon } from "lucide-react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { formatBytes } from "@/lib/format";
@@ -101,7 +102,7 @@ function GuestChip({ guest }: { guest: MapGuest }) {
       title={`${guest.name}${guest.vmid != null ? ` (${guest.type === "vm" ? "VM" : "CT"} ${guest.vmid})` : ""}${guest.osName ? ` · ${guest.osName}` : ""}`}
       onClick={(e) => {
         e.stopPropagation();
-        router.push(href);
+        pushWithNavigationFeedback(router, href);
       }}
       className={cn(
         "nodrag flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-transparent bg-muted/60 px-1.5 text-left transition-colors hover:border-primary/50 hover:bg-muted",
@@ -188,7 +189,7 @@ export const HostCardNode = memo(function HostCardNode({ data, width, height }: 
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          router.push(`/inventory/hosts/${data.id}`);
+          pushWithNavigationFeedback(router, `/inventory/hosts/${data.id}`);
         }}
         className="nodrag group flex w-full cursor-pointer flex-col justify-center rounded-lg text-left"
         style={{ height: HEADER_HEIGHT - 4 }}

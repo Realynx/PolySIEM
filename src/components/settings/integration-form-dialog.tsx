@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -128,7 +129,7 @@ export function IntegrationFormDialog({
       toast.success(isEdit ? `Updated ${form.name}` : `Added ${form.name}`);
       onOpenChange(false);
       if (!isEdit && form.type === "EDGE_NAT_SERVER") {
-        router.push("/network/edge-networks");
+        pushWithNavigationFeedback(router, "/network/edge-networks");
       } else {
         router.refresh();
       }

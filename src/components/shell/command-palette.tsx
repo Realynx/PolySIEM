@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { Box, Container, FileText, Globe, Monitor, Network, Server, Settings, Users } from "lucide-react";
 import {
   Command,
@@ -85,7 +86,7 @@ export function CommandPalette({ open, onOpenChange, isAdmin }: CommandPalettePr
   function go(href: string) {
     onOpenChange(false);
     setQuery("");
-    router.push(href);
+    pushWithNavigationFeedback(router, href);
   }
 
   const grouped = (results ?? []).reduce<Partial<Record<SearchKind, SearchResult[]>>>((acc, r) => {

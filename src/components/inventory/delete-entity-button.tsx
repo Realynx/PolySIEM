@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { toast } from "sonner";
 import { Loader2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -40,7 +41,7 @@ export function DeleteEntityButton({ apiPath, entityLabel, redirectTo, iconOnly 
     try {
       await apiSend(apiPath, "DELETE");
       toast.success(`Deleted ${entityLabel}`);
-      if (redirectTo) router.push(redirectTo);
+      if (redirectTo) pushWithNavigationFeedback(router, redirectTo);
       router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Delete failed");

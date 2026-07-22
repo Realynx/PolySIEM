@@ -2,6 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import Link from "next/link";
 import { toast } from "sonner";
 import { Loader2, Save } from "lucide-react";
@@ -56,11 +57,11 @@ export function DocEditor({ mode, pages, doc, defaultParentId, aiSlot }: DocEdit
       if (mode === "create") {
         const created = await apiSend<{ slug: string }>("/api/docs", "POST", body);
         toast.success(`Created “${body.title}”`);
-        router.push(`/docs/${created.slug}`);
+        pushWithNavigationFeedback(router, `/docs/${created.slug}`);
       } else if (doc) {
         await apiSend(`/api/docs/${doc.id}`, "PATCH", body);
         toast.success("Page saved");
-        router.push(`/docs/${doc.slug}`);
+        pushWithNavigationFeedback(router, `/docs/${doc.slug}`);
       }
       router.refresh();
     } catch (err) {

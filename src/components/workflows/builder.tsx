@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Background,
@@ -480,7 +481,7 @@ function BuilderInner({ workflowId, isAdmin }: { workflowId: string; isAdmin: bo
 
   const goBack = useCallback(() => {
     if (dirty && !window.confirm("You have unsaved changes — leave without saving?")) return;
-    router.push("/workflows");
+    pushWithNavigationFeedback(router, "/workflows");
   }, [dirty, router]);
 
   // ----- template variables for the selected node's config panel -----
@@ -530,7 +531,10 @@ function BuilderInner({ workflowId, isAdmin }: { workflowId: string; isAdmin: bo
           <Button variant="outline" onClick={() => workflowQuery.refetch()}>
             Retry
           </Button>
-          <Button variant="ghost" onClick={() => router.push("/workflows")}>
+          <Button
+            variant="ghost"
+            onClick={() => pushWithNavigationFeedback(router, "/workflows")}
+          >
             <ArrowLeft className="size-4" /> All workflows
           </Button>
         </div>

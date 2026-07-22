@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation } from "@tanstack/react-query";
 import { Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -51,7 +52,7 @@ export function AddSwitchDialog() {
       setOpen(false);
       setName("");
       setRawConfig("");
-      router.push(`/network/switches/${data.config.id}`);
+      pushWithNavigationFeedback(router, `/network/switches/${data.config.id}`);
       router.refresh();
     },
     onError: (err: Error) => toast.error(err.message),

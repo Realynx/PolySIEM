@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { replaceWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation } from "@tanstack/react-query";
 import {
   FlaskConical,
@@ -351,7 +352,9 @@ export function IntegrationsManager({
         onOpenChange={(open) => {
           if (!open) {
             setEditTarget(null);
-            if (initialEditId) router.replace("/settings/integrations");
+            if (initialEditId) {
+              replaceWithNavigationFeedback(router, "/settings/integrations");
+            }
           }
         }}
         integration={editTarget}

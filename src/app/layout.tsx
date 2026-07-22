@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import type { Metadata, Viewport } from "next";
 import { Plus_Jakarta_Sans, Geist_Mono } from "next/font/google";
 import { cookies } from "next/headers";
@@ -7,6 +8,7 @@ import { isMobileView } from "@/lib/device";
 import { getSitePresentation } from "@/lib/site-presentation";
 import { MODE_COOKIE, THEME_COOKIE, isFixedThemeMode, isThemeColor } from "@/lib/theme";
 import { ReducedEffectsProbe } from "@/components/render/reduced-effects-probe";
+import { NavigationProgress } from "@/components/shell/navigation-progress";
 import {
   REDUCED_EFFECTS_CLASS,
   RENDER_MODE_COOKIE,
@@ -101,7 +103,12 @@ export default async function RootLayout({
     >
       <body className="antialiased">
         <ReducedEffectsProbe />
-        <Providers defaultMode={mode}>{children}</Providers>
+        <Providers defaultMode={mode}>
+          <Suspense fallback={null}>
+            <NavigationProgress />
+          </Suspense>
+          {children}
+        </Providers>
         <ServiceWorkerRegistration />
       </body>
     </html>

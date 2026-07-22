@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
@@ -193,7 +194,7 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
           aria-label={
             tab === "edge" ? "Add Edge NAT server" : tab === "tailscale" ? "Connect Tailscale" : "Connect Cloudflare"
           }
-          onClick={() => router.push(ADD_HREFS[tab])}
+          onClick={() => pushWithNavigationFeedback(router, ADD_HREFS[tab])}
         >
           <Plus />
         </MobileFab>

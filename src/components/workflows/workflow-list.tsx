@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import {
   CircleAlert,
   CircleCheck,
@@ -229,7 +230,7 @@ export function WorkflowList({ isAdmin }: { isAdmin: boolean }) {
               <TableRow
                 key={wf.id}
                 className="cursor-pointer"
-                onClick={() => router.push(`/workflows/${wf.id}`)}
+                onClick={() => pushWithNavigationFeedback(router, `/workflows/${wf.id}`)}
               >
                 <TableCell>
                   <p className="font-medium">{wf.name}</p>
@@ -271,7 +272,9 @@ export function WorkflowList({ isAdmin }: { isAdmin: boolean }) {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => router.push(`/workflows/${wf.id}`)}>
+                      <DropdownMenuItem
+                        onClick={() => pushWithNavigationFeedback(router, `/workflows/${wf.id}`)}
+                      >
                         <PencilRuler className="size-4" /> Open builder
                       </DropdownMenuItem>
                       {isAdmin && (

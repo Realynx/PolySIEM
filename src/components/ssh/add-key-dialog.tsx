@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation } from "@tanstack/react-query";
 import { CircleCheck, CircleX, Loader2, Plus, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
@@ -59,7 +60,9 @@ export function AddKeyDialog() {
       setOwnerLabel("");
       setPurpose("");
       setText("");
-      if (data.keys.length === 1) router.push(`/keys/${data.keys[0].id}`);
+      if (data.keys.length === 1) {
+        pushWithNavigationFeedback(router, `/keys/${data.keys[0].id}`);
+      }
       router.refresh();
     },
     onError: (err: Error) => toast.error(err.message),

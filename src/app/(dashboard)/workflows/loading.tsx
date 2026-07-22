@@ -1,5 +1,5 @@
 import { OperationsListPageSkeleton } from "@/components/shell/route-loading-skeleton";
 
-export default function Loading() {
+export default function WorkflowsLoading() {
   return <OperationsListPageSkeleton />;
 }

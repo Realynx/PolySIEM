@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useNodesState, type EdgeMouseHandler, type EdgeTypes, type NodeMouseHandler, type NodeTypes } from "@xyflow/react";
 import { Activity, Cloud, Globe, Pin, Radar, ShieldAlert, ShieldCheck, Wifi } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -353,7 +354,7 @@ export function FootprintMap({
       node.type === "machine" || node.type === "fpSwitch"
         ? (node.data as { machine: FootprintMachine }).machine.detailHref
         : null;
-    if (href) router.push(href);
+    if (href) pushWithNavigationFeedback(router, href);
   };
 
   const handleEdgeClick: EdgeMouseHandler = (_event, edge) => {

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { replaceWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 
 /**
  * URL-synced list filtering shared by the desktop TableToolbar and the mobile
@@ -21,7 +22,11 @@ export function useUrlFilters() {
         else params.set(key, value);
       }
       params.delete("page");
-      router.replace(params.size > 0 ? `${pathname}?${params}` : pathname, { scroll: false });
+      replaceWithNavigationFeedback(
+        router,
+        params.size > 0 ? `${pathname}?${params}` : pathname,
+        { scroll: false },
+      );
     },
     [router, pathname, searchParams],
   );

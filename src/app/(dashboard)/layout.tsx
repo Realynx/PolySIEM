@@ -6,7 +6,6 @@ import { isMobileView } from "@/lib/device";
 import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { getInstanceName, getOllamaConfig, isSetupCompleted } from "@/lib/settings";
 import { ChatDock } from "@/components/chat/chat-dock";
-import { NavigationProgress } from "@/components/shell/navigation-progress";
 import { PrivacyProvider } from "@/components/privacy/privacy-provider";
 import { SidebarNav } from "@/components/shell/sidebar";
 import { Topbar } from "@/components/shell/topbar";
@@ -70,7 +69,6 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <SidebarNav instanceName={shellIdentity.instanceName} isAdmin={user.role === "ADMIN"} />
         </aside>
         <div className="flex min-w-0 flex-1 flex-col md:pl-60">
-          <NavigationProgress />
           <Topbar instanceName={shellIdentity.instanceName} user={shellUser} />
           {demoLocked && (
             <div className="flex items-center justify-center gap-2 border-b border-violet-500/20 bg-violet-500/10 px-4 py-2 text-center text-xs font-medium text-violet-700 dark:text-violet-300">

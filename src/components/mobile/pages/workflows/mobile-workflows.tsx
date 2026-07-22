@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Plus, Workflow } from "lucide-react";
 import { toast } from "sonner";
@@ -154,7 +155,7 @@ function CreateWorkflowSheet({
     onSuccess: (dto) => {
       queryClient.invalidateQueries({ queryKey: wfKeys.list });
       toast.success(`Workflow "${dto.name}" created`);
-      router.push(`/workflows/${dto.id}`);
+      pushWithNavigationFeedback(router, `/workflows/${dto.id}`);
     },
     onError: (err: Error) => toast.error(err.message),
   });
