@@ -57,15 +57,19 @@ export function MobileHome({
   tiles,
   footprint,
   hasFootprint,
+  footprintUnavailableReason,
   integrations,
+  integrationCount,
   integrationIcons,
   pools,
   isAdmin,
 }: {
   tiles: HomeTile[];
-  footprint: FootprintGraph;
+  footprint: FootprintGraph | null;
   hasFootprint: boolean;
+  footprintUnavailableReason?: string | null;
   integrations: HomeIntegration[];
+  integrationCount: number;
   integrationIcons: Record<IntegrationTypeValue, LucideIcon>;
   pools: HomePool[];
   isAdmin: boolean;
@@ -100,7 +104,7 @@ export function MobileHome({
         </div>
 
         {/* Attack-surface strip (chips the desktop map overlays) */}
-        {hasFootprint && (
+        {hasFootprint && footprint && (
           <MobileStatStrip>
             <MobileStat
               label="Open ports"
@@ -143,7 +147,7 @@ export function MobileHome({
             ) : undefined
           }
         >
-          {hasFootprint ? (
+          {hasFootprint && footprint ? (
             <div className="-mx-3.5 h-[42svh]">
               <FootprintMap
                 graph={footprint}
@@ -154,9 +158,9 @@ export function MobileHome({
           ) : (
             <MobileEmpty
               icon={<MapIcon />}
-              title="No footprint to draw yet"
-              description="Connect an integration and the dashboard will map your whole lab: machines, networks, and every inbound path."
-              action={addIntegration}
+              title={footprintUnavailableReason ? "Topology map paused" : "No footprint to draw yet"}
+              description={footprintUnavailableReason ?? "Connect an integration and the dashboard will map your whole lab: machines, networks, and every inbound path."}
+              action={footprintUnavailableReason ? undefined : addIntegration}
             />
           )}
         </MobileSection>
@@ -215,6 +219,11 @@ export function MobileHome({
                 );
               })}
             </MobileList>
+          )}
+          {integrationCount > integrations.length && (
+            <p className="px-1 pt-2 text-xs text-muted-foreground">
+              Showing {integrations.length} of {integrationCount} integrations.
+            </p>
           )}
         </MobileSection>
 

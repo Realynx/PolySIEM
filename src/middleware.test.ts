@@ -58,6 +58,24 @@ describe("public demo middleware lock", () => {
     ).toBe(200);
   });
 
+  it("uses a nonce-based production CSP without executable inline scripts", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const response = middleware(new NextRequest("http://localhost/login"));
+    const policy = response.headers.get("Content-Security-Policy");
+
+    expect(policy).toContain("script-src 'self' 'nonce-");
+    expect(policy).toContain("'strict-dynamic'");
+    expect(policy).toContain("object-src 'none'");
+    expect(policy).not.toContain("'unsafe-eval'");
+    expect(policy).not.toContain("script-src 'self' 'unsafe-inline'");
+  });
+
+  it("keeps eval limited to local development tooling", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const response = middleware(new NextRequest("http://localhost/login"));
+    expect(response.headers.get("Content-Security-Policy")).toContain("'unsafe-eval'");
+  });
+
   it("keeps social preview images public without a session", () => {
     for (const path of ["/opengraph-image", "/twitter-image"]) {
       const response = middleware(new NextRequest(`http://localhost${path}`));

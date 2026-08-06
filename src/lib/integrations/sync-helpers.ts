@@ -1,6 +1,7 @@
 import { Prisma, type Source } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { pickNetworkForIp, type NetworkRef } from "./net";
+import { assertDatasetBudget } from "@/lib/dataset-budget";
 
 export interface FamilyCounts {
   created: number;
@@ -14,12 +15,20 @@ export function newCounts(): FamilyCounts {
 
 export type SyncStats = Record<string, FamilyCounts>;
 
+const SYNC_DATASET_BUDGET = {
+  networks: 10_000,
+  interfacesPerIntegration: 100_000,
+} as const;
+
 /** Networks with a CIDR used for IP → network containment lookups. */
 export async function loadNetworkRefs(): Promise<NetworkRef[]> {
-  return prisma.network.findMany({
+  const rows = await prisma.network.findMany({
     where: { cidr: { not: null }, status: { not: "REMOVED" } },
     select: { id: true, cidr: true },
+    take: SYNC_DATASET_BUDGET.networks + 1,
   });
+  assertDatasetBudget("Active sync networks", rows, SYNC_DATASET_BUDGET.networks);
+  return rows;
 }
 
 export interface DesiredInterface {
@@ -51,11 +60,14 @@ export async function syncInterfaces(
   networks: NetworkRef[],
   pruneMissing: boolean,
 ): Promise<FamilyCounts> {
+  assertDatasetBudget("Interfaces in one sync snapshot", desired, SYNC_DATASET_BUDGET.interfacesPerIntegration);
   const counts = newCounts();
   const existing = await prisma.networkInterface.findMany({
     where: { integrationId },
     select: { id: true, externalId: true },
+    take: SYNC_DATASET_BUDGET.interfacesPerIntegration + 1,
   });
+  assertDatasetBudget("Stored interfaces for one integration", existing, SYNC_DATASET_BUDGET.interfacesPerIntegration);
   const byExt = new Map(existing.map((e) => [e.externalId, e.id]));
 
   for (const iface of desired) {

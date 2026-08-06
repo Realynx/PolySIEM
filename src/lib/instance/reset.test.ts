@@ -99,6 +99,8 @@ describe("clearInstance", () => {
   it("scopes the truncate statement to explicit quoted model tables", () => {
     const sql = instanceTruncateSql();
     expect(sql).toMatch(/^TRUNCATE TABLE /);
+    expect(sql).toContain('"RateLimitBucket"');
+    expect(sql).toContain('"WorkflowWebhook"');
     expect(sql).toContain('"User"');
     expect(sql).toContain('"AppSetting"');
     expect(sql).toContain('"IntegrationConfig"');

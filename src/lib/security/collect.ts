@@ -2,6 +2,7 @@ import "server-only";
 
 import { prisma } from "@/lib/db";
 import { verifyPassword } from "@/lib/auth/password";
+import { assertDatasetBudget } from "@/lib/dataset-budget";
 import type {
   SecuritySnapshot,
   SnapshotDyndnsHost,
@@ -19,6 +20,19 @@ import type {
  */
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
+
+const SECURITY_BUDGET = {
+  firewallRules: 25_000,
+  portForwards: 10_000,
+  dyndnsHosts: 10_000,
+  tunnelHostnames: 10_000,
+  wirelessNetworks: 10_000,
+  vms: 10_000,
+  containers: 10_000,
+  devices: 5_000,
+  sshKeyDeployments: 50_000,
+  services: 20_000,
+} as const;
 
 /** True when the seeded "admin" account still verifies against "admin". */
 async function detectDefaultAdminPassword(): Promise<boolean> {
@@ -113,6 +127,7 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
         descriptionText: true,
         sequence: true,
       },
+      take: SECURITY_BUDGET.firewallRules + 1,
     }),
     prisma.portForward.findMany({
       where: notRemoved,
@@ -129,17 +144,21 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
         targetPort: true,
         descriptionText: true,
       },
+      take: SECURITY_BUDGET.portForwards + 1,
     }),
     prisma.dyndnsHost.findMany({
       where: notRemoved,
       select: { id: true, hostname: true, enabled: true, status: true, metadata: true },
+      take: SECURITY_BUDGET.dyndnsHosts + 1,
     }),
     prisma.tunnelHostname.findMany({
       select: { id: true, hostname: true, metadata: true, tunnel: { select: { name: true } } },
+      take: SECURITY_BUDGET.tunnelHostnames + 1,
     }),
     prisma.wirelessNetwork.findMany({
       where: notRemoved,
       select: { id: true, name: true, enabled: true, status: true, security: true, wpaMode: true },
+      take: SECURITY_BUDGET.wirelessNetworks + 1,
     }),
     prisma.virtualMachine.findMany({
       where: notRemoved,
@@ -153,6 +172,7 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
         description: true,
         metadata: true,
       },
+      take: SECURITY_BUDGET.vms + 1,
     }),
     prisma.container.findMany({
       where: notRemoved,
@@ -166,6 +186,7 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
         description: true,
         metadata: true,
       },
+      take: SECURITY_BUDGET.containers + 1,
     }),
     prisma.device.findMany({
       where: notRemoved,
@@ -178,15 +199,29 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
         lastSeenAt: true,
         description: true,
       },
+      take: SECURITY_BUDGET.devices + 1,
     }),
     prisma.sshKeyDeployment.findMany({
       select: { deviceId: true, vmId: true, containerId: true },
+      take: SECURITY_BUDGET.sshKeyDeployments + 1,
     }),
     prisma.service.findMany({
       where: notRemoved,
       select: { id: true, name: true, status: true, port: true, protocol: true, url: true },
+      take: SECURITY_BUDGET.services + 1,
     }),
   ]);
+
+  assertDatasetBudget("Security firewall rules", firewallRules, SECURITY_BUDGET.firewallRules);
+  assertDatasetBudget("Security port forwards", portForwards, SECURITY_BUDGET.portForwards);
+  assertDatasetBudget("Security dynamic DNS hosts", dyndnsHosts, SECURITY_BUDGET.dyndnsHosts);
+  assertDatasetBudget("Security tunnel hostnames", tunnelHostnames, SECURITY_BUDGET.tunnelHostnames);
+  assertDatasetBudget("Security wireless networks", wirelessNetworks, SECURITY_BUDGET.wirelessNetworks);
+  assertDatasetBudget("Security virtual machines", vms, SECURITY_BUDGET.vms);
+  assertDatasetBudget("Security containers", containers, SECURITY_BUDGET.containers);
+  assertDatasetBudget("Security devices", devices, SECURITY_BUDGET.devices);
+  assertDatasetBudget("Security SSH deployments", sshKeyDeployments, SECURITY_BUDGET.sshKeyDeployments);
+  assertDatasetBudget("Security services", services, SECURITY_BUDGET.services);
 
   const sessionsByUser = new Map(sessionCounts.map((s) => [s.userId, s._count._all]));
 

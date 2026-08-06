@@ -15,6 +15,7 @@ import type { DnsClassification } from "@/lib/dns/cloudflare";
 import { discoveredCloudflaredTunnels } from "@/lib/integrations/elasticsearch/catalog";
 import { listStoredCloudflareSnapshots } from "@/lib/services/cloudflare";
 import { listStoredTailscaleSnapshots } from "@/lib/services/tailscale";
+import { assertDatasetBudget } from "@/lib/dataset-budget";
 import type {
   FootprintInput,
   FpCarriage,
@@ -26,6 +27,30 @@ import type {
 } from "@/lib/topology/footprint";
 
 const notRemoved = { status: { not: "REMOVED" as const } };
+
+const FOOTPRINT_BUDGET = {
+  devices: 5_000,
+  vms: 10_000,
+  containers: 10_000,
+  networks: 2_000,
+  firewallRules: 25_000,
+  aliases: 10_000,
+  addresses: 50_000,
+  interfaces: 50_000,
+  switchConfigs: 2_000,
+  switchPortsPerConfig: 2_000,
+  switchVlansPerConfig: 4_096,
+  leases: 50_000,
+  neighbors: 50_000,
+  portForwards: 25_000,
+  dyndnsHosts: 10_000,
+  tunnels: 5_000,
+  tunnelHostnamesPerTunnel: 10_000,
+  gateways: 2_000,
+  elasticIntegrations: 1_000,
+  storedProviderIntegrations: 100,
+} as const;
+
 
 function deviceKind(kind: string): FpMachine["kind"] {
   if (kind === "firewall") return "firewall";
@@ -42,21 +67,25 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
       where: notRemoved,
       orderBy: { name: "asc" },
       select: { id: true, name: true, kind: true, osName: true },
+      take: FOOTPRINT_BUDGET.devices + 1,
     }),
     prisma.virtualMachine.findMany({
       where: notRemoved,
       orderBy: { name: "asc" },
       select: { id: true, name: true, externalId: true, powerState: true, hostId: true, osName: true, metadata: true },
+      take: FOOTPRINT_BUDGET.vms + 1,
     }),
     prisma.container.findMany({
       where: notRemoved,
       orderBy: { name: "asc" },
       select: { id: true, name: true, externalId: true, powerState: true, hostId: true, osName: true, metadata: true },
+      take: FOOTPRINT_BUDGET.containers + 1,
     }),
     prisma.network.findMany({
       where: notRemoved,
       orderBy: { name: "asc" },
       select: { id: true, name: true, vlanId: true, cidr: true, externalId: true, purpose: true },
+      take: FOOTPRINT_BUDGET.networks + 1,
     }),
     prisma.firewallRule.findMany({
       where: { ...notRemoved, enabled: true, source: { not: "PROXMOX" } },
@@ -73,6 +102,7 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
         descriptionText: true,
         metadata: true,
       },
+      take: FOOTPRINT_BUDGET.firewallRules + 1,
     }),
     prisma.firewallRule.findMany({
       where: { ...notRemoved, enabled: true, source: "PROXMOX" },
@@ -87,16 +117,20 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
         enabled: true,
         metadata: true,
       },
+      take: FOOTPRINT_BUDGET.firewallRules + 1,
     }),
     prisma.firewallAlias.findMany({
       where: { ...notRemoved, aliasType: { notIn: ["pve-ipset", "pve-alias"] } },
       select: { name: true, aliasType: true, content: true },
+      take: FOOTPRINT_BUDGET.aliases + 1,
     }),
     prisma.firewallAlias.findMany({
       where: { ...notRemoved, aliasType: { in: ["pve-ipset", "pve-alias"] } },
       select: { name: true, content: true },
+      take: FOOTPRINT_BUDGET.aliases + 1,
     }),
     prisma.ipAddress.findMany({
+      take: FOOTPRINT_BUDGET.addresses + 1,
       select: {
         address: true,
         networkId: true,
@@ -118,6 +152,7 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
         ],
       },
       orderBy: { externalId: "asc" },
+      take: FOOTPRINT_BUDGET.interfaces + 1,
       select: {
         source: true,
         integrationId: true,
@@ -131,11 +166,16 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
       },
     }),
     prisma.switchConfig.findMany({
+      take: FOOTPRINT_BUDGET.switchConfigs + 1,
       select: {
         device: { select: { id: true } },
-        vlans: { select: { vlanId: true, networkId: true } },
+        vlans: {
+          take: FOOTPRINT_BUDGET.switchVlansPerConfig + 1,
+          select: { vlanId: true, networkId: true },
+        },
         ports: {
           orderBy: { sortOrder: "asc" },
+          take: FOOTPRINT_BUDGET.switchPortsPerConfig + 1,
           select: {
             shortName: true,
             mode: true,
@@ -154,14 +194,34 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
     prisma.dhcpLease.findMany({
       where: notRemoved,
       select: { id: true, ipAddress: true, macAddress: true, hostname: true, isStatic: true, networkId: true },
+      take: FOOTPRINT_BUDGET.leases + 1,
     }),
     // permanent ARP entries are the firewall's own addresses — excluded.
     prisma.networkNeighbor.findMany({
       where: { ...notRemoved, permanent: false },
       select: { id: true, ipAddress: true, macAddress: true, hostname: true, manufacturer: true, networkId: true },
+      take: FOOTPRINT_BUDGET.neighbors + 1,
     }),
-    listStoredTailscaleSnapshots(),
+    listStoredTailscaleSnapshots(FOOTPRINT_BUDGET.storedProviderIntegrations),
   ]);
+
+  assertDatasetBudget("Topology devices", devices, FOOTPRINT_BUDGET.devices);
+  assertDatasetBudget("Topology virtual machines", vms, FOOTPRINT_BUDGET.vms);
+  assertDatasetBudget("Topology containers", containers, FOOTPRINT_BUDGET.containers);
+  assertDatasetBudget("Topology networks", networks, FOOTPRINT_BUDGET.networks);
+  assertDatasetBudget("Topology firewall rules", rules, FOOTPRINT_BUDGET.firewallRules);
+  assertDatasetBudget("Topology Proxmox firewall rules", pveRules, FOOTPRINT_BUDGET.firewallRules);
+  assertDatasetBudget("Topology firewall aliases", aliases, FOOTPRINT_BUDGET.aliases);
+  assertDatasetBudget("Topology Proxmox address sets", pveAddressSets, FOOTPRINT_BUDGET.aliases);
+  assertDatasetBudget("Topology IP addresses", ips, FOOTPRINT_BUDGET.addresses);
+  assertDatasetBudget("Topology interfaces", assetInterfaces, FOOTPRINT_BUDGET.interfaces);
+  assertDatasetBudget("Topology switch configurations", switchConfigs, FOOTPRINT_BUDGET.switchConfigs);
+  assertDatasetBudget("Topology DHCP leases", leases, FOOTPRINT_BUDGET.leases);
+  assertDatasetBudget("Topology network neighbors", neighbors, FOOTPRINT_BUDGET.neighbors);
+  for (const config of switchConfigs) {
+    assertDatasetBudget("Ports in one switch configuration", config.ports, FOOTPRINT_BUDGET.switchPortsPerConfig);
+    assertDatasetBudget("VLANs in one switch configuration", config.vlans, FOOTPRINT_BUDGET.switchVlansPerConfig);
+  }
 
   const proxmoxNetworkEvidence = deriveProxmoxNetworkEvidence(
     assetInterfaces.flatMap((iface) => {
@@ -583,11 +643,13 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
         enabled: true,
         sourceSpec: true,
       },
+      take: FOOTPRINT_BUDGET.portForwards + 1,
     }),
     prisma.dyndnsHost.findMany({
       where: notRemoved,
       orderBy: { hostname: "asc" },
       select: { id: true, hostname: true, service: true, enabled: true, currentIp: true, metadata: true },
+      take: FOOTPRINT_BUDGET.dyndnsHosts + 1,
     }),
     prisma.tunnel.findMany({
       orderBy: { name: "asc" },
@@ -598,22 +660,39 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
         originIp: true,
         ingressHostnames: true,
         hostnames: {
+          take: FOOTPRINT_BUDGET.tunnelHostnamesPerTunnel + 1,
           select: { hostname: true, resolvedIps: true, proxied: true, metadata: true },
         },
       },
+      take: FOOTPRINT_BUDGET.tunnels + 1,
     }),
     prisma.networkGateway.findMany({
       where: notRemoved,
       orderBy: { name: "asc" },
       select: { id: true, name: true, interfaceName: true, ipAddress: true, isDefault: true, online: true },
+      take: FOOTPRINT_BUDGET.gateways + 1,
     }),
     prisma.integrationConfig.findMany({
       where: { type: "ELASTICSEARCH", enabled: true },
       orderBy: { createdAt: "asc" },
       select: { id: true, name: true, settings: true },
+      take: FOOTPRINT_BUDGET.elasticIntegrations + 1,
     }),
-    listStoredCloudflareSnapshots(),
+    listStoredCloudflareSnapshots(FOOTPRINT_BUDGET.storedProviderIntegrations),
   ]);
+
+  assertDatasetBudget("Topology port forwards", pfRows, FOOTPRINT_BUDGET.portForwards);
+  assertDatasetBudget("Topology dynamic DNS hosts", ddRows, FOOTPRINT_BUDGET.dyndnsHosts);
+  assertDatasetBudget("Topology tunnels", tunnelRows, FOOTPRINT_BUDGET.tunnels);
+  assertDatasetBudget("Topology gateways", gwRows, FOOTPRINT_BUDGET.gateways);
+  assertDatasetBudget("Topology Elasticsearch integrations", elasticRows, FOOTPRINT_BUDGET.elasticIntegrations);
+  for (const tunnel of tunnelRows) {
+    assertDatasetBudget(
+      "Hostnames in one topology tunnel",
+      tunnel.hostnames,
+      FOOTPRINT_BUDGET.tunnelHostnamesPerTunnel,
+    );
+  }
 
   const isUnrestricted = (spec: string | null): boolean =>
     !spec || spec.trim() === "" || spec.trim() === "*" || spec.trim().toLowerCase() === "any";

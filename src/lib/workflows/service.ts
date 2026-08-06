@@ -17,6 +17,7 @@ import type {
 import { validateGraph } from "./engine";
 import { actionCatalog } from "./registry";
 import type { CreateWorkflowInput, UpdateWorkflowInput } from "./schemas";
+import { syncWorkflowWebhookIndex } from "./webhook-index";
 
 /**
  * Workflow CRUD + run queries — the single source of truth used by the API
@@ -131,15 +132,19 @@ export async function createWorkflow(
   input: CreateWorkflowInput,
 ): Promise<WorkflowDto> {
   const graph = ensureWebhookTokens(input.graph);
-  const row = await prisma.workflow.create({
-    data: {
-      name: input.name.trim(),
-      description: input.description?.trim() || null,
-      enabled: input.enabled,
-      graph: graph as unknown as Prisma.InputJsonValue,
-      createdById: actor.userId ?? null,
-    },
-    include: LAST_RUN_INCLUDE,
+  const row = await prisma.$transaction(async (tx) => {
+    const created = await tx.workflow.create({
+      data: {
+        name: input.name.trim(),
+        description: input.description?.trim() || null,
+        enabled: input.enabled,
+        graph: graph as unknown as Prisma.InputJsonValue,
+        createdById: actor.userId ?? null,
+      },
+      include: LAST_RUN_INCLUDE,
+    });
+    await syncWorkflowWebhookIndex(tx, created.id, graph);
+    return created;
   });
   await audit(actor, "workflow.create", { type: "workflow", id: row.id }, {
     name: row.name,
@@ -154,17 +159,20 @@ export async function updateWorkflow(
   input: UpdateWorkflowInput,
 ): Promise<WorkflowDto> {
   await getWorkflow(id);
-  const row = await prisma.workflow.update({
-    where: { id },
-    data: {
-      ...(input.name !== undefined ? { name: input.name.trim() } : {}),
-      ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}),
-      ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
-      ...(input.graph !== undefined
-        ? { graph: ensureWebhookTokens(input.graph) as unknown as Prisma.InputJsonValue }
-        : {}),
-    },
-    include: LAST_RUN_INCLUDE,
+  const graph = input.graph === undefined ? undefined : ensureWebhookTokens(input.graph);
+  const row = await prisma.$transaction(async (tx) => {
+    const updated = await tx.workflow.update({
+      where: { id },
+      data: {
+        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+        ...(input.description !== undefined ? { description: input.description?.trim() || null } : {}),
+        ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+        ...(graph !== undefined ? { graph: graph as unknown as Prisma.InputJsonValue } : {}),
+      },
+      include: LAST_RUN_INCLUDE,
+    });
+    if (graph !== undefined) await syncWorkflowWebhookIndex(tx, id, graph);
+    return updated;
   });
   await audit(actor, "workflow.update", { type: "workflow", id }, { fields: Object.keys(input) });
   return toWorkflowDto(row);

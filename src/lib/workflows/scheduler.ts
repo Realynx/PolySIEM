@@ -28,6 +28,33 @@ import {
  */
 
 const SYSTEM_ACTOR: AuditActor = { type: "system" };
+const DEFAULT_WORKFLOW_CONCURRENCY = 4;
+
+function schedulerConcurrency(): number {
+  const configured = Number(process.env.WORKFLOW_SCHEDULER_CONCURRENCY ?? DEFAULT_WORKFLOW_CONCURRENCY);
+  if (!Number.isFinite(configured)) return DEFAULT_WORKFLOW_CONCURRENCY;
+  return Math.min(16, Math.max(1, Math.floor(configured)));
+}
+
+/** Run independent jobs with a hard concurrency ceiling and stable item order. */
+export async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  const normalizedConcurrency = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1;
+  const workerCount = Math.min(items.length, normalizedConcurrency);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        await worker(items[index]!, index);
+      }
+    }),
+  );
+}
 
 /** Pure due-ness check: a workflow with no runs yet is always due. */
 export function isDue(lastStartedAt: Date | null, intervalMinutes: number, now: Date): boolean {
@@ -200,18 +227,14 @@ async function evaluateAndFireSecurityTrailsTrigger(
 
 async function processScheduledWorkflow(
   workflow: Workflow,
+  lastStartedAt: Date | null,
   now: Date,
   executeWorkflow: ExecuteWorkflowFn,
 ): Promise<void> {
   const graph = workflow.graph as unknown as WorkflowGraph;
   const intervalMinutes = scheduleIntervalMinutes(graph);
   if (intervalMinutes !== null) {
-    const lastRun = await prisma.workflowRun.findFirst({
-      where: { workflowId: workflow.id },
-      orderBy: { startedAt: "desc" },
-      select: { startedAt: true },
-    });
-    if (isDue(lastRun?.startedAt ?? null, intervalMinutes, now)) {
+    if (isDue(lastStartedAt, intervalMinutes, now)) {
       try {
         await executeWorkflow(SYSTEM_ACTOR, workflow.id, {}, { trigger: "schedule" });
       } catch (err) {
@@ -263,10 +286,28 @@ export function startWorkflowScheduler(): void {
       // of this module's top-level graph so the pure helpers stay unit-testable.
       const { executeWorkflow } = await import("./executor");
       const workflows = await prisma.workflow.findMany({ where: { enabled: true } });
+      const scheduledIds = workflows.flatMap((workflow) =>
+        scheduleIntervalMinutes(workflow.graph as unknown as WorkflowGraph) === null ? [] : [workflow.id],
+      );
+      const latestRuns = scheduledIds.length === 0
+        ? []
+        : await prisma.workflowRun.groupBy({
+            by: ["workflowId"],
+            where: { workflowId: { in: scheduledIds } },
+            _max: { startedAt: true },
+          });
+      const latestRunByWorkflow = new Map(
+        latestRuns.map((row) => [row.workflowId, row._max.startedAt ?? null]),
+      );
       const now = new Date();
-      for (const workflow of workflows) {
-        await processScheduledWorkflow(workflow, now, executeWorkflow);
-      }
+      await runWithConcurrency(workflows, schedulerConcurrency(), async (workflow) => {
+        await processScheduledWorkflow(
+          workflow,
+          latestRunByWorkflow.get(workflow.id) ?? null,
+          now,
+          executeWorkflow,
+        );
+      });
     } catch (err) {
       console.error("[workflow-scheduler] tick failed:", err);
     } finally {

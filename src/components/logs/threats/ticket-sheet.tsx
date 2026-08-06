@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FileText, Pencil, RotateCcw, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -64,15 +64,19 @@ export function TicketSheet({
   const [editSummary, setEditSummary] = useState("");
   const [editSeverity, setEditSeverity] = useState<TicketSeverityValue>("MEDIUM");
 
-  // Reset transient state whenever a different ticket is shown.
+  // Reset transient state only when selection changes; live updates to the
+  // same ticket must not overwrite an in-progress edit draft.
+  const draftTicketId = useRef<string | null>(null);
   useEffect(() => {
+    if (draftTicketId.current === ticket?.id) return;
+    draftTicketId.current = ticket?.id ?? null;
     setEditing(false);
     if (ticket) {
       setEditTitle(ticket.title);
       setEditSummary(ticket.summary);
       setEditSeverity(ticket.severity);
     }
-  }, [ticket?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ticket]);
 
   if (!ticket) return null;
   const isClosed = ticket.status === "CLOSED";

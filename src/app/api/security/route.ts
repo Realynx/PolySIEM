@@ -1,12 +1,13 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { handleApi, jsonOk } from "@/lib/api";
+import { ApiError, handleApi, jsonOk } from "@/lib/api";
 import { requireAdmin, requireUser } from "@/lib/auth/guards";
 import { SETTING_KEYS, getSetting, setSetting } from "@/lib/settings";
 import { runSecurityChecks } from "@/lib/security/checks";
 import { collectSecuritySnapshot } from "@/lib/security/collect";
 import { computeScore } from "@/lib/security/score";
 import type { SecurityReport } from "@/lib/security/types";
+import { DatasetBudgetExceededError } from "@/lib/dataset-budget";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,19 @@ async function getDismissedIds(): Promise<string[]> {
 }
 
 async function buildReport(): Promise<SecurityReport> {
-  const snapshot = await collectSecuritySnapshot();
+  let snapshot: Awaited<ReturnType<typeof collectSecuritySnapshot>>;
+  try {
+    snapshot = await collectSecuritySnapshot();
+  } catch (err) {
+    if (err instanceof DatasetBudgetExceededError) {
+      throw new ApiError(
+        503,
+        "dataset_too_large",
+        `${err.message} Narrow or archive stale inventory before running the security advisor again.`,
+      );
+    }
+    throw err;
+  }
   const all = runSecurityChecks(snapshot);
   const dismissedSet = new Set(await getDismissedIds());
   const findings = all.filter((f) => !dismissedSet.has(f.id));

@@ -6,6 +6,7 @@ import { AlertTriangle, Download, Loader2, ShieldAlert, Upload } from "lucide-re
 import { toast } from "sonner";
 import { formatDateTime } from "@/lib/format";
 import type { RestoreSummary } from "@/lib/backup/types";
+import { BACKUP_IMPORT_LIMITS, formatMiB } from "@/lib/backup/limits";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,9 +23,24 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BACKUP_KEY } from "./backup-shared";
 
-/** Multipart POST that speaks the `{ data } / { error }` API shape. */
-async function postFile<T>(url: string, form: FormData, headers?: Record<string, string>): Promise<T> {
-  const res = await fetch(url, { method: "POST", body: form, headers });
+/** Bounded backup upload that speaks the `{ data } / { error }` API shape. */
+async function postBackupFile<T>(
+  url: string,
+  file: File,
+  password: string,
+  headers?: Record<string, string>,
+): Promise<T> {
+  if (file.size > BACKUP_IMPORT_LIMITS.uploadBytes) {
+    throw new Error(`Backup files are limited to ${formatMiB(BACKUP_IMPORT_LIMITS.uploadBytes)}.`);
+  }
+  const form = new FormData();
+  form.set("file", file);
+  if (password) form.set("password", password);
+  const res = await fetch(url, {
+    method: "POST",
+    body: form,
+    headers,
+  });
   let json: unknown = null;
   try {
     json = await res.json();
@@ -86,12 +102,8 @@ export function BackupRestoreSection() {
   });
 
   const runPreview = useMutation({
-    mutationFn: ({ file, password }: { file: File; password: string }) => {
-      const form = new FormData();
-      form.append("file", file);
-      if (password) form.append("password", password);
-      return postFile<RestoreSummary>("/api/admin/backup/import?preview=1", form);
-    },
+    mutationFn: ({ file, password }: { file: File; password: string }) =>
+      postBackupFile<RestoreSummary>("/api/admin/backup/import?preview=1", file, password),
     onSuccess: (summary) => setPreview(summary),
     onError: (err: Error) => {
       toast.error(err.message);
@@ -191,6 +203,9 @@ export function BackupRestoreSection() {
                   Replaces <strong>all</strong> current data with the contents of a backup archive. You will
                   be shown a summary and asked to confirm first.
                 </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Maximum upload: {formatMiB(BACKUP_IMPORT_LIMITS.uploadBytes)}.
+                </p>
               </div>
             </div>
             <input
@@ -271,13 +286,7 @@ function RestoreConfirmDialog({
   const restore = useMutation({
     mutationFn: () => {
       if (!file) throw new Error("No file selected");
-      const form = new FormData();
-      form.append("file", file);
-      // Both a header and a form field so the server can require an explicit,
-      // deliberate confirmation before this destructive operation runs.
-      form.append("confirm", "true");
-      if (password) form.append("password", password);
-      return postFile<RestoreSummary>("/api/admin/backup/import", form, {
+      return postBackupFile<RestoreSummary>("/api/admin/backup/import", file, password, {
         "x-confirm-restore": "true",
       });
     },

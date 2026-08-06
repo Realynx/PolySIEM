@@ -7,6 +7,10 @@ import { newCounts, type SyncStats } from "../sync-helpers";
 import { fetchCloudflareSnapshot } from "./client";
 import type { CloudflareAccountSnapshot } from "./types";
 import { cloudflareServiceCandidates, serviceEndpoint } from "./service-evidence";
+import { findInventoryByIdentityKeys, normalizedIdentityKey } from "@/lib/inventory/identity-index";
+import { assertDatasetBudget } from "@/lib/dataset-budget";
+
+const CLOUDFLARE_SERVICE_BUDGET = 20_000;
 
 interface ServiceTarget {
   deviceId: string | null;
@@ -21,14 +25,12 @@ function normalizedMachineName(value: string): string {
 /** Resolve a route origin to the strongest inventory identity PolySIEM already knows. */
 async function cloudflareOriginTargets(originHosts: string[]): Promise<Map<string, ServiceTarget>> {
   if (originHosts.length === 0) return new Map();
-  const [ips, devices, vms, containers] = await Promise.all([
+  const [ips, assets] = await Promise.all([
     prisma.ipAddress.findMany({
       where: { address: { in: originHosts } },
       select: { address: true, interface: { select: { deviceId: true, vmId: true, containerId: true } } },
     }),
-    prisma.device.findMany({ where: { status: { not: "REMOVED" } }, select: { id: true, name: true } }),
-    prisma.virtualMachine.findMany({ where: { status: { not: "REMOVED" } }, select: { id: true, name: true } }),
-    prisma.container.findMany({ where: { status: { not: "REMOVED" } }, select: { id: true, name: true } }),
+    findInventoryByIdentityKeys(originHosts),
   ]);
   const targets = new Map<string, ServiceTarget>();
   for (const ip of ips) {
@@ -46,13 +48,17 @@ async function cloudflareOriginTargets(originHosts: string[]): Promise<Map<strin
     const aliases = new Set([full, full.split(".")[0] ?? full]);
     for (const alias of aliases) named.set(alias, named.has(alias) ? null : target);
   };
-  for (const device of devices) addName(device.name, { deviceId: device.id, vmId: null, containerId: null });
-  for (const vm of vms) addName(vm.name, { deviceId: null, vmId: vm.id, containerId: null });
-  for (const container of containers) addName(container.name, { deviceId: null, vmId: null, containerId: container.id });
+  for (const asset of assets) {
+    addName(asset.name, {
+      deviceId: asset.kind === "device" ? asset.id : null,
+      vmId: asset.kind === "vm" ? asset.id : null,
+      containerId: asset.kind === "container" ? asset.id : null,
+    });
+  }
   for (const host of originHosts) {
-    if (targets.has(host)) continue;
     const full = normalizedMachineName(host);
-    const target = named.get(full) ?? named.get(full.split(".")[0] ?? full);
+    if (targets.has(full)) continue;
+    const target = named.get(full) ?? named.get(normalizedIdentityKey(full));
     if (target) targets.set(full, target);
   }
   return targets;
@@ -64,14 +70,19 @@ export async function syncCloudflareServices(
   snapshot: CloudflareAccountSnapshot,
 ) {
   const candidates = cloudflareServiceCandidates(snapshot);
+  assertDatasetBudget("Cloudflare route service candidates", candidates, CLOUDFLARE_SERVICE_BUDGET);
   const existing = await prisma.service.findMany({
     where: { integrationId, source: "CLOUDFLARE" },
     select: { id: true, externalId: true, status: true },
+    take: CLOUDFLARE_SERVICE_BUDGET + 1,
   });
   const documented = await prisma.service.findMany({
     where: { status: { not: "REMOVED" }, source: { not: "CLOUDFLARE" } },
     select: { url: true },
+    take: CLOUDFLARE_SERVICE_BUDGET + 1,
   });
+  assertDatasetBudget("Cloudflare-managed services", existing, CLOUDFLARE_SERVICE_BUDGET);
+  assertDatasetBudget("Documented services used for Cloudflare matching", documented, CLOUDFLARE_SERVICE_BUDGET);
   const documentedEndpoints = new Set(documented.map((service) => serviceEndpoint(service.url)).filter((value): value is string => Boolean(value)));
   const targets = await cloudflareOriginTargets([...new Set(candidates.map((candidate) => candidate.originHost).filter((value): value is string => Boolean(value)))]);
   const byExternalId = new Map(existing.flatMap((service) => service.externalId ? [[service.externalId, service] as const] : []));
