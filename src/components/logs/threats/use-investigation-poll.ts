@@ -73,9 +73,22 @@ export function useInvestigationPoll(
 
   // A different ticket re-seeds tracking from that ticket's persisted state.
   useEffect(() => {
-    setEngaged(isInvestigationActive(ticket.investigationStatus));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticketId]);
+    const active = isInvestigationActive(ticket.investigationStatus);
+    if (active) {
+      // A run started elsewhere may reuse an old query cache entry for this
+      // ticket. Seed the cache from the newly observed persisted run before
+      // enabling polling so a previous report cannot flash or re-notify.
+      queryClient.setQueryData<InvestigationState>(["investigation", ticketId], ticketState(ticket));
+    }
+    setEngaged(active);
+  }, [
+    queryClient,
+    ticketId,
+    ticket.investigationStatus,
+    ticket.investigationProgress,
+    ticket.investigation,
+    ticket.investigatedAt,
+  ]);
 
   const query = useQuery({
     queryKey: ["investigation", ticketId],
@@ -99,16 +112,28 @@ export function useInvestigationPoll(
 
   // Fire the completion callback + refresh the list once, on the success edge.
   const prevStatus = useRef<InvestigationStatus | null>(state.status);
+  const ticketStatusRef = useRef(ticket.investigationStatus);
+  ticketStatusRef.current = ticket.investigationStatus;
+
+  // A newly selected ticket starts from its own persisted edge, so simply
+  // opening an already-completed ticket does not show a fresh completion toast.
+  useEffect(() => {
+    prevStatus.current = ticketStatusRef.current;
+  }, [ticketId]);
+
   useEffect(() => {
     const prev = prevStatus.current;
+    // Do not consume the success edge until the corresponding report has also
+    // arrived; the status and report may be persisted/read in separate ticks.
+    if (state.status === "success" && !state.report) return;
+
     prevStatus.current = state.status;
     if (prev !== "success" && state.status === "success" && state.report) {
       toast.success("Investigation complete");
       onInvestigated?.(state.report);
       void queryClient.invalidateQueries({ queryKey: ["tickets"] });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.status]);
+  }, [state.status, state.report, onInvestigated, queryClient]);
 
   const enqueue = useMutation({
     mutationFn: () =>

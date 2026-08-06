@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { useTheme } from "next-themes";
 import { LogOut, Monitor, Moon, Search, Settings, Sun } from "lucide-react";
 import { NAV_GROUPS, isActive } from "@/components/shell/nav";
 import { CommandPalette } from "@/components/shell/command-palette";
@@ -13,6 +12,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { setViewMode } from "@/lib/view-mode";
 import { cn } from "@/lib/utils";
 import { BottomSheet } from "../ui/bottom-sheet";
+import { usePersistedThemeMode } from "@/components/shared/use-persisted-theme-mode";
 
 export interface MobileShellUser {
   username: string;
@@ -38,7 +38,7 @@ export function MobileMoreSheet({
 }) {
   const pathname = usePathname();
   const logout = useLogout();
-  const { resolvedTheme, setTheme } = useTheme();
+  const { resolvedTheme, setMode, isSaving: isSavingTheme } = usePersistedThemeMode();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const isAdmin = user.role === "ADMIN";
   const initials = (user.displayName ?? user.username).slice(0, 2).toUpperCase();
@@ -132,8 +132,9 @@ export function MobileMoreSheet({
             </Link>
             <button
               type="button"
-              onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-              className="flex min-h-12 w-full items-center gap-3 px-3.5 text-sm font-medium active:bg-muted/70"
+              onClick={() => void setMode(resolvedTheme === "dark" ? "light" : "dark")}
+              disabled={isSavingTheme}
+              className="flex min-h-12 w-full items-center gap-3 px-3.5 text-sm font-medium active:bg-muted/70 disabled:cursor-wait disabled:opacity-70"
             >
               <Sun className="size-4.5 text-muted-foreground dark:hidden" />
               <Moon className="hidden size-4.5 text-muted-foreground dark:block" />

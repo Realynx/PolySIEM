@@ -11,7 +11,6 @@ import {
   Sun,
   User as UserIcon,
 } from "lucide-react";
-import { useTheme } from "next-themes";
 import { MOBILE_UA_PATTERN, setViewMode } from "@/lib/view-mode";
 import { useLogout } from "./use-logout";
 import Link from "next/link";
@@ -28,6 +27,7 @@ import {
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { SidebarNav } from "./sidebar";
 import { CommandPalette } from "./command-palette";
+import { usePersistedThemeMode } from "@/components/shared/use-persisted-theme-mode";
 
 interface TopbarProps {
   instanceName: string;
@@ -35,7 +35,7 @@ interface TopbarProps {
 }
 
 export function Topbar({ instanceName, user }: TopbarProps) {
-  const { resolvedTheme, setTheme } = useTheme();
+  const { resolvedTheme, setMode, isSaving: isSavingTheme } = usePersistedThemeMode();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const logout = useLogout();
@@ -83,7 +83,8 @@ export function Topbar({ instanceName, user }: TopbarProps) {
           variant="ghost"
           size="icon"
           aria-label="Toggle dark mode"
-          onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+          disabled={isSavingTheme}
+          onClick={() => void setMode(resolvedTheme === "dark" ? "light" : "dark")}
         >
           <Sun className="size-4.5 dark:hidden" />
           <Moon className="hidden size-4.5 dark:block" />

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useTheme } from "next-themes";
 import { Check, Laptop, Moon, Sun } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -10,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch } from "@/components/shared/api-client";
+import { usePersistedThemeMode } from "@/components/shared/use-persisted-theme-mode";
 
 const SWATCHES: Record<ThemeColor, { label: string; className: string }> = {
   blue: { label: "Blue", className: "bg-blue-600" },
@@ -26,13 +26,17 @@ const MODES: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
 ];
 
 export function AppearanceForm({ initialColor }: { initialColor: ThemeColor }) {
-  const { theme, setTheme } = useTheme();
+  const { theme, setMode, isSaving: isSavingMode } = usePersistedThemeMode();
   const [color, setColor] = useState<ThemeColor>(initialColor);
+  const [isSavingColor, setIsSavingColor] = useState(false);
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   async function pickColor(next: ThemeColor) {
+    if (isSavingColor || next === color) return;
+
     const previous = color;
+    setIsSavingColor(true);
     setColor(next);
     document.documentElement.dataset.theme = next; // live preview
     try {
@@ -42,15 +46,8 @@ export function AppearanceForm({ initialColor }: { initialColor: ThemeColor }) {
       setColor(previous);
       document.documentElement.dataset.theme = previous;
       toast.error(err instanceof Error ? err.message : "Failed to save theme color");
-    }
-  }
-
-  async function pickMode(next: ThemeMode) {
-    setTheme(next);
-    try {
-      await apiFetch("/api/me", { method: "PATCH", body: JSON.stringify({ themeMode: next }) });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save theme mode");
+    } finally {
+      setIsSavingColor(false);
     }
   }
 
@@ -69,10 +66,11 @@ export function AppearanceForm({ initialColor }: { initialColor: ThemeColor }) {
                 <button
                   key={c}
                   type="button"
-                  onClick={() => pickColor(c)}
+                  onClick={() => void pickColor(c)}
                   aria-pressed={active}
+                  disabled={isSavingColor}
                   className={cn(
-                    "flex flex-col items-center gap-2 rounded-lg border p-4 transition-colors outline-none hover:bg-accent focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
+                    "flex flex-col items-center gap-2 rounded-lg border p-4 transition-colors outline-none hover:bg-accent focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-wait disabled:opacity-70",
                     active && "border-primary ring-2 ring-primary/30",
                   )}
                 >
@@ -107,9 +105,10 @@ export function AppearanceForm({ initialColor }: { initialColor: ThemeColor }) {
                   type="button"
                   role="radio"
                   aria-checked={active}
-                  onClick={() => pickMode(m.value)}
+                  onClick={() => void setMode(m.value)}
+                  disabled={isSavingMode}
                   className={cn(
-                    "flex items-center gap-2 rounded-md px-4 py-1.5 text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                    "flex items-center gap-2 rounded-md px-4 py-1.5 text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-wait disabled:opacity-70",
                     active
                       ? "bg-background font-medium text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",

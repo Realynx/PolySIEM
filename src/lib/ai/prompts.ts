@@ -69,5 +69,7 @@ export async function buildPrompt(input: AiGenerateInput): Promise<BuiltPrompt> 
           "and why such a rule might exist in a homelab.",
       };
     }
+    default:
+      throw new ApiError(400, "invalid_task", "Unsupported AI generation task");
   }
 }

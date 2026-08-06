@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildAzureStringToSign,
   canonicalizedHeaders,
   rfc1123Date,
   signAzureSharedKey,
+  listBlobsAzure,
 } from "./azure";
 
 describe("rfc1123Date", () => {
@@ -92,5 +93,42 @@ describe("signAzureSharedKey", () => {
 
   it("returns a 44-char base64 HMAC-SHA256 digest", () => {
     expect(signAzureSharedKey(key, "anything")).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+  });
+});
+
+
+describe("listBlobsAzure", () => {
+  it("follows markers and decodes XML entities", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          "<EnumerationResults><Blobs><Blob><Name>backups/one&amp;two.gz</Name><Properties><Last-Modified>2026-01-01</Last-Modified></Properties></Blob></Blobs><NextMarker>next&amp;marker</NextMarker></EnumerationResults>",
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          "<EnumerationResults><Blobs><Blob><Name>backups/three.gz</Name><Properties><Last-Modified>2026-01-02</Last-Modified></Properties></Blob></Blobs><NextMarker></NextMarker></EnumerationResults>",
+          { status: 200 },
+        ),
+      );
+
+    const blobs = await listBlobsAzure({
+      mode: "sharedKey",
+      accountName: "polysiem",
+      accountKey: Buffer.from("test-account-key").toString("base64"),
+      container: "backups",
+      prefix: "backups/",
+    });
+
+    expect(blobs).toEqual([
+      { key: "backups/one&two.gz", lastModified: "2026-01-01" },
+      { key: "backups/three.gz", lastModified: "2026-01-02" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("marker=next%26marker");
+
+    fetchMock.mockRestore();
   });
 });

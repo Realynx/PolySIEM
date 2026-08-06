@@ -1,6 +1,12 @@
 import { createHash, createHmac } from "node:crypto";
 import type { S3DestinationConfig } from "../types";
 import { joinKey } from "./keys";
+import {
+  BACKUP_METADATA_TIMEOUT_MS,
+  BACKUP_UPLOAD_TIMEOUT_MS,
+  backupStorageFetch,
+} from "./storage-request";
+import { xmlValue } from "./xml";
 
 /**
  * AWS Signature Version 4 signing for single-PUT uploads to any S3-compatible
@@ -215,7 +221,12 @@ export async function putObjectS3(
   contentType: string,
 ): Promise<void> {
   const { url, headers } = signS3Request(config, { method: "PUT", key, body, contentType });
-  const res = await fetch(url, { method: "PUT", headers, body: new Uint8Array(body) });
+  const res = await backupStorageFetch(
+    "S3",
+    url,
+    { method: "PUT", headers, body: new Uint8Array(body) },
+    BACKUP_UPLOAD_TIMEOUT_MS,
+  );
   if (!res.ok) throw new Error(s3ErrorMessage(res.status, await res.text().catch(() => "")));
 }
 
@@ -245,35 +256,59 @@ export interface S3Object {
   lastModified: string;
 }
 
-/** List objects under a prefix via ListObjectsV2 (used for retention pruning). */
+/** List every object under a prefix via paginated ListObjectsV2. */
 export async function listObjectsS3(config: ResolvedS3Config, prefix: string): Promise<S3Object[]> {
-  const query: Record<string, string> = { "list-type": "2" };
-  if (prefix) query.prefix = prefix;
-  const { url, headers } = signS3Request(config, {
-    method: "GET",
-    key: "",
-    query,
-    body: Buffer.alloc(0),
-  });
-  const res = await fetch(url, { method: "GET", headers });
-  if (!res.ok) throw new Error(s3ErrorMessage(res.status, await res.text().catch(() => "")));
-  const xml = await res.text();
   const objects: S3Object[] = [];
-  const re = /<Contents>([\s\S]*?)<\/Contents>/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml)) !== null) {
-    const block = m[1];
-    const key = /<Key>([^<]+)<\/Key>/.exec(block)?.[1];
-    const lastModified = /<LastModified>([^<]+)<\/LastModified>/.exec(block)?.[1] ?? "";
-    if (key) objects.push({ key, lastModified });
+  let continuationToken: string | undefined;
+
+  for (;;) {
+    const query: Record<string, string> = { "list-type": "2" };
+    if (prefix) query.prefix = prefix;
+    if (continuationToken) query["continuation-token"] = continuationToken;
+
+    const { url, headers } = signS3Request(config, {
+      method: "GET",
+      key: "",
+      query,
+      body: Buffer.alloc(0),
+    });
+    const res = await backupStorageFetch(
+      "S3",
+      url,
+      { method: "GET", headers },
+      BACKUP_METADATA_TIMEOUT_MS,
+    );
+    if (!res.ok) throw new Error(s3ErrorMessage(res.status, await res.text().catch(() => "")));
+
+    const xml = await res.text();
+    const re = /<Contents>([\s\S]*?)<\/Contents>/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(xml)) !== null) {
+      const key = xmlValue(match[1], "Key");
+      const lastModified = xmlValue(match[1], "LastModified") ?? "";
+      if (key) objects.push({ key, lastModified });
+    }
+
+    if (xmlValue(xml, "IsTruncated") !== "true") break;
+    const nextToken = xmlValue(xml, "NextContinuationToken");
+    if (!nextToken || nextToken === continuationToken) {
+      throw new Error("S3 returned a truncated object list without a new continuation token");
+    }
+    continuationToken = nextToken;
   }
+
   return objects;
 }
 
 /** Delete a single object. Throws a readable error on failure. */
 export async function deleteObjectS3(config: ResolvedS3Config, key: string): Promise<void> {
   const { url, headers } = signS3Request(config, { method: "DELETE", key, body: Buffer.alloc(0) });
-  const res = await fetch(url, { method: "DELETE", headers });
+  const res = await backupStorageFetch(
+    "S3",
+    url,
+    { method: "DELETE", headers },
+    BACKUP_METADATA_TIMEOUT_MS,
+  );
   // S3 returns 204 for a successful delete; treat any 2xx as success.
   if (!res.ok) throw new Error(s3ErrorMessage(res.status, await res.text().catch(() => "")));
 }
