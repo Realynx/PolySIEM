@@ -1,6 +1,12 @@
 import { createHmac } from "node:crypto";
 import type { AzureDestinationConfig } from "../types";
 import { joinKey } from "./keys";
+import {
+  BACKUP_METADATA_TIMEOUT_MS,
+  BACKUP_UPLOAD_TIMEOUT_MS,
+  backupStorageFetch,
+} from "./storage-request";
+import { xmlValue } from "./xml";
 
 /**
  * Azure Blob Storage uploads without the Azure SDK. Two credential modes:
@@ -158,15 +164,20 @@ export async function putBlobAzure(
 ): Promise<void> {
   if (config.mode === "sas") {
     if (!config.sasUrl) throw new Error("Azure sas mode requires a SAS URL");
-    const res = await fetch(sasBlobUrl(config.sasUrl, key), {
-      method: "PUT",
-      headers: {
-        "x-ms-blob-type": "BlockBlob",
-        "x-ms-version": API_VERSION,
-        "content-type": contentType,
+    const res = await backupStorageFetch(
+      "Azure",
+      sasBlobUrl(config.sasUrl, key),
+      {
+        method: "PUT",
+        headers: {
+          "x-ms-blob-type": "BlockBlob",
+          "x-ms-version": API_VERSION,
+          "content-type": contentType,
+        },
+        body: new Uint8Array(body),
       },
-      body: new Uint8Array(body),
-    });
+      BACKUP_UPLOAD_TIMEOUT_MS,
+    );
     if (!res.ok) await throwAzureError(res);
     return;
   }
@@ -174,7 +185,12 @@ export async function putBlobAzure(
     contentLength: body.length,
     contentType,
   });
-  const res = await fetch(url, { method: "PUT", headers, body: new Uint8Array(body) });
+  const res = await backupStorageFetch(
+    "Azure",
+    url,
+    { method: "PUT", headers, body: new Uint8Array(body) },
+    BACKUP_UPLOAD_TIMEOUT_MS,
+  );
   if (!res.ok) await throwAzureError(res);
 }
 
@@ -215,27 +231,50 @@ export interface AzureBlob {
  */
 export async function listBlobsAzure(config: AzureDestinationConfig): Promise<AzureBlob[]> {
   if (config.mode !== "sharedKey") return [];
-  const query: Record<string, string> = { comp: "list", restype: "container" };
-  if (config.prefix) query.prefix = config.prefix;
-  const { url, headers } = signSharedKeyRequest(config, "GET", "", { contentLength: 0, query });
-  const res = await fetch(url, { method: "GET", headers });
-  if (!res.ok) await throwAzureError(res);
-  const xml = await res.text();
+
   const blobs: AzureBlob[] = [];
-  const re = /<Blob>([\s\S]*?)<\/Blob>/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml)) !== null) {
-    const block = m[1];
-    const name = /<Name>([^<]+)<\/Name>/.exec(block)?.[1];
-    const lastModified = /<Last-Modified>([^<]+)<\/Last-Modified>/.exec(block)?.[1] ?? "";
-    if (name) blobs.push({ key: name, lastModified });
+  let marker: string | undefined;
+
+  for (;;) {
+    const query: Record<string, string> = { comp: "list", restype: "container" };
+    if (config.prefix) query.prefix = config.prefix;
+    if (marker) query.marker = marker;
+
+    const { url, headers } = signSharedKeyRequest(config, "GET", "", { contentLength: 0, query });
+    const res = await backupStorageFetch(
+      "Azure",
+      url,
+      { method: "GET", headers },
+      BACKUP_METADATA_TIMEOUT_MS,
+    );
+    if (!res.ok) await throwAzureError(res);
+
+    const xml = await res.text();
+    const re = /<Blob>([\s\S]*?)<\/Blob>/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(xml)) !== null) {
+      const name = xmlValue(match[1], "Name");
+      const lastModified = xmlValue(match[1], "Last-Modified") ?? "";
+      if (name) blobs.push({ key: name, lastModified });
+    }
+
+    const nextMarker = xmlValue(xml, "NextMarker");
+    if (!nextMarker) break;
+    if (nextMarker === marker) throw new Error("Azure returned the same blob-list marker twice");
+    marker = nextMarker;
   }
+
   return blobs;
 }
 
 /** Delete a single blob (sharedKey mode). */
 export async function deleteBlobAzure(config: AzureDestinationConfig, key: string): Promise<void> {
   const { url, headers } = signSharedKeyRequest(config, "DELETE", key, { contentLength: 0 });
-  const res = await fetch(url, { method: "DELETE", headers });
+  const res = await backupStorageFetch(
+    "Azure",
+    url,
+    { method: "DELETE", headers },
+    BACKUP_METADATA_TIMEOUT_MS,
+  );
   if (!res.ok) await throwAzureError(res);
 }

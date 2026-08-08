@@ -3,37 +3,26 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { loadNetworkRefs, newCounts, syncInterfaces, type DesiredInterface, type SyncStats } from "../sync-helpers";
 import { tailscaleSettingsSchema, type TailscaleDeviceSnapshot, type TailscaleSnapshot } from "@/lib/validators/integrations";
+import { findInventoryByIdentityKeys, normalizedIdentityKey } from "@/lib/inventory/identity-index";
+import { assertDatasetBudget } from "@/lib/dataset-budget";
 
 type AssetRef = { id: string; kind: "device" | "vm" | "container"; name: string };
+const TAILSCALE_DEVICE_BUDGET = 20_000;
 
 function identityKeys(device: TailscaleDeviceSnapshot): string[] {
   return [...new Set([device.hostname, device.name, device.dnsName ?? ""]
-    .map((value) => value.trim().toLowerCase().replace(/\.$/, "").split(".")[0])
+    .map(normalizedIdentityKey)
     .filter(Boolean))];
 }
 
-async function assetIndex(): Promise<Map<string, AssetRef[]>> {
-  const [devices, vms, containers] = await Promise.all([
-    prisma.device.findMany({
-      where: { status: { not: "REMOVED" }, source: { not: "TAILSCALE" } },
-      select: { id: true, name: true },
-    }),
-    prisma.virtualMachine.findMany({
-      where: { status: { not: "REMOVED" } },
-      select: { id: true, name: true },
-    }),
-    prisma.container.findMany({
-      where: { status: { not: "REMOVED" } },
-      select: { id: true, name: true },
-    }),
-  ]);
+async function assetIndex(observed: readonly TailscaleDeviceSnapshot[]): Promise<Map<string, AssetRef[]>> {
+  const assets = await findInventoryByIdentityKeys(
+    observed.flatMap((device) => [device.hostname, device.name, device.dnsName ?? ""]),
+    { excludeDeviceSource: "TAILSCALE" },
+  );
   const index = new Map<string, AssetRef[]>();
-  for (const asset of [
-    ...devices.map((item) => ({ ...item, kind: "device" as const })),
-    ...vms.map((item) => ({ ...item, kind: "vm" as const })),
-    ...containers.map((item) => ({ ...item, kind: "container" as const })),
-  ]) {
-    const key = asset.name.trim().toLowerCase().replace(/\.$/, "").split(".")[0];
+  for (const asset of assets) {
+    const key = normalizedIdentityKey(asset.name);
     const list = index.get(key) ?? [];
     list.push(asset);
     index.set(key, list);
@@ -67,12 +56,15 @@ export async function applyTailscaleSnapshot(
   runStart: Date,
   complete: boolean,
 ): Promise<SyncStats> {
+  assertDatasetBudget("Tailscale snapshot devices", snapshot.devices, TAILSCALE_DEVICE_BUDGET);
   const stats: SyncStats = { devices: newCounts(), tailscaleDevices: newCounts() };
-  const index = await assetIndex();
+  const index = await assetIndex(snapshot.devices);
   const existing = await prisma.device.findMany({
     where: { integrationId },
     select: { id: true, externalId: true },
+    take: TAILSCALE_DEVICE_BUDGET + 1,
   });
+  assertDatasetBudget("Tailscale-managed devices", existing, TAILSCALE_DEVICE_BUDGET);
   const byExternalId = new Map(existing.flatMap((item) => item.externalId ? [[item.externalId, item.id] as const] : []));
   const interfaces: DesiredInterface[] = [];
 

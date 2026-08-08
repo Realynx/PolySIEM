@@ -1,5 +1,4 @@
 import { redirect } from "next/navigation";
-import { LockKeyhole } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { isLockedDemoMode } from "@/lib/demo/mode";
 import { isMobileView } from "@/lib/device";
@@ -10,6 +9,7 @@ import { PrivacyProvider } from "@/components/privacy/privacy-provider";
 import { SidebarNav } from "@/components/shell/sidebar";
 import { Topbar } from "@/components/shell/topbar";
 import { MobileShell } from "@/components/mobile/shell/mobile-shell";
+import { DemoModeBanner } from "@/components/shell/demo-mode-banner";
 
 export const dynamic = "force-dynamic";
 
@@ -70,12 +70,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         </aside>
         <div className="flex min-w-0 flex-1 flex-col md:pl-60">
           <Topbar instanceName={shellIdentity.instanceName} user={shellUser} />
-          {demoLocked && (
-            <div className="flex items-center justify-center gap-2 border-b border-violet-500/20 bg-violet-500/10 px-4 py-2 text-center text-xs font-medium text-violet-700 dark:text-violet-300">
-              <LockKeyhole className="size-3.5" /> Public demo — exploration and
-              mock AI are enabled; persistent changes are locked.
-            </div>
-          )}
+          {demoLocked && <DemoModeBanner />}
           <main className="flex-1 p-4 md:p-6">{children}</main>
         </div>
         {aiConfig.enabled && <ChatDock />}

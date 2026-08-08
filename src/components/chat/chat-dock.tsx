@@ -75,8 +75,7 @@ export function ChatDock() {
       if (stored.open) setOpen(true);
     }
     setRestored(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [hydrate]);
 
   // Persist open state + transcript so a full page load doesn't lose the chat.
   useEffect(() => {

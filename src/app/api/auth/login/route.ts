@@ -6,11 +6,33 @@ import { createSession, requestMeta, SESSION_COOKIE, sessionCookieOptions } from
 import { loginSchema } from "@/lib/validators/auth";
 import { audit } from "@/lib/audit";
 import { THEME_COOKIE, MODE_COOKIE } from "@/lib/theme";
+import { clearRateLimit, consumeRateLimit, pruneExpiredRateLimits, trustedClientIp } from "@/lib/rate-limit";
+
+const ACCOUNT_LIMIT = { limit: 10, windowMs: 15 * 60_000 } as const;
+const IP_LIMIT = { limit: 60, windowMs: 15 * 60_000 } as const;
 
 export const POST = handleApi(async (req: NextRequest) => {
   const input = loginSchema.parse(await req.json());
+  const clientIp = trustedClientIp(req);
+  await pruneExpiredRateLimits();
 
   const user = await prisma.user.findUnique({ where: { username: input.username } });
+  // Unknown usernames share one bucket so arbitrary attacker-controlled names
+  // cannot create unbounded limiter rows. Valid accounts remain independent,
+  // so abuse against unknown names cannot globally lock out legitimate users.
+  const accountIdentity = user?.id ?? "unknown-account";
+  const identityLimits = await Promise.all([
+    consumeRateLimit("login-account", accountIdentity, ACCOUNT_LIMIT),
+    ...(clientIp ? [consumeRateLimit("login-ip", clientIp, IP_LIMIT)] : []),
+  ]);
+  const blocked = identityLimits.find((limit) => !limit.allowed);
+  if (blocked) {
+    return NextResponse.json(
+      { error: { code: "rate_limited", message: "Too many login attempts. Try again shortly." } },
+      { status: 429, headers: { "Retry-After": String(blocked.retryAfterSeconds) } },
+    );
+  }
+
   // Always verify against a hash to keep timing consistent.
   const ok = await verifyPassword(
     input.password,
@@ -19,6 +41,11 @@ export const POST = handleApi(async (req: NextRequest) => {
   if (!user || !ok || user.disabled) {
     return jsonError(401, "invalid_credentials", "Invalid username or password");
   }
+
+  await Promise.all([
+    clearRateLimit("login-account", accountIdentity),
+    ...(clientIp ? [clearRateLimit("login-ip", clientIp)] : []),
+  ]);
 
   const { token, expiresAt } = await createSession(user.id, await requestMeta());
   await audit({ type: "user", userId: user.id }, "auth.login");

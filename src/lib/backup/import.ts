@@ -1,5 +1,5 @@
 import "server-only";
-import { gunzipSync } from "node:zlib";
+import { gunzip, gunzipSync } from "node:zlib";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { audit, type AuditActor } from "@/lib/audit";
@@ -11,8 +11,16 @@ import {
   type RestoreSummary,
 } from "./types";
 import { DEFERRED_FK_COLUMNS, FIELD_TYPES, currentSecretFingerprint, revive, tableName } from "./revive";
-import { decodeEncryptedBackup, isEncryptedBackup, type DecodedBackupFile } from "./archive-crypto";
+import {
+  decodeEncryptedBackup,
+  decodeEncryptedBackupAsync,
+  isEncryptedBackup,
+  type DecodedBackupFile,
+} from "./archive-crypto";
 import { rewrapArchiveSecrets } from "./portable-secrets";
+import { BACKUP_IMPORT_LIMITS, BackupLimitError, formatMiB } from "./limits";
+import { WEBHOOK_TRIGGER_KIND } from "@/lib/workflows/actions/trigger-webhook";
+import { rebuildWorkflowWebhookIndex } from "@/lib/workflows/webhook-index";
 
 /**
  * Backup restore engine. Restore is a DESTRUCTIVE wipe-and-replace: every backup
@@ -24,9 +32,17 @@ import { rewrapArchiveSecrets } from "./portable-secrets";
  */
 
 /** How long the restore transaction may run — a full instance can be large. */
-const RESTORE_TX_TIMEOUT_MS = 120_000;
+const RESTORE_TX_TIMEOUT_MS = 10 * 60_000;
 
 /* ------------------------------- decode ------------------------------- */
+
+function assertCompressedBackupSize(buffer: Buffer): void {
+  if (buffer.byteLength > BACKUP_IMPORT_LIMITS.uploadBytes) {
+    throw new BackupLimitError(
+      `Backup file exceeds the ${formatMiB(BACKUP_IMPORT_LIMITS.uploadBytes)} restore limit.`,
+    );
+  }
+}
 
 /**
  * Parse gzipped-JSON backup bytes into an archive, validating that we can
@@ -34,40 +50,171 @@ const RESTORE_TX_TIMEOUT_MS = 120_000;
  * `formatVersion`, and only reference known models. Throws actionable errors so
  * the UI can tell the operator exactly what is wrong.
  */
+function gunzipArchive(buffer: Buffer): Buffer {
+  try {
+    return gunzipSync(buffer, { maxOutputLength: BACKUP_IMPORT_LIMITS.expandedBytes });
+  } catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? String(err.code) : "";
+    if (code === "ERR_BUFFER_TOO_LARGE" || (err instanceof Error && err.message.includes("maxOutputLength"))) {
+      throw new BackupLimitError(
+        `Backup expands beyond the ${formatMiB(BACKUP_IMPORT_LIMITS.expandedBytes)} restore limit.`,
+      );
+    }
+    throw err;
+  }
+}
+
+function gunzipArchiveAsync(buffer: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    gunzip(buffer, { maxOutputLength: BACKUP_IMPORT_LIMITS.expandedBytes }, (err, output) => {
+      if (!err) {
+        resolve(output);
+        return;
+      }
+      const code = err && typeof err === "object" && "code" in err ? String(err.code) : "";
+      if (code === "ERR_BUFFER_TOO_LARGE" || err.message.includes("maxOutputLength")) {
+        reject(new BackupLimitError(
+          `Backup expands beyond the ${formatMiB(BACKUP_IMPORT_LIMITS.expandedBytes)} restore limit.`,
+        ));
+        return;
+      }
+      reject(err);
+    });
+  });
+}
+
+interface ArchivedWebhookNode {
+  workflowId: string;
+  nodeId: string;
+  token: string;
+}
+
+function archivedWebhookNodes(row: Record<string, unknown>): ArchivedWebhookNode[] {
+  const workflowId = typeof row.id === "string" ? row.id : "unknown workflow";
+  const graph = row.graph;
+  if (!graph || typeof graph !== "object" || Array.isArray(graph)) return [];
+  const nodes = (graph as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return [];
+
+  return nodes.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+    const node = candidate as { id?: unknown; kind?: unknown; config?: unknown };
+    if (node.kind !== WEBHOOK_TRIGGER_KIND) return [];
+    const config = node.config && typeof node.config === "object" && !Array.isArray(node.config)
+      ? node.config as { token?: unknown }
+      : null;
+    return [{
+      workflowId,
+      nodeId: typeof node.id === "string" ? node.id : "",
+      token: typeof config?.token === "string" ? config.token.trim() : "",
+    }];
+  });
+}
+
+function validateArchivedWebhookTokens(archive: Partial<BackupArchive>): void {
+  const workflows = archive.data?.workflow;
+  if (!Array.isArray(workflows)) return;
+  const tokenOwners = new Map<string, string>();
+
+  for (const row of workflows) {
+    const nodeIds = new Set<string>();
+    for (const node of archivedWebhookNodes(row)) {
+      if (!node.nodeId || nodeIds.has(node.nodeId)) {
+        throw new Error(`Backup workflow "${node.workflowId}" contains duplicate or invalid webhook node IDs.`);
+      }
+      nodeIds.add(node.nodeId);
+      if (!node.token) continue;
+      const priorOwner = tokenOwners.get(node.token);
+      if (priorOwner) {
+        throw new Error(
+          `Backup contains a webhook token shared by workflows "${priorOwner}" and "${node.workflowId}".`,
+        );
+      }
+      tokenOwners.set(node.token, node.workflowId);
+    }
+  }
+}
+
+const KNOWN_BACKUP_MODELS = new Set<string>(BACKUP_MODELS);
+
+function validateManifest(manifest: unknown): asserts manifest is BackupArchive["manifest"] {
+  if (!manifest || typeof manifest !== "object" || !("formatVersion" in manifest)) {
+    throw new Error("Backup archive is missing a valid manifest.");
+  }
+  const formatVersion = (manifest as { formatVersion?: unknown }).formatVersion;
+  if (typeof formatVersion !== "number") {
+    throw new Error("Backup archive is missing a valid manifest.");
+  }
+  if (formatVersion === BACKUP_FORMAT_VERSION) return;
+
+  const hint = formatVersion > BACKUP_FORMAT_VERSION
+    ? "It was created by a newer version of PolySIEM — upgrade this instance to restore it."
+    : "It uses an older, unsupported backup format.";
+  throw new Error(
+    `Unsupported backup format version ${formatVersion} (this PolySIEM supports version ${BACKUP_FORMAT_VERSION}). ${hint}`,
+  );
+}
+
+function validateModelRows(key: string, value: unknown): number {
+  if (!KNOWN_BACKUP_MODELS.has(key)) {
+    throw new Error(`Backup archive references an unknown model "${key}"; it is incompatible with this PolySIEM.`);
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`Backup archive model "${key}" must contain an array of rows.`);
+  }
+  if (value.length > BACKUP_IMPORT_LIMITS.rowsPerModel) {
+    throw new BackupLimitError(
+      `Backup model "${key}" contains ${value.length} rows; the per-model limit is ${BACKUP_IMPORT_LIMITS.rowsPerModel}.`,
+    );
+  }
+  for (const row of value) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      throw new Error(`Backup archive model "${key}" contains a malformed row.`);
+    }
+  }
+  return value.length;
+}
+
+function validateArchiveData(data: unknown): asserts data is BackupArchive["data"] {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Backup archive is missing its data section.");
+  }
+
+  let totalRows = 0;
+  for (const [key, value] of Object.entries(data)) {
+    totalRows += validateModelRows(key, value);
+    if (totalRows > BACKUP_IMPORT_LIMITS.totalRows) {
+      throw new BackupLimitError(
+        `Backup contains more than ${BACKUP_IMPORT_LIMITS.totalRows} rows and cannot be restored safely.`,
+      );
+    }
+  }
+}
+
 function validateArchive(parsed: unknown): BackupArchive {
-  if (!parsed || typeof parsed !== "object") {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Backup archive is malformed: top-level value is not an object.");
   }
   const archive = parsed as Partial<BackupArchive>;
-  const manifest = archive.manifest;
-  if (!manifest || typeof manifest !== "object" || typeof manifest.formatVersion !== "number") {
-    throw new Error("Backup archive is missing a valid manifest.");
-  }
-  if (manifest.formatVersion !== BACKUP_FORMAT_VERSION) {
-    const hint =
-      manifest.formatVersion > BACKUP_FORMAT_VERSION
-        ? "It was created by a newer version of PolySIEM — upgrade this instance to restore it."
-        : "It uses an older, unsupported backup format.";
-    throw new Error(
-      `Unsupported backup format version ${manifest.formatVersion} (this PolySIEM supports version ${BACKUP_FORMAT_VERSION}). ${hint}`,
-    );
-  }
-  if (!archive.data || typeof archive.data !== "object") {
-    throw new Error("Backup archive is missing its data section.");
-  }
-  const known = new Set<string>(BACKUP_MODELS);
-  for (const key of Object.keys(archive.data)) {
-    if (!known.has(key)) {
-      throw new Error(`Backup archive references an unknown model "${key}"; it is incompatible with this PolySIEM.`);
-    }
-  }
+  validateManifest(archive.manifest);
+  validateArchiveData(archive.data);
+  validateArchivedWebhookTokens(archive);
   return archive as BackupArchive;
 }
 
 export function decodeArchive(buffer: Buffer): BackupArchive {
+  assertCompressedBackupSize(buffer);
+  let expanded: Buffer;
+  try {
+    expanded = gunzipArchive(buffer);
+  } catch (err) {
+    if (err instanceof BackupLimitError) throw err;
+    throw new Error("This file is not a valid PolySIEM backup (expected gzipped JSON — it may be corrupt or the wrong file).");
+  }
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(gunzipSync(buffer).toString("utf8"));
+    parsed = JSON.parse(expanded.toString("utf8"));
   } catch {
     throw new Error("This file is not a valid PolySIEM backup (expected gzipped JSON — it may be corrupt or the wrong file).");
   }
@@ -82,6 +229,33 @@ export function decodeBackupFile(buffer: Buffer, password?: string): DecodedBack
   }
   const decoded = decodeEncryptedBackup(buffer, password);
   return { ...decoded, archive: validateArchive(decoded.archive) };
+}
+
+/** Non-blocking HTTP decode path with the same validation and safety ceilings. */
+export async function decodeBackupFileAsync(
+  buffer: Buffer,
+  password?: string,
+): Promise<DecodedBackupFile> {
+  assertCompressedBackupSize(buffer);
+  if (isEncryptedBackup(buffer)) {
+    const decoded = await decodeEncryptedBackupAsync(buffer, password);
+    return { ...decoded, archive: validateArchive(decoded.archive) };
+  }
+
+  let expanded: Buffer;
+  try {
+    expanded = await gunzipArchiveAsync(buffer);
+  } catch (err) {
+    if (err instanceof BackupLimitError) throw err;
+    throw new Error("This file is not a valid PolySIEM backup (expected gzipped JSON — it may be corrupt or the wrong file).");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(expanded.toString("utf8"));
+  } catch {
+    throw new Error("This file is not a valid PolySIEM backup (expected gzipped JSON — it may be corrupt or the wrong file).");
+  }
+  return { archive: validateArchive(parsed), passwordProtected: false, sourceAppSecret: null };
 }
 
 /** Re-key protected credentials for this instance without changing process.env. */
@@ -189,7 +363,11 @@ export async function restoreArchive(
 ): Promise<RestoreSummary> {
   const { counts, totalRows } = summarize(archive);
 
-  const truncateSql = `TRUNCATE TABLE ${BACKUP_MODELS.map((m) => `"${tableName(m)}"`).join(", ")} RESTART IDENTITY CASCADE`;
+  const derivedTables = ["RateLimitBucket", "WorkflowWebhook"];
+  const truncateSql = `TRUNCATE TABLE ${[
+    ...derivedTables.map((table) => `"${table}"`),
+    ...BACKUP_MODELS.map((model) => `"${tableName(model)}"`),
+  ].join(", ")} RESTART IDENTITY CASCADE`;
 
   await prisma.$transaction(
     async (tx) => {
@@ -202,12 +380,17 @@ export async function restoreArchive(
         const rows = archive.data[model];
         if (!rows || rows.length === 0) continue;
         const deferred = DEFERRED_FK_COLUMNS[model];
-        const data = rows.map((row) => {
-          const revived = revive(model, row);
-          const insertable = deferred ? nullifyColumns(revived, deferred) : revived;
-          return applyJsonNulls(model, insertable);
-        });
-        await delegateOf<CreateManyDelegate>(tx, model).createMany({ data, skipDuplicates: false });
+        const delegate = delegateOf<CreateManyDelegate>(tx, model);
+        for (let offset = 0; offset < rows.length; offset += BACKUP_IMPORT_LIMITS.insertBatchRows) {
+          const data = rows
+            .slice(offset, offset + BACKUP_IMPORT_LIMITS.insertBatchRows)
+            .map((row) => {
+              const revived = revive(model, row);
+              const insertable = deferred ? nullifyColumns(revived, deferred) : revived;
+              return applyJsonNulls(model, insertable);
+            });
+          await delegate.createMany({ data, skipDuplicates: false });
+        }
       }
 
       // 3. Second pass: set the deferred FK columns now that all rows exist.
@@ -227,6 +410,9 @@ export async function restoreArchive(
           }
         }
       }
+
+      // WorkflowWebhook is a derived index and is intentionally not part of the archive.
+      await rebuildWorkflowWebhookIndex(tx);
     },
     { timeout: RESTORE_TX_TIMEOUT_MS },
   );

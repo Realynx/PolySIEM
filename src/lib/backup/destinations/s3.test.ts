@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import {
   amzDates,
@@ -8,6 +8,7 @@ import {
   deriveSigningKey,
   sha256Hex,
   uriEncode,
+  listObjectsS3,
 } from "./s3";
 
 /**
@@ -122,5 +123,52 @@ describe("amzDates", () => {
       amzDate: "20130524T000000Z",
       dateStamp: "20130524",
     });
+  });
+});
+
+describe("listObjectsS3", () => {
+  it("follows continuation tokens and decodes XML entities", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          [
+            "<ListBucketResult>",
+            "<IsTruncated>true</IsTruncated>",
+            "<Contents><Key>backups/one&amp;two.gz</Key><LastModified>2026-01-01</LastModified></Contents>",
+            "<NextContinuationToken>next&amp;token</NextContinuationToken>",
+            "</ListBucketResult>",
+          ].join(""),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>backups/three.gz</Key><LastModified>2026-01-02</LastModified></Contents></ListBucketResult>",
+          { status: 200 },
+        ),
+      );
+
+    const objects = await listObjectsS3(
+      {
+        endpoint: "https://storage.example.test",
+        region: "us-east-1",
+        bucket: "polysiem",
+        prefix: "backups/",
+        accessKeyId: "access",
+        secretAccessKey: "secret",
+        forcePathStyle: true,
+      },
+      "backups/",
+    );
+
+    expect(objects).toEqual([
+      { key: "backups/one&two.gz", lastModified: "2026-01-01" },
+      { key: "backups/three.gz", lastModified: "2026-01-02" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("continuation-token=next%26token");
+
+    fetchMock.mockRestore();
   });
 });

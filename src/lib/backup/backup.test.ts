@@ -5,10 +5,11 @@ import {
   sha256Hex,
 } from "@/lib/crypto";
 import { encodeArchive } from "./export";
-import { decodeArchive, previewRestore } from "./import";
+import { decodeArchive, decodeBackupFileAsync, previewRestore } from "./import";
 import { currentSecretFingerprint, revive } from "./revive";
 import { decodeEncryptedBackup, encodeEncryptedBackup, isEncryptedBackup } from "./archive-crypto";
 import { rewrapArchiveSecrets } from "./portable-secrets";
+import { BACKUP_IMPORT_LIMITS, BackupLimitError } from "./limits";
 import { BACKUP_FORMAT_VERSION, type BackupArchive } from "./types";
 
 /**
@@ -73,6 +74,14 @@ describe("encodeArchive / decodeArchive round-trip", () => {
     expect(decoded).toEqual(archive);
     // BigInt values remain strings through the JSON round-trip
     expect(decoded.data.device?.[0]?.memoryBytes).toBe("8589934592");
+  });
+
+  it("decodes the HTTP restore path asynchronously", async () => {
+    const archive = makeArchive();
+    await expect(decodeBackupFileAsync(encodeArchive(archive))).resolves.toMatchObject({
+      archive,
+      passwordProtected: false,
+    });
   });
 });
 
@@ -153,6 +162,41 @@ describe("decodeArchive validation", () => {
   it("rejects bytes with no manifest", () => {
     const bytes = encodeArchive({ data: {} } as unknown as BackupArchive);
     expect(() => decodeArchive(bytes)).toThrow(/missing a valid manifest/i);
+  });
+
+  it("rejects a compressed file above the upload ceiling before decompression", () => {
+    const oversized = Buffer.allocUnsafe(BACKUP_IMPORT_LIMITS.uploadBytes + 1);
+    expect(() => decodeArchive(oversized)).toThrow(BackupLimitError);
+  });
+
+  it("rejects a model that exceeds the configured row ceiling", () => {
+    const archive = makeArchive();
+    archive.data.device = Array.from(
+      { length: BACKUP_IMPORT_LIMITS.rowsPerModel + 1 },
+      (_, index) => ({ id: `device-${index}` }),
+    );
+    expect(() => decodeArchive(encodeArchive(archive))).toThrow(BackupLimitError);
+  });
+
+  it("rejects duplicate webhook tokens before a destructive restore", () => {
+    const archive = makeArchive();
+    archive.data.workflow = [
+      {
+        id: "workflow-a",
+        graph: {
+          nodes: [{ id: "hook-a", kind: "trigger.webhook", config: { token: "shared-token" } }],
+          edges: [],
+        },
+      },
+      {
+        id: "workflow-b",
+        graph: {
+          nodes: [{ id: "hook-b", kind: "trigger.webhook", config: { token: "shared-token" } }],
+          edges: [],
+        },
+      },
+    ];
+    expect(() => decodeArchive(encodeArchive(archive))).toThrow(/webhook token shared/i);
   });
 });
 

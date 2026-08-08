@@ -1,5 +1,6 @@
 import "server-only";
 import type { S3DestinationConfig, AzureDestinationConfig } from "../types";
+import { runWithConcurrency } from "@/lib/concurrency";
 import { joinKey } from "./keys";
 import {
   putObjectS3,
@@ -58,6 +59,26 @@ export function resolveObjectKey(dest: ResolvedDestination, filename: string): s
   return joinKey("", filename); // sas: any prefix already lives in the SAS URL path
 }
 
+const RETENTION_DELETE_CONCURRENCY = 4;
+
+/** Delete stale objects concurrently without turning one provider failure into a burst. */
+export async function deleteWithConcurrency(
+  keys: readonly string[],
+  remove: (key: string) => Promise<void>,
+  concurrency = RETENTION_DELETE_CONCURRENCY,
+): Promise<number> {
+  let deleted = 0;
+  await runWithConcurrency(keys, concurrency, async (key) => {
+    try {
+      await remove(key);
+      deleted += 1;
+    } catch {
+      // Retention is best-effort; continue pruning other stale objects.
+    }
+  });
+  return deleted;
+}
+
 /**
  * Retention: keep at most `retention` PolySIEM backups on the destination,
  * deleting the oldest beyond that. Best-effort — matches only our own
@@ -70,13 +91,11 @@ export async function pruneOldBackups(dest: ResolvedDestination, retention: numb
     if (dest.type === "s3") {
       const objects = await listObjectsS3(dest.config, dest.config.prefix ?? "");
       const stale = selectStale(objects, retention);
-      for (const key of stale) await deleteObjectS3(dest.config, key);
-      return stale.length;
+      return deleteWithConcurrency(stale, (key) => deleteObjectS3(dest.config, key));
     }
     const blobs = await listBlobsAzure(dest.config);
     const stale = selectStale(blobs, retention);
-    for (const key of stale) await deleteBlobAzure(dest.config, key);
-    return stale.length;
+    return deleteWithConcurrency(stale, (key) => deleteBlobAzure(dest.config, key));
   } catch {
     return 0; // best-effort — never break the run over pruning
   }

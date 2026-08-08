@@ -142,6 +142,18 @@ model AppSetting {
   updatedAt DateTime @updatedAt
 }
 
+/// Shared fixed-window counters used for login and public webhook throttling.
+/// Rows expire naturally and may be pruned by maintenance without affecting data.
+model RateLimitBucket {
+  key             String   @id
+  count           Int
+  windowStartedAt DateTime
+  expiresAt       DateTime
+  updatedAt       DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
 // ---------- integrations ----------
 
 model IntegrationConfig {
@@ -1208,9 +1220,23 @@ model Workflow {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  runs WorkflowRun[]
+  runs     WorkflowRun[]
+  webhooks WorkflowWebhook[]
 
   @@index([name])
+}
+
+/// Materialized lookup for public webhook tokens. The source of truth remains
+/// the workflow graph; this table is rebuilt transactionally whenever a graph changes.
+model WorkflowWebhook {
+  token      String   @id
+  workflowId String
+  workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  nodeId     String
+  createdAt  DateTime @default(now())
+
+  @@unique([workflowId, nodeId])
+  @@index([workflowId])
 }
 
 /// One execution of a workflow. Step outputs are persisted with secret output

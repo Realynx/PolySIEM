@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
-import { LockKeyhole } from "lucide-react";
 import { MobileTabBar } from "./mobile-tab-bar";
 import type { MobileShellUser } from "./mobile-more-sheet";
+import { DemoModeBanner } from "@/components/shell/demo-mode-banner";
 
 /**
  * Phone app frame: content above a fixed bottom tab bar. Pages own their own
@@ -21,11 +21,7 @@ export function MobileShell({
 }) {
   return (
     <div className="flex min-h-svh flex-col">
-      {demoLocked && (
-        <div className="flex items-center justify-center gap-2 border-b border-violet-500/20 bg-violet-500/10 px-4 py-2 text-center text-xs font-medium text-violet-700 dark:text-violet-300">
-          <LockKeyhole className="size-3.5 shrink-0" /> Public demo — persistent changes are locked.
-        </div>
-      )}
+      {demoLocked && <DemoModeBanner />}
       <main className="flex flex-1 flex-col pb-[calc(3.5rem+env(safe-area-inset-bottom))]">
         {children}
       </main>

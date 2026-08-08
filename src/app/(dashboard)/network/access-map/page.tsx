@@ -2,12 +2,16 @@ import Link from "next/link";
 import { Waypoints } from "lucide-react";
 import { requirePageUser } from "@/lib/auth/guards";
 import { isMobileView } from "@/lib/device";
+import { DatasetBudgetExceededError } from "@/lib/dataset-budget";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { NetworkAccessMap } from "@/components/topology/network-access-map";
 import { MobileAccessMap } from "@/components/mobile/pages/maps/mobile-access-map";
+import { MobilePageHeader } from "@/components/mobile/ui/mobile-page-header";
+import { MobilePage } from "@/components/mobile/ui/mobile-page";
+import { MobileEmpty } from "@/components/mobile/ui/mobile-list";
 import { loadAccessMapData } from "./access-map-data";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +20,42 @@ export const metadata = { title: "Access map" };
 
 export default async function AccessMapPage() {
   const { user } = await requirePageUser();
+  const mobile = await isMobileView();
+
+  let data: Awaited<ReturnType<typeof loadAccessMapData>>;
+  try {
+    data = await loadAccessMapData();
+  } catch (err) {
+    if (!(err instanceof DatasetBudgetExceededError)) throw err;
+    const description = `${err.dataset} exceeds the safe processing budget. Archive stale inventory records, then reload this view.`;
+    if (mobile) {
+      return (
+        <>
+          <MobilePageHeader title="Access map" />
+          <MobilePage>
+            <MobileEmpty
+              icon={<Waypoints />}
+              title="Access map paused"
+              description={description}
+            />
+          </MobilePage>
+        </>
+      );
+    }
+    return (
+      <div>
+        <PageHeader
+          title="Access map"
+          description="One reachability view assembled from every connected source: gateway policy, Proxmox workload firewalls, observed addresses, switching, and WiFi."
+        />
+        <EmptyState
+          icon={Waypoints}
+          title="Access map paused"
+          description={description}
+        />
+      </div>
+    );
+  }
 
   const {
     display,
@@ -23,9 +63,9 @@ export default async function AccessMapPage() {
     homeNetworkId,
     hasSwitchConfigs,
     empty,
-  } = await loadAccessMapData();
+  } = data;
 
-  if (await isMobileView()) {
+  if (mobile) {
     return (
       <MobileAccessMap
         graph={display.graph}

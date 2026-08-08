@@ -20,10 +20,13 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
           fontFamily: "system-ui, sans-serif",
           textAlign: "center",
           padding: "1.5rem",
+          colorScheme: "light dark",
+          background: "Canvas",
+          color: "CanvasText",
         }}
       >
         <h1 style={{ fontSize: "1.5rem", fontWeight: 600 }}>Something went wrong</h1>
-        <p style={{ color: "#71717a", maxWidth: "28rem" }}>
+        <p style={{ opacity: 0.7, maxWidth: "28rem" }}>
           A critical error occurred. Try reloading the page; if it persists, check the server logs.
         </p>
         <button
@@ -31,9 +34,9 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
           style={{
             padding: "0.5rem 1rem",
             borderRadius: "0.5rem",
-            border: "1px solid #d4d4d8",
-            background: "#18181b",
-            color: "#fafafa",
+            border: "1px solid ButtonBorder",
+            background: "Highlight",
+            color: "HighlightText",
             cursor: "pointer",
           }}
         >

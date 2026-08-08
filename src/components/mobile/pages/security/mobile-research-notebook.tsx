@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -160,12 +160,15 @@ export function MobileResearchNotebook() {
   // Unlike desktop (sidebar + page), the phone shows the index until a page is picked.
   const activePage = selectedMobilePage(pages, activeId);
 
+  const draftPageId = useRef<string | null>(null);
   useEffect(() => {
+    if (draftPageId.current === activePage?.id) return;
+    draftPageId.current = activePage?.id ?? null;
     if (activePage) {
       setNotes(activePage.notes ?? "");
       setTitle(activePage.title);
     }
-  }, [activePage?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activePage]);
 
   useEffect(() => {
     const subject = new URLSearchParams(window.location.search).get("subject")?.trim();

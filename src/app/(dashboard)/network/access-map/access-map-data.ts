@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/db";
+import { assertDatasetBudget } from "@/lib/dataset-budget";
 import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { deriveAccessGraph } from "@/lib/topology/access";
 import { resolveObservedAssetAddresses } from "@/lib/topology/address-evidence";
@@ -22,6 +23,23 @@ import {
   buildTailscaleTailnets,
 } from "./access-map-providers";
 
+const ACCESS_MAP_BUDGET = {
+  networks: 2_000,
+  firewallRules: 25_000,
+  aliases: 10_000,
+  integrationTypes: 100,
+  portForwards: 25_000,
+  addresses: 50_000,
+  guestInterfaces: 50_000,
+  leases: 50_000,
+  neighbors: 50_000,
+  wirelessNetworks: 10_000,
+  wirelessAps: 10_000,
+  switchConfigs: 2_000,
+  switchVlansPerConfig: 4_096,
+  switchPortsPerConfig: 2_000,
+} as const;
+
 /** Load, assemble, and anonymize the complete access-map render model. */
 export async function loadAccessMapData() {
   const [networkRows, rules, aliases, pveIpsets, activeIntegrations, cloudflareSnapshots, tailscaleSnapshots, edgePortForwards] = await Promise.all([
@@ -29,6 +47,7 @@ export async function loadAccessMapData() {
       where: { status: { not: "REMOVED" } },
       orderBy: { name: "asc" },
       select: { id: true, name: true, vlanId: true, cidr: true, gateway: true, externalId: true, purpose: true, source: true },
+      take: ACCESS_MAP_BUDGET.networks + 1,
     }),
     prisma.firewallRule.findMany({
       // Gateway-level rules only — Proxmox guest-isolation rules feed the
@@ -49,19 +68,23 @@ export async function loadAccessMapData() {
         metadata: true,
         source: true,
       },
+      take: ACCESS_MAP_BUDGET.firewallRules + 1,
     }),
     prisma.firewallAlias.findMany({
       where: { status: { not: "REMOVED" }, aliasType: { notIn: ["pve-ipset", "pve-alias"] } },
       select: { name: true, aliasType: true, content: true },
+      take: ACCESS_MAP_BUDGET.aliases + 1,
     }),
     prisma.firewallAlias.findMany({
       where: { status: { not: "REMOVED" }, aliasType: { in: ["pve-ipset", "pve-alias"] } },
       select: { name: true, content: true },
+      take: ACCESS_MAP_BUDGET.aliases + 1,
     }),
     prisma.integrationConfig.findMany({
       where: { enabled: true },
       select: { type: true },
       distinct: ["type"],
+      take: ACCESS_MAP_BUDGET.integrationTypes + 1,
     }),
     listStoredCloudflareSnapshots(),
     listStoredTailscaleSnapshots(),
@@ -79,8 +102,16 @@ export async function loadAccessMapData() {
         descriptionText: true,
         source: true,
       },
+      take: ACCESS_MAP_BUDGET.portForwards + 1,
     }),
   ]);
+
+  assertDatasetBudget("Access-map networks", networkRows, ACCESS_MAP_BUDGET.networks);
+  assertDatasetBudget("Access-map firewall rules", rules, ACCESS_MAP_BUDGET.firewallRules);
+  assertDatasetBudget("Access-map firewall aliases", aliases, ACCESS_MAP_BUDGET.aliases);
+  assertDatasetBudget("Access-map Proxmox address sets", pveIpsets, ACCESS_MAP_BUDGET.aliases);
+  assertDatasetBudget("Access-map integration types", activeIntegrations, ACCESS_MAP_BUDGET.integrationTypes);
+  assertDatasetBudget("Access-map edge port forwards", edgePortForwards, ACCESS_MAP_BUDGET.portForwards);
 
   const pveAddressSets = pveIpsets.map((set) => ({ name: set.name, entries: set.content }));
   const integrationEvidence = buildIntegrationEvidence(
@@ -120,6 +151,7 @@ export async function loadAccessMapData() {
           },
         },
       },
+      take: ACCESS_MAP_BUDGET.addresses + 1,
     }),
     prisma.networkInterface.findMany({
       where: {
@@ -132,16 +164,24 @@ export async function loadAccessMapData() {
         vm: { select: { id: true, externalId: true, name: true, metadata: true } },
         container: { select: { id: true, externalId: true, name: true, metadata: true } },
       },
+      take: ACCESS_MAP_BUDGET.guestInterfaces + 1,
     }),
     prisma.dhcpLease.findMany({
       where: { status: { not: "REMOVED" } },
       select: { id: true, ipAddress: true, macAddress: true, hostname: true, isStatic: true, networkId: true },
+      take: ACCESS_MAP_BUDGET.leases + 1,
     }),
     prisma.networkNeighbor.findMany({
       where: { status: { not: "REMOVED" }, permanent: false },
       select: { id: true, ipAddress: true, macAddress: true, hostname: true, manufacturer: true, networkId: true },
+      take: ACCESS_MAP_BUDGET.neighbors + 1,
     }),
   ]);
+
+  assertDatasetBudget("Access-map IP addresses", ips, ACCESS_MAP_BUDGET.addresses);
+  assertDatasetBudget("Access-map guest interfaces", guestInterfaces, ACCESS_MAP_BUDGET.guestInterfaces);
+  assertDatasetBudget("Access-map DHCP leases", leases, ACCESS_MAP_BUDGET.leases);
+  assertDatasetBudget("Access-map network neighbors", neighbors, ACCESS_MAP_BUDGET.neighbors);
 
   const resolvedGuestObservations = resolveObservedAssetAddresses(
     guestInterfaces.flatMap((iface) => {
@@ -194,20 +234,28 @@ export async function loadAccessMapData() {
         vlanId: true,
         networkId: true,
       },
+      take: ACCESS_MAP_BUDGET.wirelessNetworks + 1,
     }),
     prisma.wirelessAp.findMany({
       where: { status: { not: "REMOVED" } },
       orderBy: { name: "asc" },
       select: { id: true, name: true, model: true },
+      take: ACCESS_MAP_BUDGET.wirelessAps + 1,
     }),
   ]);
+  assertDatasetBudget("Access-map wireless networks", wifiSsids, ACCESS_MAP_BUDGET.wirelessNetworks);
+  assertDatasetBudget("Access-map wireless access points", wifiAps, ACCESS_MAP_BUDGET.wirelessAps);
 
   const switchConfigs = await prisma.switchConfig.findMany({
     include: {
       device: { select: { id: true, name: true } },
-      vlans: { select: { vlanId: true, svIpAddress: true, networkId: true } },
+      vlans: {
+        take: ACCESS_MAP_BUDGET.switchVlansPerConfig + 1,
+        select: { vlanId: true, svIpAddress: true, networkId: true },
+      },
       ports: {
         orderBy: { sortOrder: "asc" },
+        take: ACCESS_MAP_BUDGET.switchPortsPerConfig + 1,
         select: {
           shortName: true,
           description: true,
@@ -223,7 +271,13 @@ export async function loadAccessMapData() {
         },
       },
     },
+    take: ACCESS_MAP_BUDGET.switchConfigs + 1,
   });
+  assertDatasetBudget("Access-map switch configurations", switchConfigs, ACCESS_MAP_BUDGET.switchConfigs);
+  for (const config of switchConfigs) {
+    assertDatasetBudget("VLANs in one access-map switch", config.vlans, ACCESS_MAP_BUDGET.switchVlansPerConfig);
+    assertDatasetBudget("Ports in one access-map switch", config.ports, ACCESS_MAP_BUDGET.switchPortsPerConfig);
+  }
 
   const edgeIngressRules = edgePortForwards.map((forward) => ({
     id: `edge-nat:${forward.id}`,
@@ -395,7 +449,9 @@ export async function loadAccessMapData() {
         enabled: true,
         metadata: true,
       },
+      take: ACCESS_MAP_BUDGET.firewallRules + 1,
     });
+  assertDatasetBudget("Access-map Proxmox firewall rules", pveRules, ACCESS_MAP_BUDGET.firewallRules);
 
   const { pve, homeNetworkId, groupRuleCount } = buildAccessMapPveData(
     guestInterfaces,

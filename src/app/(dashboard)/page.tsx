@@ -17,9 +17,11 @@ import {
   Server,
   Share2,
   Shield,
+  TriangleAlert,
   Wifi,
   type LucideIcon,
 } from "lucide-react";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePageUser } from "@/lib/auth/guards";
 import { isMobileView } from "@/lib/device";
@@ -27,6 +29,7 @@ import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { formatBytes, formatRelative } from "@/lib/format";
 import { isLiveQueryType, type IntegrationTypeValue } from "@/lib/types";
 import { loadFootprintInput } from "@/lib/topology/footprint-data";
+import { DatasetBudgetExceededError } from "@/lib/dataset-budget";
 import { deriveFootprint } from "@/lib/topology/footprint";
 import { FootprintMap } from "@/components/topology/footprint-map";
 import { MobileHome } from "@/components/mobile/pages/home/mobile-home";
@@ -61,20 +64,52 @@ interface StatTile {
   count: number;
 }
 
+interface DashboardStoragePool {
+  id: string;
+  name: string;
+  type: string | null;
+  totalBytes: bigint | null;
+  usedBytes: bigint | null;
+}
+
+const DASHBOARD_INTEGRATION_LIMIT = 100;
+
 export default async function DashboardHomePage() {
   const { user } = await requirePageUser();
   const isAdmin = user.role === "ADMIN";
 
   const notRemoved = { status: { not: "REMOVED" as const } };
-  const [footprintInput, hosts, vms, containers, networks, services, docs, rawIntegrations, rawPools] =
-    await Promise.all([
-      loadFootprintInput(),
+  const footprintPromise = loadFootprintInput()
+    .then((input) => ({ input, unavailableReason: null as string | null }))
+    .catch((err: unknown) => {
+      if (!(err instanceof DatasetBudgetExceededError)) throw err;
+      console.warn("[dashboard] topology processing budget exceeded:", err.message);
+      return {
+        input: null,
+        unavailableReason: `${err.message} The inventory counts remain available, but the full map is paused to protect app performance.`,
+      };
+    });
+
+  const [
+    footprintResult,
+    hosts,
+    vms,
+    containers,
+    networks,
+    services,
+    docs,
+    integrationCount,
+    rawIntegrations,
+    rawPools,
+  ] = await Promise.all([
+      footprintPromise,
       prisma.device.count({ where: notRemoved }),
       prisma.virtualMachine.count({ where: notRemoved }),
       prisma.container.count({ where: notRemoved }),
       prisma.network.count({ where: notRemoved }),
       prisma.service.count({ where: notRemoved }),
       prisma.docPage.count(),
+      prisma.integrationConfig.count(),
       prisma.integrationConfig.findMany({
         select: {
           id: true,
@@ -86,15 +121,24 @@ export default async function DashboardHomePage() {
           lastSyncError: true,
         },
         orderBy: { createdAt: "asc" },
+        take: DASHBOARD_INTEGRATION_LIMIT,
       }),
-      prisma.storagePool.findMany({
-        where: { ...notRemoved, totalBytes: { not: null } },
-        select: { id: true, name: true, type: true, totalBytes: true, usedBytes: true },
-      }),
+      prisma.$queryRaw<DashboardStoragePool[]>(Prisma.sql`
+        SELECT "id", "name", "type", "totalBytes", "usedBytes"
+        FROM "StoragePool"
+        WHERE "status" <> 'REMOVED' AND "totalBytes" IS NOT NULL
+        ORDER BY CASE
+          WHEN "totalBytes" > 0 THEN COALESCE("usedBytes", 0)::numeric / "totalBytes"
+          ELSE 0
+        END DESC, "name" ASC
+        LIMIT 6
+      `),
     ]);
 
-  const footprint = await anonymizeForDisplay(deriveFootprint(footprintInput));
-  const hasFootprint = footprintInput.machines.length > 0;
+  const footprint = footprintResult.input
+    ? await anonymizeForDisplay(deriveFootprint(footprintResult.input))
+    : null;
+  const hasFootprint = Boolean(footprintResult.input && footprintResult.input.machines.length > 0);
   const integrations = await anonymizeForDisplay(rawIntegrations);
   const pools = await anonymizeForDisplay(rawPools);
 
@@ -122,7 +166,9 @@ export default async function DashboardHomePage() {
         tiles={tiles}
         footprint={footprint}
         hasFootprint={hasFootprint}
+        footprintUnavailableReason={footprintResult.unavailableReason}
         integrations={integrations}
+        integrationCount={integrationCount}
         integrationIcons={INTEGRATION_ICONS}
         pools={topPools}
         isAdmin={isAdmin}
@@ -152,7 +198,13 @@ export default async function DashboardHomePage() {
       </div>
 
       {/* Footprint map */}
-      {hasFootprint ? (
+      {footprintResult.unavailableReason ? (
+        <EmptyState
+          icon={TriangleAlert}
+          title="Topology map paused"
+          description={footprintResult.unavailableReason}
+        />
+      ) : hasFootprint && footprint ? (
         <FootprintMap graph={footprint} />
       ) : (
         <EmptyState
@@ -173,9 +225,16 @@ export default async function DashboardHomePage() {
 
       {/* Integration health */}
       <section>
-        <h2 className="mb-3 text-sm font-medium uppercase tracking-wider text-muted-foreground">
-          Integrations
-        </h2>
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+            Integrations
+          </h2>
+          {integrationCount > integrations.length && (
+            <p className="text-xs text-muted-foreground">
+              Showing {integrations.length} of {integrationCount}
+            </p>
+          )}
+        </div>
         {integrations.length === 0 ? (
           <EmptyState
             icon={Plug}

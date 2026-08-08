@@ -11,7 +11,11 @@ const RESET_TX_TIMEOUT_MS = 120_000;
 
 /** Every persisted PolySIEM model, quoted explicitly to keep the wipe scoped. */
 export function instanceTruncateSql(): string {
-  const tables = BACKUP_MODELS.map((model) => `"${tableName(model)}"`).join(", ");
+  const derivedTables = ["RateLimitBucket", "WorkflowWebhook"];
+  const tables = [
+    ...derivedTables.map((table) => `"${table}"`),
+    ...BACKUP_MODELS.map((model) => `"${tableName(model)}"`),
+  ].join(", ");
   return `TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`;
 }
 

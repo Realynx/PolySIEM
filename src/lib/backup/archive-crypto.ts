@@ -2,11 +2,13 @@ import {
   createCipheriv,
   createDecipheriv,
   randomBytes,
+  scrypt,
   scryptSync,
   timingSafeEqual,
 } from "node:crypto";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gunzip, gunzipSync, gzipSync } from "node:zlib";
 import type { BackupArchive } from "./types";
+import { BACKUP_IMPORT_LIMITS, BackupLimitError, formatMiB } from "./limits";
 
 const MAGIC = "POLYSIEM-ENCRYPTED-BACKUP\n";
 const ENVELOPE_VERSION = 1;
@@ -47,6 +49,43 @@ function deriveKey(password: string, salt: Buffer, envelope?: Pick<EncryptedEnve
     r: envelope?.r ?? SCRYPT_R,
     p: envelope?.p ?? SCRYPT_P,
     maxmem: SCRYPT_MAXMEM,
+  });
+}
+
+function deriveKeyAsync(
+  password: string,
+  salt: Buffer,
+  envelope: Pick<EncryptedEnvelope, "n" | "r" | "p">,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, KEY_BYTES, {
+      N: envelope.n,
+      r: envelope.r,
+      p: envelope.p,
+      maxmem: SCRYPT_MAXMEM,
+    }, (err, key) => {
+      if (err) reject(err);
+      else resolve(Buffer.from(key));
+    });
+  });
+}
+
+function gunzipPortablePayload(compressed: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    gunzip(compressed, { maxOutputLength: BACKUP_IMPORT_LIMITS.expandedBytes }, (err, output) => {
+      if (!err) {
+        resolve(output);
+        return;
+      }
+      const code = err && typeof err === "object" && "code" in err ? String(err.code) : "";
+      if (code === "ERR_BUFFER_TOO_LARGE" || err.message.includes("maxOutputLength")) {
+        reject(new BackupLimitError(
+          `Backup expands beyond the ${formatMiB(BACKUP_IMPORT_LIMITS.expandedBytes)} restore limit.`,
+        ));
+        return;
+      }
+      reject(err);
+    });
   });
 }
 
@@ -107,14 +146,67 @@ function decryptBackupPayload(envelope: EncryptedEnvelope, password: string): Pa
   const iv = Buffer.from(envelope.iv, "base64");
   const tag = Buffer.from(envelope.tag, "base64");
   if (salt.byteLength !== 16 || iv.byteLength !== 12 || tag.byteLength !== 16) throw new Error("bad header");
+  const ciphertext = Buffer.from(envelope.ciphertext, "base64");
+  if (ciphertext.byteLength > BACKUP_IMPORT_LIMITS.uploadBytes) {
+    throw new BackupLimitError(`Encrypted backup payload exceeds the ${formatMiB(BACKUP_IMPORT_LIMITS.uploadBytes)} restore limit.`);
+  }
   const decipher = createDecipheriv("aes-256-gcm", deriveKey(password, salt, envelope), iv);
   decipher.setAAD(Buffer.from(MAGIC, "utf8"));
   decipher.setAuthTag(tag);
-  const compressed = Buffer.concat([
-    decipher.update(Buffer.from(envelope.ciphertext, "base64")),
-    decipher.final(),
-  ]);
-  return JSON.parse(gunzipSync(compressed).toString("utf8")) as Partial<PortablePayload>;
+  const compressed = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  let plaintext: Buffer;
+  try {
+    plaintext = gunzipSync(compressed, { maxOutputLength: BACKUP_IMPORT_LIMITS.expandedBytes });
+  } catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? String(err.code) : "";
+    if (code === "ERR_BUFFER_TOO_LARGE" || (err instanceof Error && err.message.includes("maxOutputLength"))) {
+      throw new BackupLimitError(`Backup expands beyond the ${formatMiB(BACKUP_IMPORT_LIMITS.expandedBytes)} restore limit.`);
+    }
+    throw err;
+  }
+  return JSON.parse(plaintext.toString("utf8")) as Partial<PortablePayload>;
+}
+
+async function decryptBackupPayloadAsync(
+  envelope: EncryptedEnvelope,
+  password: string,
+): Promise<Partial<PortablePayload>> {
+  const salt = Buffer.from(envelope.salt, "base64");
+  const iv = Buffer.from(envelope.iv, "base64");
+  const tag = Buffer.from(envelope.tag, "base64");
+  if (salt.byteLength !== 16 || iv.byteLength !== 12 || tag.byteLength !== 16) throw new Error("bad header");
+  const ciphertext = Buffer.from(envelope.ciphertext, "base64");
+  if (ciphertext.byteLength > BACKUP_IMPORT_LIMITS.uploadBytes) {
+    throw new BackupLimitError(`Encrypted backup payload exceeds the ${formatMiB(BACKUP_IMPORT_LIMITS.uploadBytes)} restore limit.`);
+  }
+  const decipher = createDecipheriv("aes-256-gcm", await deriveKeyAsync(password, salt, envelope), iv);
+  decipher.setAAD(Buffer.from(MAGIC, "utf8"));
+  decipher.setAuthTag(tag);
+  const compressed = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  const plaintext = await gunzipPortablePayload(compressed);
+  return JSON.parse(plaintext.toString("utf8")) as Partial<PortablePayload>;
+}
+
+/** Async variant used by HTTP restore so scrypt and gzip do not block the event loop. */
+export async function decodeEncryptedBackupAsync(
+  buffer: Buffer,
+  password?: string,
+): Promise<DecodedBackupFile> {
+  if (!isEncryptedBackup(buffer)) throw new Error("This is not a password-protected PolySIEM backup.");
+  if (!password) throw new Error("This backup is encrypted. Enter its backup password to continue.");
+  if (password.length > 1024) throw new Error("Backup password must be no more than 1024 characters.");
+
+  const envelope = parseEncryptedEnvelope(buffer);
+  try {
+    const payload = await decryptBackupPayloadAsync(envelope, password);
+    if (!payload.archive || typeof payload.appSecret !== "string" || payload.appSecret.length < 32) {
+      throw new Error("bad payload");
+    }
+    return { archive: payload.archive, passwordProtected: true, sourceAppSecret: payload.appSecret };
+  } catch (err) {
+    if (err instanceof BackupLimitError) throw err;
+    throw new Error("The backup password is incorrect, or the encrypted backup is corrupt.");
+  }
 }
 
 /** Open an encrypted backup. Authentication failures intentionally share one error. */
@@ -131,7 +223,8 @@ export function decodeEncryptedBackup(buffer: Buffer, password?: string): Decode
       throw new Error("bad payload");
     }
     return { archive: payload.archive, passwordProtected: true, sourceAppSecret: payload.appSecret };
-  } catch {
+  } catch (err) {
+    if (err instanceof BackupLimitError) throw err;
     throw new Error("The backup password is incorrect, or the encrypted backup is corrupt.");
   }
 }
