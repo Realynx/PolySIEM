@@ -36,6 +36,14 @@ const RESTORE_TX_TIMEOUT_MS = 10 * 60_000;
 
 /* ------------------------------- decode ------------------------------- */
 
+function assertCompressedBackupSize(buffer: Buffer): void {
+  if (buffer.byteLength > BACKUP_IMPORT_LIMITS.uploadBytes) {
+    throw new BackupLimitError(
+      `Backup file exceeds the ${formatMiB(BACKUP_IMPORT_LIMITS.uploadBytes)} restore limit.`,
+    );
+  }
+}
+
 /**
  * Parse gzipped-JSON backup bytes into an archive, validating that we can
  * actually apply it: it must be gzip, contain a manifest with a supported
@@ -127,56 +135,75 @@ function validateArchivedWebhookTokens(archive: Partial<BackupArchive>): void {
   }
 }
 
+const KNOWN_BACKUP_MODELS = new Set<string>(BACKUP_MODELS);
+
+function validateManifest(manifest: unknown): asserts manifest is BackupArchive["manifest"] {
+  if (!manifest || typeof manifest !== "object" || !("formatVersion" in manifest)) {
+    throw new Error("Backup archive is missing a valid manifest.");
+  }
+  const formatVersion = (manifest as { formatVersion?: unknown }).formatVersion;
+  if (typeof formatVersion !== "number") {
+    throw new Error("Backup archive is missing a valid manifest.");
+  }
+  if (formatVersion === BACKUP_FORMAT_VERSION) return;
+
+  const hint = formatVersion > BACKUP_FORMAT_VERSION
+    ? "It was created by a newer version of PolySIEM — upgrade this instance to restore it."
+    : "It uses an older, unsupported backup format.";
+  throw new Error(
+    `Unsupported backup format version ${formatVersion} (this PolySIEM supports version ${BACKUP_FORMAT_VERSION}). ${hint}`,
+  );
+}
+
+function validateModelRows(key: string, value: unknown): number {
+  if (!KNOWN_BACKUP_MODELS.has(key)) {
+    throw new Error(`Backup archive references an unknown model "${key}"; it is incompatible with this PolySIEM.`);
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`Backup archive model "${key}" must contain an array of rows.`);
+  }
+  if (value.length > BACKUP_IMPORT_LIMITS.rowsPerModel) {
+    throw new BackupLimitError(
+      `Backup model "${key}" contains ${value.length} rows; the per-model limit is ${BACKUP_IMPORT_LIMITS.rowsPerModel}.`,
+    );
+  }
+  for (const row of value) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      throw new Error(`Backup archive model "${key}" contains a malformed row.`);
+    }
+  }
+  return value.length;
+}
+
+function validateArchiveData(data: unknown): asserts data is BackupArchive["data"] {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Backup archive is missing its data section.");
+  }
+
+  let totalRows = 0;
+  for (const [key, value] of Object.entries(data)) {
+    totalRows += validateModelRows(key, value);
+    if (totalRows > BACKUP_IMPORT_LIMITS.totalRows) {
+      throw new BackupLimitError(
+        `Backup contains more than ${BACKUP_IMPORT_LIMITS.totalRows} rows and cannot be restored safely.`,
+      );
+    }
+  }
+}
+
 function validateArchive(parsed: unknown): BackupArchive {
-  if (!parsed || typeof parsed !== "object") {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Backup archive is malformed: top-level value is not an object.");
   }
   const archive = parsed as Partial<BackupArchive>;
-  const manifest = archive.manifest;
-  if (!manifest || typeof manifest !== "object" || typeof manifest.formatVersion !== "number") {
-    throw new Error("Backup archive is missing a valid manifest.");
-  }
-  if (manifest.formatVersion !== BACKUP_FORMAT_VERSION) {
-    const hint =
-      manifest.formatVersion > BACKUP_FORMAT_VERSION
-        ? "It was created by a newer version of PolySIEM — upgrade this instance to restore it."
-        : "It uses an older, unsupported backup format.";
-    throw new Error(
-      `Unsupported backup format version ${manifest.formatVersion} (this PolySIEM supports version ${BACKUP_FORMAT_VERSION}). ${hint}`,
-    );
-  }
-  if (!archive.data || typeof archive.data !== "object") {
-    throw new Error("Backup archive is missing its data section.");
-  }
-  const known = new Set<string>(BACKUP_MODELS);
-  let totalRows = 0;
-  for (const [key, value] of Object.entries(archive.data)) {
-    if (!known.has(key)) {
-      throw new Error(`Backup archive references an unknown model "${key}"; it is incompatible with this PolySIEM.`);
-    }
-    if (!Array.isArray(value)) {
-      throw new Error(`Backup archive model "${key}" must contain an array of rows.`);
-    }
-    if (value.length > BACKUP_IMPORT_LIMITS.rowsPerModel) {
-      throw new BackupLimitError(
-        `Backup model "${key}" contains ${value.length} rows; the per-model limit is ${BACKUP_IMPORT_LIMITS.rowsPerModel}.`,
-      );
-    }
-    for (const row of value) {
-      if (!row || typeof row !== "object" || Array.isArray(row)) {
-        throw new Error(`Backup archive model "${key}" contains a malformed row.`);
-      }
-    }
-    totalRows += value.length;
-    if (totalRows > BACKUP_IMPORT_LIMITS.totalRows) {
-      throw new BackupLimitError(`Backup contains more than ${BACKUP_IMPORT_LIMITS.totalRows} rows and cannot be restored safely.`);
-    }
-  }
+  validateManifest(archive.manifest);
+  validateArchiveData(archive.data);
   validateArchivedWebhookTokens(archive);
   return archive as BackupArchive;
 }
 
 export function decodeArchive(buffer: Buffer): BackupArchive {
+  assertCompressedBackupSize(buffer);
   let expanded: Buffer;
   try {
     expanded = gunzipArchive(buffer);
@@ -209,6 +236,7 @@ export async function decodeBackupFileAsync(
   buffer: Buffer,
   password?: string,
 ): Promise<DecodedBackupFile> {
+  assertCompressedBackupSize(buffer);
   if (isEncryptedBackup(buffer)) {
     const decoded = await decodeEncryptedBackupAsync(buffer, password);
     return { ...decoded, archive: validateArchive(decoded.archive) };

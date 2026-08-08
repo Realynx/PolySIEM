@@ -1,5 +1,6 @@
 import "server-only";
 import type { S3DestinationConfig, AzureDestinationConfig } from "../types";
+import { runWithConcurrency } from "@/lib/concurrency";
 import { joinKey } from "./keys";
 import {
   putObjectS3,
@@ -58,7 +59,6 @@ export function resolveObjectKey(dest: ResolvedDestination, filename: string): s
   return joinKey("", filename); // sas: any prefix already lives in the SAS URL path
 }
 
-
 const RETENTION_DELETE_CONCURRENCY = 4;
 
 /** Delete stale objects concurrently without turning one provider failure into a burst. */
@@ -67,22 +67,15 @@ export async function deleteWithConcurrency(
   remove: (key: string) => Promise<void>,
   concurrency = RETENTION_DELETE_CONCURRENCY,
 ): Promise<number> {
-  let cursor = 0;
   let deleted = 0;
-  const normalizedConcurrency = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1;
-  const workers = Math.min(keys.length, normalizedConcurrency);
-  await Promise.all(Array.from({ length: workers }, async () => {
-    while (true) {
-      const index = cursor++;
-      if (index >= keys.length) return;
-      try {
-        await remove(keys[index]!);
-        deleted += 1;
-      } catch {
-        // Retention is best-effort; continue pruning other stale objects.
-      }
+  await runWithConcurrency(keys, concurrency, async (key) => {
+    try {
+      await remove(key);
+      deleted += 1;
+    } catch {
+      // Retention is best-effort; continue pruning other stale objects.
     }
-  }));
+  });
   return deleted;
 }
 

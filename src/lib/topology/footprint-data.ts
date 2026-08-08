@@ -59,6 +59,25 @@ function deviceKind(kind: string): FpMachine["kind"] {
   return "device";
 }
 
+function resolveWanAddress(
+  networks: ReadonlyArray<{ id: string; externalId: string | null }>,
+  addresses: ReadonlyArray<{
+    address: string;
+    networkId: string | null;
+    interface: { device: { kind: string } | null } | null;
+  }>,
+  gateways: FootprintInput["gateways"],
+): string | null {
+  const wanNetwork = networks.find((network) => (network.externalId ?? "").toLowerCase() === "wan");
+  if (wanNetwork) {
+    const wanAddresses = addresses.filter((address) => address.networkId === wanNetwork.id);
+    const firewallAddress = wanAddresses.find((address) => address.interface?.device?.kind === "firewall");
+    if (firewallAddress) return firewallAddress.address;
+    if (wanAddresses[0]) return wanAddresses[0].address;
+  }
+  return gateways.find((gateway) => gateway.isDefault)?.ipAddress ?? null;
+}
+
 /** Load everything the footprint derivation needs. */
 export async function loadFootprintInput(): Promise<FootprintInput> {
   const [devices, vms, containers, networks, rules, pveRules, aliases, pveAddressSets, ips, assetInterfaces, switchConfigs, leases, neighbors, tailscaleSnapshots] =
@@ -614,18 +633,6 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
   }
   })();
 
-  // ----- WAN address: the firewall's IP on the wan-keyed network -----
-
-  const wanNetworkId = allNetworks.find((net) => (net.externalId ?? "").toLowerCase() === "wan")?.id ?? null;
-  let wanIp: string | null = null;
-  (() => {
-  if (wanNetworkId) {
-    const wanIps = ips.filter((ip) => ip.networkId === wanNetworkId);
-    wanIp =
-      wanIps.find((ip) => ip.interface?.device?.kind === "firewall")?.address ?? wanIps[0]?.address ?? null;
-  }
-  })();
-
   // ----- inbound vectors + gateways -----
 
   const [pfRows, ddRows, tunnelRows, gwRows, elasticRows, cloudflareSnapshots] = await Promise.all([
@@ -822,6 +829,6 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
     gateways,
     // The firewall's own WAN address when documented; otherwise fall back to
     // the default gateway's observed address so the Internet node isn't blank.
-    wanIp: wanIp ?? gateways.find((gw) => gw.isDefault)?.ipAddress ?? null,
+    wanIp: resolveWanAddress(allNetworks, ips, gateways),
   };
 }

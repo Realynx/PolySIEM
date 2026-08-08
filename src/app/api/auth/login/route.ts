@@ -10,26 +10,19 @@ import { clearRateLimit, consumeRateLimit, pruneExpiredRateLimits, trustedClient
 
 const ACCOUNT_LIMIT = { limit: 10, windowMs: 15 * 60_000 } as const;
 const IP_LIMIT = { limit: 60, windowMs: 15 * 60_000 } as const;
-const GLOBAL_LIMIT = { limit: 300, windowMs: 15 * 60_000 } as const;
 
 export const POST = handleApi(async (req: NextRequest) => {
   const input = loginSchema.parse(await req.json());
-  const normalizedUsername = input.username.trim().toLowerCase();
   const clientIp = trustedClientIp(req);
   await pruneExpiredRateLimits();
 
-  // Check the global circuit breaker first. Once it is exhausted, do not create
-  // attacker-controlled account buckets for arbitrary usernames.
-  const globalLimit = await consumeRateLimit("login-global", "all", GLOBAL_LIMIT);
-  if (!globalLimit.allowed) {
-    return NextResponse.json(
-      { error: { code: "rate_limited", message: "Too many login attempts. Try again shortly." } },
-      { status: 429, headers: { "Retry-After": String(globalLimit.retryAfterSeconds) } },
-    );
-  }
-
+  const user = await prisma.user.findUnique({ where: { username: input.username } });
+  // Unknown usernames share one bucket so arbitrary attacker-controlled names
+  // cannot create unbounded limiter rows. Valid accounts remain independent,
+  // so abuse against unknown names cannot globally lock out legitimate users.
+  const accountIdentity = user?.id ?? "unknown-account";
   const identityLimits = await Promise.all([
-    consumeRateLimit("login-account", normalizedUsername, ACCOUNT_LIMIT),
+    consumeRateLimit("login-account", accountIdentity, ACCOUNT_LIMIT),
     ...(clientIp ? [consumeRateLimit("login-ip", clientIp, IP_LIMIT)] : []),
   ]);
   const blocked = identityLimits.find((limit) => !limit.allowed);
@@ -40,7 +33,6 @@ export const POST = handleApi(async (req: NextRequest) => {
     );
   }
 
-  const user = await prisma.user.findUnique({ where: { username: input.username } });
   // Always verify against a hash to keep timing consistent.
   const ok = await verifyPassword(
     input.password,
@@ -51,7 +43,7 @@ export const POST = handleApi(async (req: NextRequest) => {
   }
 
   await Promise.all([
-    clearRateLimit("login-account", normalizedUsername),
+    clearRateLimit("login-account", accountIdentity),
     ...(clientIp ? [clearRateLimit("login-ip", clientIp)] : []),
   ]);
 

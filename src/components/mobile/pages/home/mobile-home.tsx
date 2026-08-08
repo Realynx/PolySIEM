@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import {
   ChevronRight,
   Cloud,
@@ -49,6 +50,177 @@ export interface HomePool {
   pct: number;
 }
 
+function AttackSurfaceStats({ footprint }: { footprint: FootprintGraph }) {
+  return (
+    <MobileStatStrip>
+      <MobileStat
+        label="Open ports"
+        value={footprint.stats.openPorts}
+        icon={<ShieldAlert />}
+        tone={footprint.stats.openPorts > 0 ? "text-destructive" : undefined}
+      />
+      <MobileStat
+        label="Tunnel hosts"
+        value={footprint.stats.tunnelHostnames}
+        icon={<Cloud />}
+        tone={footprint.stats.tunnelHostnames > 0 ? "[color:var(--color-chart-3)]" : undefined}
+      />
+      <MobileStat
+        label="Dyn DNS"
+        value={footprint.stats.dyndnsNames}
+        icon={<Globe />}
+        tone={footprint.stats.dyndnsNames > 0 ? "text-info" : undefined}
+      />
+      <MobileStat
+        label="Exposed"
+        value={footprint.stats.exposedHostnames}
+        icon={<ShieldAlert />}
+        tone={footprint.stats.exposedHostnames > 0 ? "text-destructive" : undefined}
+      />
+    </MobileStatStrip>
+  );
+}
+
+function FootprintDashboardSection({
+  footprint,
+  hasFootprint,
+  unavailableReason,
+  addIntegration,
+}: {
+  footprint: FootprintGraph | null;
+  hasFootprint: boolean;
+  unavailableReason?: string | null;
+  addIntegration?: ReactNode;
+}) {
+  const canRenderMap = hasFootprint && footprint;
+  const sectionAction = hasFootprint ? (
+    <Link
+      href="/inventory/map"
+      className="flex items-center gap-0.5 text-xs font-medium text-primary active:opacity-70"
+    >
+      Lab map <ChevronRight className="size-3.5" />
+    </Link>
+  ) : undefined;
+
+  return (
+    <MobileSection title="Footprint" action={sectionAction}>
+      {canRenderMap ? (
+        <div className="-mx-3.5 h-[42svh]">
+          <FootprintMap graph={footprint} chromeless heightClassName="h-full rounded-none border-x-0" />
+        </div>
+      ) : (
+        <MobileEmpty
+          icon={<MapIcon />}
+          title={unavailableReason ? "Topology map paused" : "No footprint to draw yet"}
+          description={unavailableReason ?? "Connect an integration and the dashboard will map your whole lab: machines, networks, and every inbound path."}
+          action={unavailableReason ? undefined : addIntegration}
+        />
+      )}
+    </MobileSection>
+  );
+}
+
+function integrationSubtitle(integration: HomeIntegration, live: boolean): ReactNode {
+  if (integration.lastSyncStatus === "FAILED" && integration.lastSyncError) {
+    return <span className="text-destructive">{integration.lastSyncError}</span>;
+  }
+  if (live) return "Queried live";
+  if (integration.lastSyncAt) {
+    return `Last synced ${formatRelative(integration.lastSyncAt)}${integration.enabled ? "" : " · disabled"}`;
+  }
+  return `Not synced yet${integration.enabled ? "" : " · disabled"}`;
+}
+
+function IntegrationHealthSection({
+  integrations,
+  integrationCount,
+  integrationIcons,
+  addIntegration,
+}: {
+  integrations: HomeIntegration[];
+  integrationCount: number;
+  integrationIcons: Record<IntegrationTypeValue, LucideIcon>;
+  addIntegration?: ReactNode;
+}) {
+  if (integrations.length === 0) {
+    return (
+      <MobileSection title="Integrations">
+        <MobileEmpty
+          icon={<Plug />}
+          title="No integrations connected"
+          description="Connect Proxmox, OPNsense, or Elasticsearch and PolySIEM will document your lab automatically."
+          action={addIntegration}
+        />
+      </MobileSection>
+    );
+  }
+
+  return (
+    <MobileSection title="Integrations">
+      <MobileList>
+        {integrations.map((integration) => {
+          const Icon = integrationIcons[integration.type];
+          const live = isLiveQueryType(integration.type);
+          return (
+            <MobileListRow
+              key={integration.id}
+              leading={
+                <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Icon className="size-4" />
+                </div>
+              }
+              title={
+                <>
+                  <span className="min-w-0 truncate">{integration.name}</span>
+                  <SyncStatusBadge status={integration.lastSyncStatus} />
+                </>
+              }
+              subtitle={integrationSubtitle(integration, live)}
+              trailing={live ? (
+                <Badge variant="outline" className="border-info/40 bg-info/10 text-info">
+                  Live
+                </Badge>
+              ) : (
+                <SyncNowButton integrationId={integration.id} name={integration.name} />
+              )}
+            />
+          );
+        })}
+      </MobileList>
+      {integrationCount > integrations.length && (
+        <p className="px-1 pt-2 text-xs text-muted-foreground">
+          Showing {integrations.length} of {integrationCount} integrations.
+        </p>
+      )}
+    </MobileSection>
+  );
+}
+
+function StorageSection({ pools }: { pools: HomePool[] }) {
+  if (pools.length === 0) return null;
+  return (
+    <MobileSection title="Storage">
+      <MobileList>
+        {pools.map((pool) => (
+          <div key={pool.id} className="space-y-1.5 px-3.5 py-3">
+            <div className="flex items-baseline justify-between gap-3 text-sm">
+              <span className="min-w-0 truncate font-medium">{pool.name}</span>
+              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                {pool.type ? `${pool.type} · ` : ""}
+                {Math.round(pool.pct)}%
+              </span>
+            </div>
+            <Progress value={pool.pct} aria-label={`${pool.name} usage`} />
+            <p className="text-xs text-muted-foreground">
+              {formatBytes(pool.usedBytes)} of {formatBytes(pool.totalBytes)} used
+            </p>
+          </div>
+        ))}
+      </MobileList>
+    </MobileSection>
+  );
+}
+
 /**
  * Phone launch screen: stat tiles, the footprint hero map, then integration
  * sync health and storage. Same data as the desktop dashboard, phone layout.
@@ -86,7 +258,6 @@ export function MobileHome({
     <>
       <MobilePageHeader title="Dashboard" />
       <MobilePage className="pb-6">
-        {/* Inventory at a glance — compact 3-up so the fold shows real content */}
         <div className="grid grid-cols-3 gap-2">
           {tiles.map((tile) => (
             <Link
@@ -103,152 +274,20 @@ export function MobileHome({
           ))}
         </div>
 
-        {/* Attack-surface strip (chips the desktop map overlays) */}
-        {hasFootprint && footprint && (
-          <MobileStatStrip>
-            <MobileStat
-              label="Open ports"
-              value={footprint.stats.openPorts}
-              icon={<ShieldAlert />}
-              tone={footprint.stats.openPorts > 0 ? "text-destructive" : undefined}
-            />
-            <MobileStat
-              label="Tunnel hosts"
-              value={footprint.stats.tunnelHostnames}
-              icon={<Cloud />}
-              tone={footprint.stats.tunnelHostnames > 0 ? "[color:var(--color-chart-3)]" : undefined}
-            />
-            <MobileStat
-              label="Dyn DNS"
-              value={footprint.stats.dyndnsNames}
-              icon={<Globe />}
-              tone={footprint.stats.dyndnsNames > 0 ? "text-info" : undefined}
-            />
-            <MobileStat
-              label="Exposed"
-              value={footprint.stats.exposedHostnames}
-              icon={<ShieldAlert />}
-              tone={footprint.stats.exposedHostnames > 0 ? "text-destructive" : undefined}
-            />
-          </MobileStatStrip>
-        )}
-
-        {/* Footprint hero map — full-bleed, pinch to zoom */}
-        <MobileSection
-          title="Footprint"
-          action={
-            hasFootprint ? (
-              <Link
-                href="/inventory/map"
-                className="flex items-center gap-0.5 text-xs font-medium text-primary active:opacity-70"
-              >
-                Lab map <ChevronRight className="size-3.5" />
-              </Link>
-            ) : undefined
-          }
-        >
-          {hasFootprint && footprint ? (
-            <div className="-mx-3.5 h-[42svh]">
-              <FootprintMap
-                graph={footprint}
-                chromeless
-                heightClassName="h-full rounded-none border-x-0"
-              />
-            </div>
-          ) : (
-            <MobileEmpty
-              icon={<MapIcon />}
-              title={footprintUnavailableReason ? "Topology map paused" : "No footprint to draw yet"}
-              description={footprintUnavailableReason ?? "Connect an integration and the dashboard will map your whole lab: machines, networks, and every inbound path."}
-              action={footprintUnavailableReason ? undefined : addIntegration}
-            />
-          )}
-        </MobileSection>
-
-        {/* Integration health */}
-        <MobileSection title="Integrations">
-          {integrations.length === 0 ? (
-            <MobileEmpty
-              icon={<Plug />}
-              title="No integrations connected"
-              description="Connect Proxmox, OPNsense, or Elasticsearch and PolySIEM will document your lab automatically."
-              action={addIntegration}
-            />
-          ) : (
-            <MobileList>
-              {integrations.map((integration) => {
-                const Icon = integrationIcons[integration.type];
-                const live = isLiveQueryType(integration.type);
-                const failed =
-                  integration.lastSyncStatus === "FAILED" && integration.lastSyncError;
-                return (
-                  <MobileListRow
-                    key={integration.id}
-                    leading={
-                      <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                        <Icon className="size-4" />
-                      </div>
-                    }
-                    title={
-                      <>
-                        <span className="min-w-0 truncate">{integration.name}</span>
-                        <SyncStatusBadge status={integration.lastSyncStatus} />
-                      </>
-                    }
-                    subtitle={
-                      failed ? (
-                        <span className="text-destructive">{integration.lastSyncError}</span>
-                      ) : live ? (
-                        "Queried live"
-                      ) : integration.lastSyncAt ? (
-                        `Last synced ${formatRelative(integration.lastSyncAt)}${integration.enabled ? "" : " · disabled"}`
-                      ) : (
-                        `Not synced yet${integration.enabled ? "" : " · disabled"}`
-                      )
-                    }
-                    trailing={
-                      live ? (
-                        <Badge variant="outline" className="border-info/40 bg-info/10 text-info">
-                          Live
-                        </Badge>
-                      ) : (
-                        <SyncNowButton integrationId={integration.id} name={integration.name} />
-                      )
-                    }
-                  />
-                );
-              })}
-            </MobileList>
-          )}
-          {integrationCount > integrations.length && (
-            <p className="px-1 pt-2 text-xs text-muted-foreground">
-              Showing {integrations.length} of {integrationCount} integrations.
-            </p>
-          )}
-        </MobileSection>
-
-        {/* Storage */}
-        {pools.length > 0 && (
-          <MobileSection title="Storage">
-            <MobileList>
-              {pools.map((pool) => (
-                <div key={pool.id} className="space-y-1.5 px-3.5 py-3">
-                  <div className="flex items-baseline justify-between gap-3 text-sm">
-                    <span className="min-w-0 truncate font-medium">{pool.name}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                      {pool.type ? `${pool.type} · ` : ""}
-                      {Math.round(pool.pct)}%
-                    </span>
-                  </div>
-                  <Progress value={pool.pct} aria-label={`${pool.name} usage`} />
-                  <p className="text-xs text-muted-foreground">
-                    {formatBytes(pool.usedBytes)} of {formatBytes(pool.totalBytes)} used
-                  </p>
-                </div>
-              ))}
-            </MobileList>
-          </MobileSection>
-        )}
+        {hasFootprint && footprint && <AttackSurfaceStats footprint={footprint} />}
+        <FootprintDashboardSection
+          footprint={footprint}
+          hasFootprint={hasFootprint}
+          unavailableReason={footprintUnavailableReason}
+          addIntegration={addIntegration}
+        />
+        <IntegrationHealthSection
+          integrations={integrations}
+          integrationCount={integrationCount}
+          integrationIcons={integrationIcons}
+          addIntegration={addIntegration}
+        />
+        <StorageSection pools={pools} />
       </MobilePage>
     </>
   );

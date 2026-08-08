@@ -5,6 +5,83 @@ import { decodeBackupFileAsync, prepareBackupForRestore, previewRestore, restore
 import { BackupLimitError } from "@/lib/backup/limits";
 import { assertBackupFileSize, readBackupRequestBody } from "@/lib/backup/request-body";
 
+interface UploadOptions {
+  preview: boolean;
+  confirm: boolean;
+}
+
+interface BackupUpload extends UploadOptions {
+  buffer: Buffer;
+  password?: string;
+}
+
+function initialUploadOptions(req: NextRequest): UploadOptions {
+  const previewParam = new URL(req.url).searchParams.get("preview");
+  return {
+    preview: previewParam === "1" || previewParam === "true",
+    confirm: req.headers.get("x-confirm-restore") === "true",
+  };
+}
+
+async function parseMultipartUpload(
+  req: NextRequest,
+  requestBody: Buffer,
+  contentType: string,
+  options: UploadOptions,
+): Promise<BackupUpload> {
+  // Parse multipart only after the raw stream has passed the same hard byte
+  // ceiling as direct uploads. Calling req.formData() first would allow a
+  // chunked request to grow without a trustworthy Content-Length header.
+  const boundedRequest = new Request(req.url, {
+    method: "POST",
+    headers: { "Content-Type": contentType },
+    body: new Uint8Array(requestBody),
+  });
+  let form: FormData;
+  try {
+    form = await boundedRequest.formData();
+  } catch {
+    throw new ApiError(400, "invalid_request", "The multipart backup upload is malformed.");
+  }
+
+  const file = form.get("file");
+  if (!(file instanceof File)) {
+    throw new ApiError(400, "invalid_request", "Expected a backup file in the 'file' form field.");
+  }
+  assertBackupFileSize(file.size);
+
+  const confirmField = form.get("confirm");
+  const passwordField = form.get("password");
+  return {
+    buffer: Buffer.from(await file.arrayBuffer()),
+    preview: options.preview || form.get("mode") === "preview",
+    confirm: options.confirm || confirmField === "true" || confirmField === "1",
+    password: typeof passwordField === "string" && passwordField.length > 0 ? passwordField : undefined,
+  };
+}
+
+async function readBackupUpload(req: NextRequest): Promise<BackupUpload> {
+  const options = initialUploadOptions(req);
+  const requestBody = await readBackupRequestBody(req);
+  const contentType = req.headers.get("content-type") ?? "";
+  if (contentType.includes("multipart/form-data")) {
+    return parseMultipartUpload(req, requestBody, contentType, options);
+  }
+  return { buffer: requestBody, ...options };
+}
+
+async function decodeRestoreInput(buffer: Buffer, password?: string) {
+  try {
+    const decoded = await decodeBackupFileAsync(buffer, password);
+    return { decoded, archive: prepareBackupForRestore(decoded) };
+  } catch (err) {
+    if (err instanceof BackupLimitError) {
+      throw new ApiError(413, "backup_too_large", err.message);
+    }
+    throw new ApiError(400, "invalid_backup", err instanceof Error ? err.message : "Invalid backup file.");
+  }
+}
+
 /**
  * POST /api/admin/backup/import — restore this PolySIEM instance from a backup
  * file. Admin-only and destructive: a real restore WIPES and replaces every
@@ -20,68 +97,18 @@ import { assertBackupFileSize, readBackupRequestBody } from "@/lib/backup/reques
  */
 export const POST = handleApi(async (req: NextRequest) => {
   const { user } = await requireAdmin();
-
-  const previewParam = new URL(req.url).searchParams.get("preview");
-  let preview = previewParam === "1" || previewParam === "true";
-  let confirm = req.headers.get("x-confirm-restore") === "true";
-  let password = req.headers.get("x-backup-password") || undefined;
-
-  const requestBody = await readBackupRequestBody(req);
-  let buffer = requestBody;
-  const contentType = req.headers.get("content-type") ?? "";
-  if (contentType.includes("multipart/form-data")) {
-    // Parse multipart only after the raw stream has passed the same hard byte
-    // ceiling as direct uploads. Calling req.formData() first would allow a
-    // chunked request to grow without a trustworthy Content-Length header.
-    const boundedRequest = new Request(req.url, {
-      method: "POST",
-      headers: { "Content-Type": contentType },
-      body: new Uint8Array(requestBody),
-    });
-    let form: FormData;
-    try {
-      form = await boundedRequest.formData();
-    } catch {
-      throw new ApiError(400, "invalid_request", "The multipart backup upload is malformed.");
-    }
-    const file = form.get("file");
-    if (!(file instanceof File)) {
-      throw new ApiError(400, "invalid_request", "Expected a backup file in the 'file' form field.");
-    }
-    assertBackupFileSize(file.size);
-    buffer = Buffer.from(await file.arrayBuffer());
-    if (form.get("mode") === "preview") preview = true;
-    const confirmField = form.get("confirm");
-    if (confirmField === "true" || confirmField === "1") confirm = true;
-    const passwordField = form.get("password");
-    if (typeof passwordField === "string" && passwordField.length > 0) password = passwordField;
-  }
-
-  if (buffer.byteLength === 0) {
+  const upload = await readBackupUpload(req);
+  if (upload.buffer.byteLength === 0) {
     throw new ApiError(400, "invalid_request", "No backup file was provided.");
   }
 
-  // decodeArchive throws plain, actionable Errors (bad gzip, unsupported
-  // version, unknown model). Surface those to the client as a 400 rather than
-  // letting handleApi mask them behind a generic 500 — the operator needs to
-  // know exactly why their file was rejected.
-  let decoded: Awaited<ReturnType<typeof decodeBackupFileAsync>>;
-  let archive: ReturnType<typeof prepareBackupForRestore>;
-  try {
-    decoded = await decodeBackupFileAsync(buffer, password);
-    archive = prepareBackupForRestore(decoded);
-  } catch (err) {
-    if (err instanceof BackupLimitError) {
-      throw new ApiError(413, "backup_too_large", err.message);
-    }
-    throw new ApiError(400, "invalid_backup", err instanceof Error ? err.message : "Invalid backup file.");
-  }
-
-  if (preview) {
+  // Decode errors are translated here so operators get an actionable 4xx
+  // instead of a generic server error for corrupt or incompatible archives.
+  const { decoded, archive } = await decodeRestoreInput(upload.buffer, upload.password);
+  if (upload.preview) {
     return jsonOk(previewRestore(archive, decoded.passwordProtected));
   }
-
-  if (!confirm) {
+  if (!upload.confirm) {
     throw new ApiError(
       400,
       "confirm_required",

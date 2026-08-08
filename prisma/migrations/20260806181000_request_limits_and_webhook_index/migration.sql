@@ -25,9 +25,11 @@ ALTER TABLE "WorkflowWebhook" ADD CONSTRAINT "WorkflowWebhook_workflowId_fkey"
   FOREIGN KEY ("workflowId") REFERENCES "Workflow"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- Backfill existing webhook nodes. Tokens are already stored in workflow.graph;
--- the materialized table only makes lookup indexed and bounded.
+-- the materialized table only makes lookup indexed and bounded. Legacy graphs
+-- may contain duplicate tokens/node IDs, so preserve one deterministic row
+-- instead of making the migration fail on previously tolerated ambiguous data.
 INSERT INTO "WorkflowWebhook" ("token", "workflowId", "nodeId")
-SELECT
+SELECT DISTINCT ON (node->'config'->>'token')
   node->'config'->>'token',
   workflow."id",
   node->>'id'
@@ -39,16 +41,19 @@ CROSS JOIN LATERAL jsonb_array_elements(
   END
 ) AS node
 WHERE node->>'kind' = 'trigger.webhook'
-  AND COALESCE(node->'config'->>'token', '') <> '';
+  AND COALESCE(node->>'id', '') <> ''
+  AND COALESCE(btrim(node->'config'->>'token'), '') <> ''
+ORDER BY node->'config'->>'token', workflow."createdAt", workflow."id", node->>'id'
+ON CONFLICT DO NOTHING;
 
 -- Integration identity resolution compares the first DNS label case-insensitively.
 -- Functional partial indexes avoid loading/scanning complete active inventories.
 CREATE INDEX "Device_active_normalized_name_idx"
-  ON "Device" ((lower(split_part(rtrim("name", '.'), '.', 1))))
-  WHERE "status"::text <> 'REMOVED';
+  ON "Device" ((lower(split_part(rtrim(btrim("name"), '.'), '.', 1))))
+  WHERE "status" <> 'REMOVED';
 CREATE INDEX "VirtualMachine_active_normalized_name_idx"
-  ON "VirtualMachine" ((lower(split_part(rtrim("name", '.'), '.', 1))))
-  WHERE "status"::text <> 'REMOVED';
+  ON "VirtualMachine" ((lower(split_part(rtrim(btrim("name"), '.'), '.', 1))))
+  WHERE "status" <> 'REMOVED';
 CREATE INDEX "Container_active_normalized_name_idx"
-  ON "Container" ((lower(split_part(rtrim("name", '.'), '.', 1))))
-  WHERE "status"::text <> 'REMOVED';
+  ON "Container" ((lower(split_part(rtrim(btrim("name"), '.'), '.', 1))))
+  WHERE "status" <> 'REMOVED';

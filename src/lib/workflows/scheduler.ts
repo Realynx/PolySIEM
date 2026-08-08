@@ -6,6 +6,7 @@ import { THREAT_TICKET_KIND } from "./threat-trigger-logic";
 import { isCensysTriggerKind } from "./censys-trigger-logic";
 import { isSecurityTrailsTriggerKind } from "./securitytrails-trigger-logic";
 import type { WorkflowGraph, WorkflowNodeSpec } from "./types";
+import { runWithConcurrency } from "@/lib/concurrency";
 import {
   SCHEDULE_MAX_MINUTES,
   SCHEDULE_MIN_MINUTES,
@@ -34,26 +35,6 @@ function schedulerConcurrency(): number {
   const configured = Number(process.env.WORKFLOW_SCHEDULER_CONCURRENCY ?? DEFAULT_WORKFLOW_CONCURRENCY);
   if (!Number.isFinite(configured)) return DEFAULT_WORKFLOW_CONCURRENCY;
   return Math.min(16, Math.max(1, Math.floor(configured)));
-}
-
-/** Run independent jobs with a hard concurrency ceiling and stable item order. */
-export async function runWithConcurrency<T>(
-  items: readonly T[],
-  concurrency: number,
-  worker: (item: T, index: number) => Promise<void>,
-): Promise<void> {
-  let cursor = 0;
-  const normalizedConcurrency = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1;
-  const workerCount = Math.min(items.length, normalizedConcurrency);
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (true) {
-        const index = cursor++;
-        if (index >= items.length) return;
-        await worker(items[index]!, index);
-      }
-    }),
-  );
 }
 
 /** Pure due-ness check: a workflow with no runs yet is always due. */

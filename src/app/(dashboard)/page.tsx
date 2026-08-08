@@ -82,11 +82,12 @@ export default async function DashboardHomePage() {
   const footprintPromise = loadFootprintInput()
     .then((input) => ({ input, unavailableReason: null as string | null }))
     .catch((err: unknown) => {
-      console.error("[dashboard] footprint load failed:", err);
-      const unavailableReason = err instanceof DatasetBudgetExceededError
-        ? `${err.message} The inventory counts remain available, but the full map is paused to protect app performance.`
-        : "The topology map could not be generated. Inventory counts and the rest of the dashboard are still available.";
-      return { input: null, unavailableReason };
+      if (!(err instanceof DatasetBudgetExceededError)) throw err;
+      console.warn("[dashboard] topology processing budget exceeded:", err.message);
+      return {
+        input: null,
+        unavailableReason: `${err.message} The inventory counts remain available, but the full map is paused to protect app performance.`,
+      };
     });
 
   const [
@@ -125,7 +126,7 @@ export default async function DashboardHomePage() {
       prisma.$queryRaw<DashboardStoragePool[]>(Prisma.sql`
         SELECT "id", "name", "type", "totalBytes", "usedBytes"
         FROM "StoragePool"
-        WHERE "status"::text <> 'REMOVED' AND "totalBytes" IS NOT NULL
+        WHERE "status" <> 'REMOVED' AND "totalBytes" IS NOT NULL
         ORDER BY CASE
           WHEN "totalBytes" > 0 THEN COALESCE("usedBytes", 0)::numeric / "totalBytes"
           ELSE 0

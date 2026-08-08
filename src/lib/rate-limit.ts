@@ -88,6 +88,7 @@ export async function pruneExpiredRateLimits(now = new Date(), limit = 1_000): P
     DELETE FROM "RateLimitBucket" AS bucket
     USING expired
     WHERE bucket."key" = expired."key"
+      AND bucket."expiresAt" <= ${now}
     RETURNING bucket."key"
   `);
   return rows.length;

@@ -164,6 +164,11 @@ describe("decodeArchive validation", () => {
     expect(() => decodeArchive(bytes)).toThrow(/missing a valid manifest/i);
   });
 
+  it("rejects a compressed file above the upload ceiling before decompression", () => {
+    const oversized = Buffer.allocUnsafe(BACKUP_IMPORT_LIMITS.uploadBytes + 1);
+    expect(() => decodeArchive(oversized)).toThrow(BackupLimitError);
+  });
+
   it("rejects a model that exceeds the configured row ceiling", () => {
     const archive = makeArchive();
     archive.data.device = Array.from(

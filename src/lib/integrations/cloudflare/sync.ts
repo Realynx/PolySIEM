@@ -6,7 +6,7 @@ import { cloudflareSettingsSchema, cloudflareSnapshotSchema } from "@/lib/valida
 import { newCounts, type SyncStats } from "../sync-helpers";
 import { fetchCloudflareSnapshot } from "./client";
 import type { CloudflareAccountSnapshot } from "./types";
-import { cloudflareServiceCandidates, serviceEndpoint } from "./service-evidence";
+import { cloudflareServiceCandidates, serviceEndpoint, type CloudflareServiceCandidate } from "./service-evidence";
 import { findInventoryByIdentityKeys, normalizedIdentityKey } from "@/lib/inventory/identity-index";
 import { assertDatasetBudget } from "@/lib/dataset-budget";
 
@@ -20,6 +20,30 @@ interface ServiceTarget {
 
 function normalizedMachineName(value: string): string {
   return value.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function candidateMatchesDocumentedService(
+  candidate: CloudflareServiceCandidate,
+  documentedEndpoints: ReadonlySet<string>,
+): boolean {
+  const publicEndpoint = serviceEndpoint(candidate.url);
+  return (publicEndpoint !== null && documentedEndpoints.has(publicEndpoint))
+    || (candidate.originEndpoint !== null && documentedEndpoints.has(candidate.originEndpoint));
+}
+
+async function markMissingCloudflareServicesRemoved(
+  existing: Array<{ id: string; externalId: string | null; status: string }>,
+  materialized: ReadonlySet<string>,
+): Promise<number> {
+  const ids = existing
+    .filter((service) => service.externalId && !materialized.has(service.externalId) && service.status !== "REMOVED")
+    .map((service) => service.id);
+  if (ids.length === 0) return 0;
+  const removed = await prisma.service.updateMany({
+    where: { id: { in: ids } },
+    data: { status: "REMOVED" },
+  });
+  return removed.count;
 }
 
 /** Resolve a route origin to the strongest inventory identity PolySIEM already knows. */
@@ -90,10 +114,7 @@ export async function syncCloudflareServices(
   const counts = newCounts();
 
   for (const candidate of candidates) {
-    const publicEndpoint = serviceEndpoint(candidate.url);
-    if ((publicEndpoint && documentedEndpoints.has(publicEndpoint)) || (candidate.originEndpoint && documentedEndpoints.has(candidate.originEndpoint))) {
-      continue;
-    }
+    if (candidateMatchesDocumentedService(candidate, documentedEndpoints)) continue;
     const target = candidate.originHost ? targets.get(normalizedMachineName(candidate.originHost)) : undefined;
     const data = {
       name: candidate.name,
@@ -125,14 +146,7 @@ export async function syncCloudflareServices(
     materialized.add(candidate.externalId);
   }
 
-  const missing = existing.filter((service) => service.externalId && !materialized.has(service.externalId) && service.status !== "REMOVED");
-  if (missing.length > 0) {
-    const removed = await prisma.service.updateMany({
-      where: { id: { in: missing.map((service) => service.id) } },
-      data: { status: "REMOVED" },
-    });
-    counts.stale += removed.count;
-  }
+  counts.stale += await markMissingCloudflareServicesRemoved(existing, materialized);
   return counts;
 }
 

@@ -35,19 +35,19 @@ export async function findInventoryByIdentityKeys(
     matches.push(...await prisma.$queryRaw<InventoryIdentityMatch[]>(Prisma.sql`
       SELECT "id", 'device'::text AS "kind", "name"
       FROM "Device"
-      WHERE "status"::text <> 'REMOVED'
+      WHERE "status" <> 'REMOVED'
         ${sourceFilter}
-        AND lower(split_part(rtrim("name", '.'), '.', 1)) IN (${Prisma.join(chunk)})
+        AND lower(split_part(rtrim(btrim("name"), '.'), '.', 1)) IN (${Prisma.join(chunk)})
       UNION ALL
       SELECT "id", 'vm'::text AS "kind", "name"
       FROM "VirtualMachine"
-      WHERE "status"::text <> 'REMOVED'
-        AND lower(split_part(rtrim("name", '.'), '.', 1)) IN (${Prisma.join(chunk)})
+      WHERE "status" <> 'REMOVED'
+        AND lower(split_part(rtrim(btrim("name"), '.'), '.', 1)) IN (${Prisma.join(chunk)})
       UNION ALL
       SELECT "id", 'container'::text AS "kind", "name"
       FROM "Container"
-      WHERE "status"::text <> 'REMOVED'
-        AND lower(split_part(rtrim("name", '.'), '.', 1)) IN (${Prisma.join(chunk)})
+      WHERE "status" <> 'REMOVED'
+        AND lower(split_part(rtrim(btrim("name"), '.'), '.', 1)) IN (${Prisma.join(chunk)})
     `));
   }
   return matches;
