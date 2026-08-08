@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiFetch } from "@/components/shared/api-client";
@@ -21,16 +21,6 @@ export interface InvestigationState {
   progress: InvestigationProgress | null;
   report: InvestigationReport | null;
   investigatedAt: string | null;
-}
-
-/** Seed the poll state from a ticket DTO (its persisted background fields). */
-function ticketState(ticket: SecurityTicketDto): InvestigationState {
-  return {
-    status: ticket.investigationStatus,
-    progress: ticket.investigationProgress,
-    report: ticket.investigation,
-    investigatedAt: ticket.investigatedAt,
-  };
 }
 
 export interface UseInvestigationPoll {
@@ -64,7 +54,20 @@ export function useInvestigationPoll(
 ): UseInvestigationPoll {
   const queryClient = useQueryClient();
   const ticketId = ticket.id;
-  const seeded = ticketState(ticket);
+  const seeded = useMemo<InvestigationState>(
+    () => ({
+      status: ticket.investigationStatus,
+      progress: ticket.investigationProgress,
+      report: ticket.investigation,
+      investigatedAt: ticket.investigatedAt,
+    }),
+    [
+      ticket.investigationStatus,
+      ticket.investigationProgress,
+      ticket.investigation,
+      ticket.investigatedAt,
+    ],
+  );
 
   // "Engaged" once we're actively tracking a run: either the ticket was already
   // queued/running when the panel mounted (resume on reopen), or the user just
@@ -73,21 +76,18 @@ export function useInvestigationPoll(
 
   // A different ticket re-seeds tracking from that ticket's persisted state.
   useEffect(() => {
-    const active = isInvestigationActive(ticket.investigationStatus);
+    const active = isInvestigationActive(seeded.status);
     if (active) {
       // A run started elsewhere may reuse an old query cache entry for this
       // ticket. Seed the cache from the newly observed persisted run before
       // enabling polling so a previous report cannot flash or re-notify.
-      queryClient.setQueryData<InvestigationState>(["investigation", ticketId], ticketState(ticket));
+      queryClient.setQueryData<InvestigationState>(["investigation", ticketId], seeded);
     }
     setEngaged(active);
   }, [
     queryClient,
     ticketId,
-    ticket.investigationStatus,
-    ticket.investigationProgress,
-    ticket.investigation,
-    ticket.investigatedAt,
+    seeded,
   ]);
 
   const query = useQuery({
