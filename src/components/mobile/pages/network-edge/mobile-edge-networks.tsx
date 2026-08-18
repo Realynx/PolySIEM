@@ -46,12 +46,14 @@ import { MobileStat, MobileStatStrip } from "@/components/mobile/ui/mobile-stats
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import { MobileFab } from "@/components/mobile/ui/mobile-fab";
 import {
+  connectorDisplayName,
   EDGE_NETWORKS_QUERY_KEY,
   EMPTY_EDGE_NETWORKS_OVERVIEW,
   edgeOverviewPresentation,
   edgeReconciliation,
   edgeServerState,
   isRuleApplied,
+  ruleRouteMode,
   sshEndpoint,
   tailscaleDetails,
   type EdgeNatRule,
@@ -61,6 +63,8 @@ import {
   type OtherEdgeNetwork,
 } from "@/components/network/edge-networks-types";
 import { MobileNatRuleSheet } from "./mobile-nat-rule-sheet";
+import { MobileWireguardBlock } from "./mobile-wireguard";
+import { MobileConnectorsBlock, useConnectorsQuery } from "./mobile-connectors";
 import { cloudflareZoneForHostname } from "@/components/network/edge-network-utils";
 
 const ADD_HREFS: Record<EdgeNetworkTab, string> = {
@@ -273,6 +277,9 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
   });
 
   const selectedApplied = selectedRule ? isRuleApplied(selectedRule, settings.lastAppliedAt) : false;
+  // Shares the connectors block's query key, so this is a cache read, not a second fetch path.
+  const connectors = useConnectorsQuery(server.id, { enabled: server.enabled }).data ?? [];
+  const selectedConnectorName = selectedRule ? connectorDisplayName(connectors, selectedRule.connectorId) : null;
 
   const section = () => (
     <MobileSection title={server.name}>
@@ -355,6 +362,11 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
                     <Badge variant={applied ? "secondary" : "outline"} className="text-[10px]">
                       {!rule.enabled ? "Disabled" : applied ? "Applied" : "Pending"}
                     </Badge>
+                    {ruleRouteMode(rule) === "connector" && (
+                      <Badge variant="outline" className="text-[10px] font-normal">
+                        connector
+                      </Badge>
+                    )}
                   </>
                 }
                 subtitle={
@@ -417,6 +429,10 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
         </Button>
       ))()}
 
+      {(() => server.enabled && <MobileWireguardBlock server={server} isAdmin={isAdmin} />)()}
+
+      {(() => server.enabled && <MobileConnectorsBlock server={server} isAdmin={isAdmin} />)()}
+
       <BottomSheet
         open={selectedRule !== null}
         onOpenChange={(open) => !open && setSelectedRule(null)}
@@ -429,7 +445,15 @@ function MobileEdgeServerSection({ server, isAdmin }: { server: EdgeNatServer; i
               <MobileKeyRow label="Edge listener" mono>
                 {selectedRule.protocol} :{selectedRule.publicPort}
               </MobileKeyRow>
-              <MobileKeyRow label="Private target" mono>
+              <MobileKeyRow label="Route mode">
+                {ruleRouteMode(selectedRule) === "connector"
+                  ? `Via connector${selectedConnectorName ? ` · ${selectedConnectorName}` : ""}`
+                  : "Direct (edge → target)"}
+              </MobileKeyRow>
+              <MobileKeyRow
+                label={ruleRouteMode(selectedRule) === "connector" ? "Internal target" : "Private target"}
+                mono
+              >
                 {selectedRule.targetAddress}:{selectedRule.targetPort}
               </MobileKeyRow>
               <MobileKeyRow label="Allowed source" mono>

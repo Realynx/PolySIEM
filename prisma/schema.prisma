@@ -178,6 +178,7 @@ model IntegrationConfig {
   networkGateways           NetworkGateway[]
   trafficSamples            TrafficCounterSample[]
   edgeNatRules              EdgeNatRule[]
+  connectors                Connector[]
   services                  Service[]
   censysLookupCache         CensysLookupCache[]
   censysApiUsage            CensysApiUsage[]
@@ -187,8 +188,57 @@ model IntegrationConfig {
   @@unique([type, name])
 }
 
+/// A reverse-tunnel connector, modelled on Cloudflare Tunnel connectors.
+///
+/// The operator installs it on an internal machine with a one-time token; it
+/// generates its own WireGuard keypair (the private half NEVER leaves the host),
+/// dials OUT to its Edge NAT server, and performs the last hop to internal
+/// targets. Its tunnel address is allocated by PolySIEM from the edge tunnel
+/// subnet at creation time and is never typed by the operator.
+model Connector {
+  id            String            @id @default(cuid())
+  integrationId String
+  integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  name          String
+  /// Stable public identifier surfaced in the UI and used by the agent to
+  /// identify itself. Opaque, URL-safe, generated once (never reused).
+  connectorId   String            @unique
+  /// Implicitly allocated host address inside the edge tunnel subnet (e.g. "10.9.9.3").
+  tunnelAddress String
+  /// The connector's WireGuard public key, reported at enrollment. Null until enrolled.
+  publicKey     String?
+  /// sha256 of the one-time install token. The plaintext token is shown once at
+  /// creation and never persisted.
+  installTokenHash     String?
+  installTokenIssuedAt DateTime?
+  enrolledAt           DateTime?
+  /// pending | connected | stale | disabled
+  status               String    @default("pending")
+  lastSeenAt           DateTime?
+  lastHandshakeAt      DateTime?
+  osInfo               String?
+  agentVersion         String?
+  notes                String?
+  metadata             Json?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  rules EdgeNatRule[]
+
+  @@unique([integrationId, name])
+  @@unique([integrationId, tunnelAddress])
+  @@index([integrationId, status])
+}
+
 /// A narrowly-scoped inbound DNAT rule owned by one Edge NAT Server.
 /// Rules are rendered only into PolySIEM-dedicated iptables chains.
+///
+/// `mode` selects how the published port reaches its target:
+///   "direct"    — the edge DNATs straight to targetAddress:targetPort, which must
+///                 be reachable from the edge itself (the original primitive behaviour).
+///   "connector" — the edge forwards over the WireGuard tunnel to `connector`, and the
+///                 connector performs the last hop to targetAddress:targetPort as seen
+///                 FROM THE CONNECTOR. The connector's own tunnel IP stays implicit.
 model EdgeNatRule {
   id            String            @id @default(cuid())
   integrationId String
@@ -200,11 +250,15 @@ model EdgeNatRule {
   targetPort    Int
   sourceCidr    String?
   enabled       Boolean           @default(true)
+  mode          String            @default("direct")
+  connectorId   String?
+  connector     Connector?        @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 
   @@unique([integrationId, protocol, publicPort])
   @@index([integrationId, enabled])
+  @@index([connectorId])
 }
 
 /// Cached Censys Platform responses. Host lookups are reused for four days so

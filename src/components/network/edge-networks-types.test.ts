@@ -1,14 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
+  connectorAgentSummary,
+  connectorContactFallback,
+  connectorDisplayName,
+  connectorInstallProgress,
+  connectorLastContactAt,
+  connectorStatusPresentation,
+  connectorSummary,
   edgeOverviewCounts,
   edgeOverviewPresentation,
   edgeReconciliation,
   edgeServerState,
+  edgeTunnelEndpoint,
   infrastructureEdgeDetails,
+  isConnectorSelectable,
+  isValidConnectorName,
+  natRuleRouting,
+  natRuleTargetCopy,
   otherEdgeDetails,
   isRuleApplied,
+  ruleRouteMode,
   sshEndpoint,
   tailscaleDetails,
+  type ConnectorDto,
   type EdgeNatServer,
 } from "./edge-networks-types";
 
@@ -159,5 +173,132 @@ describe("edge network presentation helpers", () => {
       type: "PROXMOX",
       targets: [{ id: "ct-1", name: "proxy", kind: "container" }],
     }).targets).toEqual([{ id: "ct-1", name: "proxy", kind: "container", addresses: [] }]);
+  });
+});
+
+const connector = (overrides: Partial<ConnectorDto> = {}): ConnectorDto => ({
+  id: "row-1",
+  integrationId: "edge-1",
+  name: "EdgeNetworkVm",
+  connectorId: "cx_lab01",
+  tunnelAddress: "10.9.9.3",
+  publicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=",
+  status: "connected",
+  enrolledAt: "2026-08-18T10:00:00.000Z",
+  lastSeenAt: "2026-08-18T10:05:00.000Z",
+  lastHandshakeAt: "2026-08-18T10:06:00.000Z",
+  osInfo: "Ubuntu 26.04",
+  agentVersion: "1",
+  notes: null,
+  createdAt: "2026-08-18T09:59:00.000Z",
+  updatedAt: "2026-08-18T10:06:00.000Z",
+  ...overrides,
+});
+
+describe("connector presentation helpers", () => {
+  it("tones each status and only offers enrolled, non-disabled connectors for routes", () => {
+    expect(connectorStatusPresentation({ status: "connected" })).toMatchObject({ label: "Connected", tone: "success" });
+    expect(connectorStatusPresentation({ status: "stale" }).tone).toBe("warning");
+    expect(connectorStatusPresentation({ status: "pending" }).tone).toBe("muted");
+    expect(connectorStatusPresentation({ status: "disabled" }).tone).toBe("muted");
+
+    expect(isConnectorSelectable(connector())).toBe(true);
+    expect(isConnectorSelectable(connector({ status: "stale" }))).toBe(true);
+    expect(isConnectorSelectable(connector({ status: "disabled" }))).toBe(false);
+    expect(isConnectorSelectable(connector({ status: "pending", enrolledAt: null, publicKey: null }))).toBe(false);
+  });
+
+  it("prefers the freshest proof of life and names the gap when there is none", () => {
+    expect(connectorLastContactAt({ lastHandshakeAt: "2026-08-18T10:06:00.000Z", lastSeenAt: "2026-08-18T10:05:00.000Z" }))
+      .toBe("2026-08-18T10:06:00.000Z");
+    expect(connectorLastContactAt({ lastHandshakeAt: null, lastSeenAt: "2026-08-18T10:05:00.000Z" }))
+      .toBe("2026-08-18T10:05:00.000Z");
+    expect(connectorLastContactAt({ lastHandshakeAt: null, lastSeenAt: null })).toBeNull();
+    expect(connectorContactFallback({ status: "pending" })).toBe("Not installed yet");
+    expect(connectorContactFallback({ status: "connected" })).toBe("No handshake yet");
+  });
+
+  it("summarizes reported agent details and counts", () => {
+    expect(connectorAgentSummary({ osInfo: "Ubuntu 26.04", agentVersion: "1" })).toBe("Ubuntu 26.04 · agent 1");
+    expect(connectorAgentSummary({ osInfo: null, agentVersion: "1" })).toBe("agent 1");
+    expect(connectorAgentSummary({ osInfo: null, agentVersion: null })).toBeNull();
+    expect(connectorSummary([connector(), connector({ id: "row-2", status: "pending", enrolledAt: null, publicKey: null })]))
+      .toMatchObject({ total: 2, connected: 1, pending: 1, selectable: 1 });
+  });
+
+  it("only claims success after a rotated token is actually used", () => {
+    expect(connectorInstallProgress({ connector: undefined, reason: "created", baselineLastSeenAt: null }).state).toBe("unknown");
+    expect(connectorInstallProgress({
+      connector: connector({ status: "pending", enrolledAt: null, publicKey: null, lastSeenAt: null }),
+      reason: "created",
+      baselineLastSeenAt: null,
+    }).state).toBe("waiting");
+    expect(connectorInstallProgress({ connector: connector(), reason: "created", baselineLastSeenAt: null }).state).toBe("connected");
+    expect(connectorInstallProgress({
+      connector: connector(),
+      reason: "rotated",
+      baselineLastSeenAt: "2026-08-18T10:05:00.000Z",
+    })).toMatchObject({ state: "waiting", label: "Still on the previous token" });
+    expect(connectorInstallProgress({
+      connector: connector({ lastSeenAt: "2026-08-18T10:09:00.000Z" }),
+      reason: "rotated",
+      baselineLastSeenAt: "2026-08-18T10:05:00.000Z",
+    })).toMatchObject({ state: "connected", label: "Re-enrolled" });
+    expect(connectorInstallProgress({ connector: connector({ status: "stale" }), reason: "created", baselineLastSeenAt: null }).state).toBe("stale");
+    expect(connectorInstallProgress({ connector: connector({ status: "disabled" }), reason: "created", baselineLastSeenAt: null }).state).toBe("disabled");
+  });
+
+  it("resolves a rule's connector by either identifier", () => {
+    expect(connectorDisplayName([connector()], "row-1")).toBe("EdgeNetworkVm");
+    expect(connectorDisplayName([connector()], "cx_lab01")).toBe("EdgeNetworkVm");
+    expect(connectorDisplayName([connector()], null)).toBeNull();
+    expect(connectorDisplayName([connector()], "missing")).toBeNull();
+  });
+
+  it("mirrors the server-side connector name rule", () => {
+    expect(isValidConnectorName("EdgeNetworkVm")).toBe(true);
+    expect(isValidConnectorName(" lab-01.edge ")).toBe(true);
+    expect(isValidConnectorName("")).toBe(false);
+    expect(isValidConnectorName("-leading-dash")).toBe(false);
+    expect(isValidConnectorName("a".repeat(65))).toBe(false);
+  });
+});
+
+describe("route mode mapping", () => {
+  it("treats pre-connector rules as direct", () => {
+    expect(ruleRouteMode({ mode: undefined })).toBe("direct");
+    expect(ruleRouteMode({ mode: "direct" })).toBe("direct");
+    expect(ruleRouteMode({ mode: "connector" })).toBe("connector");
+  });
+
+  it("clears the connector link whenever a rule is direct", () => {
+    expect(natRuleRouting("direct", "row-1")).toEqual({ mode: "direct", connectorId: null });
+    expect(natRuleRouting("connector", "row-1")).toEqual({ mode: "connector", connectorId: "row-1" });
+    expect(natRuleRouting("connector", null)).toEqual({ mode: "connector", connectorId: null });
+  });
+
+  it("keeps the direct field wording untouched and makes the connector perspective explicit", () => {
+    expect(natRuleTargetCopy("direct")).toEqual({
+      label: "Private target address",
+      placeholder: "100.64.0.12 or 10.0.3.20",
+      help: "",
+    });
+    const connectorCopy = natRuleTargetCopy("connector");
+    expect(connectorCopy.label).toContain("as seen from the connector");
+    expect(connectorCopy.help).not.toBe("");
+  });
+
+  it("describes where a connector must reach outbound", () => {
+    expect(edgeTunnelEndpoint(server({ settings: { publicIp: "23.94.251.183" } })).label).toBe("23.94.251.183:51820/udp");
+    expect(edgeTunnelEndpoint(server({
+      settings: {
+        publicIp: "23.94.251.183",
+        wireguard: {
+          enabled: true, interfaceName: "wg0", address: "10.9.9.1/24", listenPort: 51821,
+          publicKey: null, hasPrivateKey: true, peer: null, appliedConfigHash: null,
+        },
+      },
+    })).label).toBe("23.94.251.183:51821/udp");
+    expect(edgeTunnelEndpoint(server({ settings: {} })).label).toBe("the edge public IP on UDP 51820");
   });
 });

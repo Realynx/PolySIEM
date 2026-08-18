@@ -72,6 +72,11 @@ export const FIELD_TYPES: Record<BackupModel, ModelFieldTypes> = {
   portForward: { date: ["lastSeenAt", "createdAt", "updatedAt"], json: ["metadata"] },
   dyndnsHost: { date: ["lastSeenAt", "createdAt", "updatedAt"], json: ["metadata"] },
   networkGateway: { date: ["lastSeenAt", "createdAt", "updatedAt"], json: ["metadata"] },
+  connector: {
+    date: ["installTokenIssuedAt", "enrolledAt", "lastSeenAt", "lastHandshakeAt", "createdAt", "updatedAt"],
+    json: ["metadata"],
+  },
+  edgeNatRule: { date: ["createdAt", "updatedAt"] },
   trafficCounterSample: { bigint: ["bytes", "bytesIn", "bytesOut", "delta"], date: ["sampledAt"] },
   tunnel: { date: ["createdAt", "updatedAt"] },
   tunnelHostname: { date: ["lastResolvedAt", "createdAt", "updatedAt"], json: ["metadata"] },

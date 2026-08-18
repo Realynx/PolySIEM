@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { RouteLoadingSkeleton } from "./route-loading-skeleton";
 import { NAVIGATION_START_EVENT, type NavigationStartDetail } from "./navigation-feedback";
 
 /** Auto-hide the bar if a navigation never completes (aborted, error page…). */
@@ -96,32 +95,16 @@ export function NavigationProgress() {
   if (!navigating) return null;
 
   return (
-    <>
-      <div
-        role="progressbar"
-        aria-label="Loading page"
-        className={cn(
-          "pointer-events-none fixed inset-x-0 top-0 z-50 h-0.5 overflow-hidden",
-          hasDashboardShell && "md:left-60",
-        )}
-      >
-        <div className="h-full w-1/3 rounded-full bg-primary [animation:polysiem-nav-progress_1.2s_ease-in-out_infinite]" />
-        <style>{`@keyframes polysiem-nav-progress { from { transform: translateX(-100%); } to { transform: translateX(300%); } }`}</style>
-      </div>
-      <div
-        role="status"
-        aria-live="polite"
-        aria-label="Loading the next page"
-        className={cn(
-          "pointer-events-none fixed z-20 overflow-hidden",
-          hasDashboardShell
-            ? "inset-x-0 top-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] bg-background px-4 py-5 md:bottom-0 md:left-60 md:top-14 md:px-6"
-            : "inset-0 bg-muted/40 p-4",
-        )}
-      >
-        <span className="sr-only">Loading the next page</span>
-        <RouteLoadingSkeleton pathname={targetPathname} />
-      </div>
-    </>
+    <div
+      role="progressbar"
+      aria-label="Loading page"
+      className={cn(
+        "pointer-events-none fixed inset-x-0 top-0 z-50 h-0.5 overflow-hidden",
+        hasDashboardShell && "md:left-60",
+      )}
+    >
+      <div className="h-full w-1/3 rounded-full bg-primary [animation:polysiem-nav-progress_1.2s_ease-in-out_infinite]" />
+      <style>{`@keyframes polysiem-nav-progress { from { transform: translateX(-100%); } to { transform: translateX(300%); } }`}</style>
+    </div>
   );
 }

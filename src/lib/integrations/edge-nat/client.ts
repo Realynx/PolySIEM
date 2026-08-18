@@ -1,7 +1,7 @@
 import "server-only";
 import { isIP } from "node:net";
 import type { DriverConfig, TestResult } from "../types";
-import { edgeNatSettingsSchema, edgeNatSnapshotSchema, type EdgeNatSettings } from "@/lib/validators/integrations";
+import { edgeNatSettingsSchema, edgeNatSnapshotSchema, wireguardKeyRegex, type EdgeNatSettings, type EdgeNatSnapshot } from "@/lib/validators/integrations";
 import { parseEdgeSshUrl, runVerifiedSsh, type CommandRunner } from "./ssh";
 
 function connectionError(stderr: string): string {
@@ -69,6 +69,78 @@ export function parseEdgeNatStatus(stdout: string, baseUrl: string) {
   });
 }
 
+/**
+ * Live WireGuard tunnel status parsed from the STATUS response. Surfaced
+ * separately from the NAT snapshot (whose schema is orchestrator-owned and
+ * carries no tunnel fields). No private material is ever included — the public
+ * key reported here is the edge host's OWN public key, which is safe to show.
+ */
+export interface EdgeWireguardStatus {
+  interfaceName: string | null;
+  enabled: boolean;
+  publicKey: string | null;
+  listenPort: number | null;
+  peers: number;
+  latestHandshakeAt: string | null;
+}
+
+/**
+ * Parse the optional WG_* STATUS lines emitted by a tunnel-aware edge agent.
+ * Returns null when a legacy agent emits no WG_* lines at all; otherwise returns
+ * the status object (with `enabled: false` when the box reports WG_ENABLED 0).
+ */
+export function parseEdgeNatWireguardStatus(stdout: string): EdgeWireguardStatus | null {
+  const status: EdgeWireguardStatus = {
+    interfaceName: null, enabled: false, publicKey: null,
+    listenPort: null, peers: 0, latestHandshakeAt: null,
+  };
+  let seen = false;
+  for (const line of stdout.split(/\r?\n/)) {
+    const [kind, ...rest] = line.split("\t");
+    const value = rest.join("\t").trim();
+    switch (kind) {
+      case "WG_IF":
+        seen = true;
+        if (/^[A-Za-z0-9_.:-]{1,15}$/.test(value)) status.interfaceName = value;
+        break;
+      case "WG_ENABLED":
+        seen = true;
+        status.enabled = value === "1";
+        break;
+      case "WG_PUBKEY":
+        seen = true;
+        if (wireguardKeyRegex.test(value)) status.publicKey = value;
+        break;
+      case "WG_LISTEN": {
+        seen = true;
+        const port = Number.parseInt(value, 10);
+        if (Number.isInteger(port) && port >= 1 && port <= 65535) status.listenPort = port;
+        break;
+      }
+      case "WG_PEERS":
+        seen = true;
+        status.peers = Math.max(0, Number.parseInt(value, 10) || 0);
+        break;
+      case "WG_LATEST_HANDSHAKE": {
+        seen = true;
+        const epoch = Number.parseInt(value, 10);
+        status.latestHandshakeAt = Number.isFinite(epoch) && epoch > 0
+          ? new Date(epoch * 1000).toISOString()
+          : null;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return seen ? status : null;
+}
+
+export interface EdgeNatStatusReport {
+  snapshot: EdgeNatSnapshot;
+  wireguard: EdgeWireguardStatus | null;
+}
+
 export interface EdgeApplyAcknowledgement {
   count: number;
   revision: number;
@@ -84,10 +156,17 @@ export function parseEdgeApplyResponse(stdout: string): EdgeApplyAcknowledgement
   return { count, revision, hash: match[3] };
 }
 
-export async function fetchEdgeNatSnapshot(cfg: DriverConfig, runner?: CommandRunner) {
+export async function fetchEdgeNatStatusReport(cfg: DriverConfig, runner?: CommandRunner): Promise<EdgeNatStatusReport> {
   const result = await runVerifiedSsh(cfg, "STATUS", undefined, runner);
   if (result.code !== 0) throw new Error(connectionError(result.stderr));
-  return parseEdgeNatStatus(result.stdout, cfg.baseUrl);
+  return {
+    snapshot: parseEdgeNatStatus(result.stdout, cfg.baseUrl),
+    wireguard: parseEdgeNatWireguardStatus(result.stdout),
+  };
+}
+
+export async function fetchEdgeNatSnapshot(cfg: DriverConfig, runner?: CommandRunner) {
+  return (await fetchEdgeNatStatusReport(cfg, runner)).snapshot;
 }
 
 export async function testEdgeNatConnection(cfg: DriverConfig, runner?: CommandRunner): Promise<TestResult> {

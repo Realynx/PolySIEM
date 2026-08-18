@@ -1,8 +1,8 @@
 "use client";
 
-import { type FormEvent, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Cable, Loader2, Route } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
@@ -12,8 +12,20 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
-import type { EdgeNatRule, EdgeNatServer, NatProtocol, NatRuleInput } from "@/components/network/edge-networks-types";
+import {
+  isConnectorSelectable,
+  natRuleRouting,
+  natRuleTargetCopy,
+  ruleRouteMode,
+  ROUTE_MODE_CHOICES,
+  type EdgeNatRule,
+  type EdgeNatServer,
+  type EdgeRouteMode,
+  type NatProtocol,
+  type NatRuleInput,
+} from "@/components/network/edge-networks-types";
 import { isValidNetworkPort } from "@/components/network/edge-network-utils";
+import { useConnectorsQuery } from "./mobile-connectors";
 
 /** Add/edit NAT rule form in a bottom sheet, posting to the same endpoints as desktop. */
 export function MobileNatRuleSheet({
@@ -33,6 +45,13 @@ export function MobileNatRuleSheet({
   const [targetPort, setTargetPort] = useState(rule ? String(rule.targetPort) : "");
   const [sourceCidr, setSourceCidr] = useState(rule?.sourceCidr ?? "");
   const [enabled, setEnabled] = useState(rule?.enabled ?? true);
+  const [mode, setMode] = useState<EdgeRouteMode>(rule ? ruleRouteMode(rule) : "direct");
+  const [connectorId, setConnectorId] = useState(rule?.connectorId ?? "");
+
+  const connectorsQuery = useConnectorsQuery(server.id, { enabled: server.enabled });
+  const usable = (connectorsQuery.data ?? []).filter(isConnectorSelectable);
+  const viaConnector = mode === "connector";
+  const targetCopy = natRuleTargetCopy(mode);
 
   const mutation = useMutation({
     mutationFn: (input: NatRuleInput) =>
@@ -58,6 +77,10 @@ export function MobileNatRuleSheet({
       toast.error("Enter a name, private target, and valid ports from 1–65535.");
       return;
     }
+    if (viaConnector && !connectorId) {
+      toast.error("Pick the connector that reaches this target.");
+      return;
+    }
     mutation.mutate({
       name: name.trim(),
       protocol,
@@ -66,6 +89,7 @@ export function MobileNatRuleSheet({
       targetPort: targetPortNum,
       sourceCidr: sourceCidr.trim() || undefined,
       enabled,
+      ...natRuleRouting(mode, connectorId || null),
     });
   };
 
@@ -74,13 +98,57 @@ export function MobileNatRuleSheet({
       open
       onOpenChange={onOpenChange}
       title={`${rule ? "Edit" : "Add"} NAT rule`}
-      description={`Publish one listener on ${server.name} and send it to a private lab address.`}
+      description={`Publish one listener on ${server.name}, straight from the edge or over a connector.`}
     >
       <form onSubmit={submit} className="flex flex-col gap-4 pb-2">
         <div className="grid gap-1.5">
           <Label htmlFor="m-nat-name">Rule name</Label>
           <Input id="m-nat-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Plex HTTPS" />
         </div>
+
+        <div className="grid gap-1.5">
+          <Label>How traffic reaches the target</Label>
+          <div className="grid gap-2">
+            {ROUTE_MODE_CHOICES.map((choice) => (
+              <RouteModeOption
+                key={choice.value}
+                icon={choice.value === "connector" ? <Cable className="size-4" /> : <Route className="size-4" />}
+                title={choice.title}
+                detail={choice.detail}
+                selected={mode === choice.value}
+                onSelect={() => setMode(choice.value)}
+                disabled={choice.value === "connector" && usable.length === 0}
+                disabledHint={
+                  connectorsQuery.isLoading
+                    ? "Loading connectors…"
+                    : "Install and enroll a connector on this server first."
+                }
+              />
+            ))}
+          </div>
+        </div>
+
+        {viaConnector && (
+          <div className="grid gap-1.5">
+            <Label>Connector</Label>
+            <Select value={connectorId} onValueChange={setConnectorId}>
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Choose a connector" />
+              </SelectTrigger>
+              <SelectContent>
+                {usable.map((connector) => (
+                  <SelectItem key={connector.id} value={connector.id}>
+                    {connector.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Only enrolled connectors can carry a route. The edge port is preserved across the tunnel.
+            </p>
+          </div>
+        )}
+
         <div className="grid grid-cols-[0.7fr_1fr] gap-3">
           <div className="grid gap-1.5">
             <Label>Protocol</Label>
@@ -107,12 +175,12 @@ export function MobileNatRuleSheet({
         </div>
         <div className="grid grid-cols-[1fr_0.55fr] gap-3">
           <div className="grid gap-1.5">
-            <Label htmlFor="m-nat-target">Private target</Label>
+            <Label htmlFor="m-nat-target">{targetCopy.label}</Label>
             <Input
               id="m-nat-target"
               value={targetAddress}
               onChange={(event) => setTargetAddress(event.target.value)}
-              placeholder="10.0.3.20"
+              placeholder={targetCopy.placeholder}
             />
           </div>
           <div className="grid gap-1.5">
@@ -126,6 +194,7 @@ export function MobileNatRuleSheet({
             />
           </div>
         </div>
+        {targetCopy.help && <p className="-mt-2 text-xs text-muted-foreground">{targetCopy.help}</p>}
         <div className="grid gap-1.5">
           <Label htmlFor="m-nat-cidr">
             Allowed source CIDR <span className="font-normal text-muted-foreground">(recommended)</span>
@@ -155,4 +224,45 @@ export function MobileNatRuleSheet({
     </BottomSheet>
   );
   return sheet();
+}
+
+/** Big tappable route-mode card — a phone-sized radio with room to explain itself. */
+function RouteModeOption({
+  icon,
+  title,
+  detail,
+  selected,
+  onSelect,
+  disabled = false,
+  disabledHint,
+}: {
+  icon: ReactNode;
+  title: string;
+  detail: string;
+  selected: boolean;
+  onSelect: () => void;
+  disabled?: boolean;
+  disabledHint?: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        "flex min-h-13 w-full items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-colors",
+        selected ? "border-primary bg-primary/5" : "bg-card active:bg-muted/70",
+        disabled && "opacity-50",
+      )}
+    >
+      <span className={cn("mt-0.5 shrink-0", selected ? "text-primary" : "text-muted-foreground")}>{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm leading-tight font-medium">{title}</span>
+        <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">
+          {disabled && disabledHint ? disabledHint : detail}
+        </span>
+      </span>
+    </button>
+  );
 }

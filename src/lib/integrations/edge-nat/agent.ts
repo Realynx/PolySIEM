@@ -30,6 +30,7 @@ valid_count() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "$1" -ge 0 ] && [ "
 valid_hash() { [ "\${#1}" -eq 64 ] && ! printf %s "$1" | grep -q '[^0-9a-f]'; }
 valid_ip() { printf '%s\\n' "$1" | awk -F. 'NF==4 { for(i=1;i<=4;i++) if($i !~ /^[0-9]+$/ || $i>255) exit 1; exit 0 } { exit 1 }'; }
 valid_cidr() { printf '%s\\n' "$1" | awk -F/ 'NF<=2 { split($1,a,"."); if(length(a)!=4) exit 1; for(i=1;i<=4;i++) if(a[i] !~ /^[0-9]+$/ || a[i]>255) exit 1; if(NF==2 && ($2 !~ /^[0-9]+$/ || $2>32)) exit 1; exit 0 } { exit 1 }'; }
+valid_wgkey() { [ "\${#1}" -eq 44 ] || return 1; wgk="\${1%=}"; [ "\${#wgk}" -eq 43 ] || return 1; ! printf %s "$wgk" | grep -q '[^A-Za-z0-9+/]'; }
 
 state_value() {
   [ -f "$STATE_FILE" ] || return 0
@@ -81,6 +82,24 @@ case "$action" in
     printf 'APPLIED_HASH\\t%s\\n' "$hash"
     printf 'IPTABLES_HASH\\t%s\\n' "$actual_iptables_hash"
     printf 'RULESET_DRIFT\\t%s\\n' "$drift"
+    # WireGuard status. Every wg/ip call is guarded so a box that never enabled
+    # the tunnel (or lacks the wg binary) still emits a complete, valid STATUS.
+    wg_if_s="$(state_value WG_IF)"; wg_enabled_s="$(state_value WG_ENABLED)"
+    valid_if "$wg_if_s" || wg_if_s=-
+    [ "$wg_enabled_s" = 1 ] || wg_enabled_s=0
+    wg_pub_s=-; wg_listen_s=-; wg_peers_s=0; wg_hs_s=0
+    if [ "$wg_if_s" != - ] && [ "$wg_enabled_s" = 1 ] && command -v wg >/dev/null 2>&1 && ip link show dev "$wg_if_s" >/dev/null 2>&1; then
+      wg_pub_s="$(wg show "$wg_if_s" public-key 2>/dev/null || printf -)"; [ -n "$wg_pub_s" ] || wg_pub_s=-
+      wg_listen_s="$(wg show "$wg_if_s" listen-port 2>/dev/null || printf -)"; [ -n "$wg_listen_s" ] || wg_listen_s=-
+      wg_peers_s="$(wg show "$wg_if_s" peers 2>/dev/null | awk 'END{print NR+0}')"
+      wg_hs_s="$(wg show "$wg_if_s" latest-handshakes 2>/dev/null | awk '{ if ($2+0 > m) m=$2+0 } END { print m+0 }')"
+    fi
+    printf 'WG_IF\\t%s\\n' "$wg_if_s"
+    printf 'WG_ENABLED\\t%s\\n' "$wg_enabled_s"
+    printf 'WG_PUBKEY\\t%s\\n' "$wg_pub_s"
+    printf 'WG_LISTEN\\t%s\\n' "$wg_listen_s"
+    printf 'WG_PEERS\\t%s\\n' "$wg_peers_s"
+    printf 'WG_LATEST_HANDSHAKE\\t%s\\n' "$wg_hs_s"
     ;;
   APPLY)
     for binary in iptables iptables-restore ip awk grep sed cut mktemp sysctl flock sha256sum install chmod mv rm wc tr; do
@@ -96,24 +115,125 @@ case "$action" in
     [ "$config" = CONFIG ] && [ -z "\${config_extra:-}" ] || exit 2
     valid_if "$public_if" && valid_if "$outbound_if" || exit 2
     [ "$enable_forward" = 0 ] || [ "$enable_forward" = 1 ] || exit 2
-    [ -d "/sys/class/net/$public_if" ] && [ -d "/sys/class/net/$outbound_if" ] || exit 3
 
     rules="$(mktemp)"; canonical="$(mktemp)"; generation="$(mktemp)"; swap="$(mktemp)"; rollback="$(mktemp)"; request="$(mktemp)"; state="$(mktemp)"
+    wg_key_file="$(mktemp)"; wg_peers_file="$(mktemp)"; chmod 0600 "$wg_key_file"
     committed=0; swap_started=0
     cleanup() {
       rc=$?
       if [ "$committed" -ne 1 ] && [ "$swap_started" -eq 1 ]; then
         iptables-restore --noflush < "$rollback" >/dev/null 2>&1 || true
       fi
-      rm -f "$rules" "$canonical" "$generation" "$swap" "$rollback" "$request" "$state"
+      rm -f "$rules" "$canonical" "$generation" "$swap" "$rollback" "$request" "$state" "$wg_key_file" "$wg_peers_file"
       exit "$rc"
     }
     trap cleanup EXIT HUP INT TERM
 
     printf 'CONFIG\\t%s\\t%s\\t%s\\n' "$public_if" "$outbound_if" "$enable_forward" > "$canonical"
     printf 'APPLY\\nMETA\\t%s\\t%s\\nCONFIG\\t%s\\t%s\\t%s\\n' "$revision" "$wanted_hash" "$public_if" "$outbound_if" "$enable_forward" > "$request"
+
+    # Optional WireGuard block. Peek the line after CONFIG: if it is WG, parse it
+    # (plus any following WGPEER lines) and hand the terminating line to the rule
+    # loop below. If it is RULE/END this is the pre-WireGuard protocol and we
+    # proceed exactly as before, treating the already-read line as the first rule.
+    wg_present=0; wg_enabled=0
+    wg_if=-; wg_addr=-; wg_port=-; wg_privkey=-; wg_fwmark=-
+    wg_peer_count=0
+    kind=""; protocol=""; public_port=""; target=""; target_port=""; source=""; extra=""
+    IFS="$TAB" read -r wf1 wf2 wf3 wf4 wf5 wf6 wf7 || { printf 'truncated ruleset: END missing\\n' >&2; exit 2; }
+    if [ "$wf1" = WG ]; then
+      wg_present=1
+      wg_enabled="$wf2"; wg_if="$wf3"; wg_addr="$wf4"; wg_port="$wf5"; wg_privkey="$wf6"; wg_fwmark="$wf7"
+      case "$wg_enabled" in 0|1) ;; *) exit 2;; esac
+      if [ "$wg_enabled" = 1 ]; then
+        valid_if "$wg_if" || exit 2
+        valid_cidr "$wg_addr" || exit 2
+        valid_port "$wg_port" || exit 2
+        valid_wgkey "$wg_privkey" || exit 2
+        [ "$wg_fwmark" = - ] || case "$wg_fwmark" in ''|*[!0-9]*) exit 2;; esac
+        printf '%s\\n' "$wg_privkey" > "$wg_key_file"
+      else
+        [ "$wg_if" = - ] && [ "$wg_addr" = - ] && [ "$wg_port" = - ] && [ "$wg_privkey" = - ] && [ "$wg_fwmark" = - ] || exit 2
+      fi
+      printf 'WG\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$wg_enabled" "$wg_if" "$wg_addr" "$wg_port" "$wg_privkey" "$wg_fwmark" >> "$canonical"
+      printf 'WG\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$wg_enabled" "$wg_if" "$wg_addr" "$wg_port" "$wg_privkey" "$wg_fwmark" >> "$request"
+      while IFS="$TAB" read -r pf1 pf2 pf3 pf4 pf5 pf6 pf7; do
+        if [ "$pf1" = WGPEER ]; then
+          [ "$wg_enabled" = 1 ] || exit 2
+          [ -z "\${pf6:-}\${pf7:-}" ] || exit 2
+          valid_wgkey "$pf2" || exit 2
+          [ -n "$pf3" ] || exit 2
+          wg_allow_ok=1; wg_oldifs=$IFS; IFS=,
+          for wg_cidr in $pf3; do valid_cidr "$wg_cidr" || wg_allow_ok=0; done
+          IFS=$wg_oldifs
+          [ "$wg_allow_ok" -eq 1 ] || exit 2
+          [ "$pf4" = - ] || printf %s "$pf4" | grep -qE '^[A-Za-z0-9._-]+:[0-9]+$' || exit 2
+          case "$pf5" in ''|*[!0-9]*) exit 2;; esac
+          [ "$pf5" -ge 0 ] && [ "$pf5" -le 65535 ] || exit 2
+          wg_peer_count=$((wg_peer_count+1))
+          printf '%s\\t%s\\t%s\\t%s\\n' "$pf2" "$pf3" "$pf4" "$pf5" >> "$wg_peers_file"
+          printf 'WGPEER\\t%s\\t%s\\t%s\\t%s\\n' "$pf2" "$pf3" "$pf4" "$pf5" >> "$canonical"
+          printf 'WGPEER\\t%s\\t%s\\t%s\\t%s\\n' "$pf2" "$pf3" "$pf4" "$pf5" >> "$request"
+        else
+          kind="$pf1"; protocol="$pf2"; public_port="$pf3"; target="$pf4"; target_port="$pf5"; source="$pf6"; extra="$pf7"
+          break
+        fi
+      done
+    else
+      kind="$wf1"; protocol="$wf2"; public_port="$wf3"; target="$wf4"; target_port="$wf5"; source="$wf6"; extra="$wf7"
+    fi
+
+    # Bring the PolySIEM-managed WireGuard interface up (or tear it down) BEFORE the
+    # outbound-interface existence check, so a freshly created wg interface satisfies
+    # it. Only the configured interface name is ever touched, and only when it is
+    # (or becomes) an actual WireGuard link. The private key is fed from a 0600
+    # mktemp file and is never echoed or written to the state file.
+    state_wg_if=-; state_wg_enabled=0; wg_hash=-
+    if [ "$wg_present" -eq 1 ] && [ "$wg_enabled" = 1 ]; then
+      for wg_bin in wg ip sort; do
+        command -v "$wg_bin" >/dev/null 2>&1 || { printf 'missing dependency: %s\\n' "$wg_bin" >&2; exit 3; }
+      done
+      if ip link show dev "$wg_if" >/dev/null 2>&1; then
+        ip -d link show dev "$wg_if" 2>/dev/null | grep -qw wireguard || { printf 'refusing to manage non-WireGuard interface %s\\n' "$wg_if" >&2; exit 2; }
+      else
+        ip link add dev "$wg_if" type wireguard
+      fi
+      if [ "$wg_fwmark" = - ]; then
+        wg set "$wg_if" listen-port "$wg_port" private-key "$wg_key_file"
+      else
+        wg set "$wg_if" listen-port "$wg_port" fwmark "$wg_fwmark" private-key "$wg_key_file"
+      fi
+      ip address replace "$wg_addr" dev "$wg_if"
+      while IFS="$TAB" read -r wg_peer wg_allow wg_end wg_keep; do
+        if [ "$wg_end" = - ]; then
+          wg set "$wg_if" peer "$wg_peer" allowed-ips "$wg_allow" persistent-keepalive "$wg_keep"
+        else
+          wg set "$wg_if" peer "$wg_peer" allowed-ips "$wg_allow" persistent-keepalive "$wg_keep" endpoint "$wg_end"
+        fi
+      done < "$wg_peers_file"
+      for wg_have in $(wg show "$wg_if" peers 2>/dev/null || true); do
+        wg_keep_peer=0
+        while IFS="$TAB" read -r wg_peer wg_allow wg_end wg_keep; do
+          [ "$wg_have" = "$wg_peer" ] && { wg_keep_peer=1; break; }
+        done < "$wg_peers_file"
+        [ "$wg_keep_peer" -eq 1 ] || wg set "$wg_if" peer "$wg_have" remove
+      done
+      ip link set "$wg_if" up
+      wg_pub="$(wg show "$wg_if" public-key 2>/dev/null || printf -)"
+      [ -n "$wg_pub" ] || wg_pub=-
+      wg_hash="$( { printf '%s\\n%s\\n%s\\n' "$wg_pub" "$wg_addr" "$wg_port"; sort "$wg_peers_file"; } | sha256sum | awk '{print $1}')"
+      state_wg_if="$wg_if"; state_wg_enabled=1
+    elif [ "$wg_present" -eq 1 ] && [ "$wg_enabled" = 0 ]; then
+      prev_wg_if="$(state_value WG_IF)"
+      if valid_if "$prev_wg_if" && ip link show dev "$prev_wg_if" >/dev/null 2>&1 && ip -d link show dev "$prev_wg_if" 2>/dev/null | grep -qw wireguard; then
+        ip link del dev "$prev_wg_if"
+      fi
+    fi
+
+    [ -d "/sys/class/net/$public_if" ] && [ -d "/sys/class/net/$outbound_if" ] || exit 3
+
     saw_end=0
-    while IFS="$TAB" read -r kind protocol public_port target target_port source extra; do
+    while : ; do
       if [ "$kind" = END ]; then
         [ -z "\${protocol:-}\${public_port:-}\${target:-}\${target_port:-}\${source:-}\${extra:-}" ] || exit 2
         saw_end=1
@@ -126,6 +246,7 @@ case "$action" in
       printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$protocol" "$public_port" "$target" "$target_port" "$source" >> "$rules"
       printf 'RULE\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$protocol" "$public_port" "$target" "$target_port" "$source" >> "$canonical"
       printf 'RULE\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$protocol" "$public_port" "$target" "$target_port" "$source" >> "$request"
+      IFS="$TAB" read -r kind protocol public_port target target_port source extra || break
     done
     [ "$saw_end" -eq 1 ] || { printf 'truncated ruleset: END missing\\n' >&2; exit 2; }
     IFS= read -r trailing && { printf 'unexpected data after END\\n' >&2; exit 2; } || true
@@ -225,7 +346,7 @@ case "$action" in
     iptables-restore --noflush < "$swap"
     iptables_hash="$(managed_iptables_hash "$revision")"
     valid_hash "$iptables_hash" || { printf 'could not verify applied generation\\n' >&2; exit 6; }
-    printf 'REVISION\\t%s\\nHASH\\t%s\\nCOUNT\\t%s\\nIPTABLES_HASH\\t%s\\n' "$revision" "$wanted_hash" "$(wc -l < "$rules" | tr -d ' ')" "$iptables_hash" > "$state"
+    printf 'REVISION\\t%s\\nHASH\\t%s\\nCOUNT\\t%s\\nIPTABLES_HASH\\t%s\\nWG_IF\\t%s\\nWG_ENABLED\\t%s\\nWG_HASH\\t%s\\n' "$revision" "$wanted_hash" "$(wc -l < "$rules" | tr -d ' ')" "$iptables_hash" "$state_wg_if" "$state_wg_enabled" "$wg_hash" > "$state"
     chmod 0600 "$state" "$request"
     mv "$state" "$STATE_FILE"
     mv "$request" "$RULES_FILE"
@@ -289,7 +410,11 @@ install -d -m 0700 /etc/polysiem-edge
 if command -v systemctl >/dev/null 2>&1; then
   cat > /etc/systemd/system/polysiem-edge-nat.service <<'POLYSIEM_UNIT'
 [Unit]
-Description=Restore PolySIEM Edge NAT rules
+Description=Restore PolySIEM Edge NAT rules and WireGuard tunnel
+# The APPLY payload replayed from /etc/polysiem-edge/rules now also carries the
+# WireGuard interface config (WG/WGPEER lines), so the tunnel is re-established on
+# boot by the same replay. That file can contain the private key, so it stays
+# chmod 0600. After=network-online.target is retained so the interface can bind.
 After=network-online.target tailscaled.service
 Wants=network-online.target
 ConditionPathExists=/etc/polysiem-edge/rules
@@ -344,6 +469,36 @@ export interface EdgeApplyRule {
   sourceCidr: string | null;
 }
 
+export interface EdgeWireguardPeerConfig {
+  /** Curve25519 public key, base64 (44 chars). */
+  publicKey: string;
+  /** One or more CIDRs routed to this peer down the tunnel. */
+  allowedIps: string[];
+  /** Dial-out endpoint host:port, or null when this side only listens. */
+  endpoint: string | null;
+  /** PersistentKeepalive seconds (0 disables). */
+  persistentKeepalive: number;
+}
+
+export interface EdgeWireguardConfig {
+  /**
+   * When explicitly `false`, the desired state is "tunnel torn down" and a
+   * `WG\t0\t-\t-\t-\t-\t-` line is emitted (the agent deletes the managed
+   * interface if it still exists). Defaults to enabled when the object is
+   * present. To leave WireGuard entirely untouched (pre-WireGuard behaviour),
+   * omit the whole `wireguard` field instead of setting `enabled: false`.
+   */
+  enabled?: boolean;
+  /** Managed interface name (e.g. "wg0"). PolySIEM only ever touches this name. */
+  interfaceName: string;
+  /** Tunnel address in CIDR form (e.g. "10.9.9.1/24"). */
+  address: string;
+  listenPort: number;
+  /** base64 private key (44 chars). Passed transiently; never persisted in settings. */
+  privateKey: string;
+  peers: EdgeWireguardPeerConfig[];
+}
+
 export interface EdgeApplyConfig {
   /** Interface on which the published listener receives packets. */
   publicInterface: string;
@@ -351,15 +506,57 @@ export interface EdgeApplyConfig {
   outboundInterface: string;
   enableIpForwarding: boolean;
   rules: EdgeApplyRule[];
+  /**
+   * Optional WireGuard tunnel. When omitted, the canonical ruleset is byte-identical
+   * to the pre-WireGuard output (so already-applied non-WG hashes never change and the
+   * agent leaves any WireGuard state alone). When present, WG (+ WGPEER) lines are
+   * inserted between the CONFIG line and the RULE lines.
+   */
+  wireguard?: EdgeWireguardConfig;
+}
+
+/**
+ * Canonical WG/WGPEER wire lines for `config.wireguard`. Enabled tunnels emit one
+ * `WG\t1\t...` line carrying the private key followed by one `WGPEER` line per peer;
+ * a disabled tunnel emits `WG\t0\t-\t-\t-\t-\t-` and no peer lines. The `fwmark`
+ * column is always `-` (unused by this feature).
+ */
+function canonicalWireguardLines(wg: EdgeWireguardConfig): string[] {
+  if (wg.enabled === false) {
+    return ["WG\t0\t-\t-\t-\t-\t-"];
+  }
+  return [
+    `WG\t1\t${wg.interfaceName}\t${wg.address}\t${wg.listenPort}\t${wg.privateKey}\t-`,
+    ...wg.peers.map(
+      (peer) =>
+        `WGPEER\t${peer.publicKey}\t${peer.allowedIps.join(",")}\t${peer.endpoint ?? "-"}\t${peer.persistentKeepalive}`,
+    ),
+  ];
+}
+
+/**
+ * Non-secret canonical representation of a desired WireGuard config (excludes the
+ * private key), useful for inspection and tests. NOTE: this is NOT the host-side
+ * `WG_HASH`; the agent folds in the derived public key (unavailable to the generator).
+ */
+export function canonicalWireguardConfig(wg: EdgeWireguardConfig): string {
+  if (wg.enabled === false) return "WG\t0";
+  const peers = wg.peers
+    .map((p) => `${p.publicKey}\t${p.allowedIps.join(",")}\t${p.endpoint ?? "-"}\t${p.persistentKeepalive}`)
+    .sort();
+  return [`WG\t1\t${wg.interfaceName}\t${wg.address}\t${wg.listenPort}`, ...peers].join("\n");
 }
 
 export function canonicalEdgeRuleset(config: EdgeApplyConfig): string {
-  const lines = [
-    `CONFIG\t${config.publicInterface}\t${config.outboundInterface}\t${config.enableIpForwarding ? 1 : 0}`,
-    ...config.rules.map(
-      (rule) => `RULE\t${rule.protocol}\t${rule.publicPort}\t${rule.targetAddress}\t${rule.targetPort}\t${rule.sourceCidr ?? "-"}`,
-    ),
-  ];
+  const lines = [`CONFIG\t${config.publicInterface}\t${config.outboundInterface}\t${config.enableIpForwarding ? 1 : 0}`];
+  if (config.wireguard !== undefined) {
+    lines.push(...canonicalWireguardLines(config.wireguard));
+  }
+  for (const rule of config.rules) {
+    lines.push(
+      `RULE\t${rule.protocol}\t${rule.publicPort}\t${rule.targetAddress}\t${rule.targetPort}\t${rule.sourceCidr ?? "-"}`,
+    );
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -373,11 +570,12 @@ export function buildApplyProtocol(
   enableIpForwarding: boolean,
   rules: EdgeApplyRule[],
   revision = 1,
+  wireguard?: EdgeWireguardConfig,
 ): string {
   if (!Number.isInteger(revision) || revision < 1 || revision > 999_999_999) {
     throw new Error("Edge ruleset revision must be an integer between 1 and 999999999");
   }
-  const config = { publicInterface, outboundInterface, enableIpForwarding, rules };
+  const config: EdgeApplyConfig = { publicInterface, outboundInterface, enableIpForwarding, rules, wireguard };
   const hash = desiredEdgeRulesetHash(config);
   const lines = ["APPLY", `META\t${revision}\t${hash}`, canonicalEdgeRuleset(config).trimEnd(), "END"];
   return `${lines.join("\n")}\n`;

@@ -13,6 +13,7 @@ import {
   LockKeyhole,
   Network,
   Pencil,
+  PlugZap,
   Plus,
   RefreshCw,
   Route,
@@ -63,21 +64,32 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  connectorDisplayName,
+  connectorStatusPresentation,
   EDGE_NETWORKS_QUERY_KEY,
   EMPTY_EDGE_NETWORKS_OVERVIEW,
   edgeOverviewPresentation,
   edgeReconciliation,
   edgeServerState,
+  isConnectorSelectable,
   isRuleApplied,
+  natRuleRouting,
+  natRuleTargetCopy,
+  ROUTE_MODE_CHOICES,
+  ruleRouteMode,
   sshEndpoint,
   tailscaleDetails,
+  type ConnectorDto,
   type EdgeNatRule,
   type EdgeNatServer,
   type EdgeNetworksOverview,
+  type EdgeRouteMode,
   type NatProtocol,
   type NatRuleInput,
 } from "./edge-networks-types";
 import { CloudflarePublishedRoutes } from "./edge-cloudflare-routes";
+import { ConnectorsCard, useConnectorsQuery } from "./connectors-card";
+import { EdgeWireguardCard } from "./edge-wireguard-card";
 import { isValidNetworkPort } from "./edge-network-utils";
 
 export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
@@ -346,6 +358,9 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
   const state = edgeServerState(server);
   const settings = server.settings ?? {};
   const reconciliation = edgeReconciliation(server);
+  // Shared query key with the connectors card, so the rule editor and the list
+  // read one cached fetch.
+  const connectors = useConnectorsQuery(server.id, { enabled: server.enabled }).data ?? [];
   const pending = settings.pendingChanges || server.rules.some((rule) => rule.enabled && !isRuleApplied(rule, settings.lastAppliedAt));
   const applyMutation = useMutation({
     mutationFn: () => apiFetch(`/api/network/edge-networks/servers/${server.id}/apply`, { method: "POST" }),
@@ -456,7 +471,15 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
                 <TableRow key={rule.id}>
                   <TableCell className="font-medium">{rule.name}</TableCell>
                   <TableCell className="font-mono text-xs"><span className="uppercase">{rule.protocol}</span> :{rule.publicPort}</TableCell>
-                  <TableCell className="font-mono text-xs">{rule.targetAddress}:{rule.targetPort}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {rule.targetAddress}:{rule.targetPort}
+                    {ruleRouteMode(rule) === "connector" && (
+                      <span className="mt-0.5 flex items-center gap-1 font-sans text-[0.6875rem] text-muted-foreground">
+                        <PlugZap className="size-3" aria-hidden="true" />
+                        via {connectorDisplayName(connectors, rule.connectorId) ?? "connector"}
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell className="hidden font-mono text-xs md:table-cell">{rule.sourceCidr || <span className="font-sans text-warning">Any source</span>}</TableCell>
                   <TableCell><Badge variant={applied ? "secondary" : "outline"}>{!rule.enabled ? "Disabled" : applied ? "Applied" : "Pending apply"}</Badge></TableCell>
                   {isAdmin && server.enabled && <TableCell><div className="flex justify-end gap-1"><Button variant="ghost" size="icon-sm" aria-label={`Edit ${rule.name}`} onClick={() => setRuleDialog({ open: true, rule })}><Pencil /></Button><Button variant="ghost" size="icon-sm" className="text-destructive hover:text-destructive" aria-label={`Delete ${rule.name}`} onClick={() => setDeleteRule(rule)}><Trash2 /></Button></div></TableCell>}
@@ -467,10 +490,13 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
           </div>
         ))()}
         <p className="text-xs text-muted-foreground">Only rules marked Applied are confirmed in the last successful remote ruleset. The forwarding rule publishes the edge address instead of directly publishing the home router&apos;s WAN address.</p>
+
+        {server.enabled && <EdgeWireguardCard server={server} isAdmin={isAdmin} />}
+        {server.enabled && <ConnectorsCard server={server} isAdmin={isAdmin} />}
       </CardContent>))()}
 
       <SshEnrollmentDialog server={server} open={enrollmentOpen} onOpenChange={setEnrollmentOpen} />
-      <NatRuleDialog server={server} rule={ruleDialog.rule} open={ruleDialog.open} onOpenChange={(open) => setRuleDialog((current) => ({ ...current, open }))} />
+      <NatRuleDialog server={server} rule={ruleDialog.rule} connectors={connectors} open={ruleDialog.open} onOpenChange={(open) => setRuleDialog((current) => ({ ...current, open }))} />
       <AlertDialog open={deleteRule !== null} onOpenChange={(open) => !open && setDeleteRule(null)}>
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Remove {deleteRule?.name}?</AlertDialogTitle><AlertDialogDescription>The rule will be removed from PolySIEM, then must be applied before the edge server&apos;s firewall changes.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={deleteMutation.isPending} onClick={(event) => { event.preventDefault(); if (deleteRule) deleteMutation.mutate(deleteRule.id); }}>{deleteMutation.isPending && <Loader2 className="animate-spin" />}Remove rule</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
@@ -666,11 +692,14 @@ function ServerStateBadge({ state }: { state: ReturnType<typeof edgeServerState>
   return <Badge variant={state === "online" ? "secondary" : state === "offline" ? "destructive" : "outline"} className="font-normal">{state === "online" && <span className="size-1.5 rounded-full bg-success" />}{label}</Badge>;
 }
 
-function NatRuleDialog({ server, rule, open, onOpenChange }: { server: EdgeNatServer; rule: EdgeNatRule | null; open: boolean; onOpenChange: (open: boolean) => void }) {
+function NatRuleDialog({ server, rule, connectors, open, onOpenChange }: { server: EdgeNatServer; rule: EdgeNatRule | null; connectors: ConnectorDto[]; open: boolean; onOpenChange: (open: boolean) => void }) {
   const queryClient = useQueryClient();
   const initial = useMemo(() => ruleToForm(rule), [rule]);
   const [form, setForm] = useState<NatRuleForm>(initial);
   const currentForm = open && form.ruleId !== (rule?.id ?? null) ? initial : form;
+  const selectableConnectors = connectors.filter(isConnectorSelectable);
+  const targetCopy = natRuleTargetCopy(currentForm.mode);
+  const connectorMissing = currentForm.mode === "connector" && !currentForm.connectorId;
   const mutation = useMutation({
     mutationFn: (input: NatRuleInput) => apiFetch(
       rule ? `/api/network/edge-networks/servers/${server.id}/rules/${rule.id}` : `/api/network/edge-networks/servers/${server.id}/rules`,
@@ -684,36 +713,104 @@ function NatRuleDialog({ server, rule, open, onOpenChange }: { server: EdgeNatSe
     const publicPort = Number(currentForm.publicPort);
     const targetPort = Number(currentForm.targetPort);
     if (!currentForm.name.trim() || !currentForm.targetAddress.trim() || !isValidNetworkPort(publicPort) || !isValidNetworkPort(targetPort)) { toast.error("Enter a name, private target, and valid ports from 1–65535."); return; }
-    mutation.mutate({ name: currentForm.name.trim(), protocol: currentForm.protocol, publicPort, targetAddress: currentForm.targetAddress.trim(), targetPort, sourceCidr: currentForm.sourceCidr.trim() || undefined, enabled: currentForm.enabled });
+    if (connectorMissing) { toast.error("Choose the connector that makes the last hop, or switch back to a direct route."); return; }
+    mutation.mutate({
+      name: currentForm.name.trim(),
+      protocol: currentForm.protocol,
+      publicPort,
+      targetAddress: currentForm.targetAddress.trim(),
+      targetPort,
+      sourceCidr: currentForm.sourceCidr.trim() || undefined,
+      enabled: currentForm.enabled,
+      ...natRuleRouting(currentForm.mode, currentForm.connectorId),
+    });
   };
   const update = (patch: Partial<NatRuleForm>) => setForm({ ...currentForm, ...patch });
+  // Switching to connector mode preselects the only ready connector, if there is one.
+  const selectMode = (mode: EdgeRouteMode) => update({
+    mode,
+    connectorId: mode === "connector"
+      ? currentForm.connectorId ?? (selectableConnectors.length === 1 ? selectableConnectors[0].id : null)
+      : currentForm.connectorId,
+  });
   return (
     <Dialog open={open} onOpenChange={(next) => { if (next) setForm(initial); onOpenChange(next); }}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-lg">
         <form onSubmit={submit} className="contents">
           <DialogHeader><DialogTitle>{rule ? "Edit" : "Add"} NAT rule</DialogTitle><DialogDescription>Publish one listener on {server.name} and send it to a private lab address.</DialogDescription></DialogHeader>
           <div className="grid gap-4 py-1">
             <div className="grid gap-1.5"><Label htmlFor="nat-name">Rule name</Label><Input id="nat-name" value={currentForm.name} onChange={(event) => update({ name: event.target.value })} placeholder="Plex HTTPS" autoFocus /></div>
+
+            <div className="grid gap-1.5">
+              <Label id={`route-mode-${server.id}`}>How traffic reaches the target</Label>
+              <div role="radiogroup" aria-labelledby={`route-mode-${server.id}`} className="grid gap-2 sm:grid-cols-2">
+                {ROUTE_MODE_CHOICES.map((choice) => {
+                  const active = currentForm.mode === choice.value;
+                  return (
+                    <button
+                      key={choice.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => selectMode(choice.value)}
+                      className={cn("flex w-full items-start gap-2.5 rounded-lg border p-3 text-left transition-colors hover:bg-accent", active && "border-primary bg-primary/5")}
+                    >
+                      <span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border", active && "border-primary bg-primary text-primary-foreground")}>{active && <Check className="size-3" />}</span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium">{choice.title}</span>
+                        <span className="mt-0.5 block text-xs text-muted-foreground">{choice.detail}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {currentForm.mode === "connector" && (selectableConnectors.length === 0 ? (
+              <Alert>
+                <PlugZap />
+                <AlertTitle>No connector is ready yet</AlertTitle>
+                <AlertDescription>Add a connector in the Connectors section on this server and run its install command. Once it reports connected it can carry routes.</AlertDescription>
+              </Alert>
+            ) : (
+              <div className="grid gap-1.5">
+                <Label htmlFor="nat-connector">Connector</Label>
+                <Select value={currentForm.connectorId ?? ""} onValueChange={(value) => update({ connectorId: value })}>
+                  <SelectTrigger id="nat-connector" className="w-full"><SelectValue placeholder="Choose a connector" /></SelectTrigger>
+                  <SelectContent>
+                    {connectors.map((connector) => (
+                      <SelectItem key={connector.id} value={connector.id} disabled={!isConnectorSelectable(connector)}>
+                        {connector.name}
+                        {isConnectorSelectable(connector) ? "" : ` — ${connectorStatusPresentation(connector).label.toLowerCase()}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">Traffic lands on the edge port below, crosses the tunnel, and this connector delivers it. Its tunnel IP is assigned automatically — you never enter it.</p>
+              </div>
+            ))}
+
             <div className="grid gap-3 sm:grid-cols-[0.7fr_1fr]">
               <div className="grid gap-1.5"><Label>Protocol</Label><Select value={currentForm.protocol} onValueChange={(value) => update({ protocol: value as NatProtocol })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tcp">TCP</SelectItem><SelectItem value="udp">UDP</SelectItem></SelectContent></Select></div>
               <div className="grid gap-1.5"><Label htmlFor="public-port">Edge port</Label><Input id="public-port" inputMode="numeric" value={currentForm.publicPort} onChange={(event) => update({ publicPort: event.target.value })} placeholder="443" /></div>
             </div>
             <div className="grid gap-3 sm:grid-cols-[1fr_0.55fr]">
-              <div className="grid gap-1.5"><Label htmlFor="target-address">Private target address</Label><Input id="target-address" value={currentForm.targetAddress} onChange={(event) => update({ targetAddress: event.target.value })} placeholder="100.64.0.12 or 10.0.3.20" /></div>
+              <div className="grid gap-1.5"><Label htmlFor="target-address">{targetCopy.label}</Label><Input id="target-address" value={currentForm.targetAddress} onChange={(event) => update({ targetAddress: event.target.value })} placeholder={targetCopy.placeholder} /></div>
               <div className="grid gap-1.5"><Label htmlFor="target-port">Target port</Label><Input id="target-port" inputMode="numeric" value={currentForm.targetPort} onChange={(event) => update({ targetPort: event.target.value })} placeholder="32400" /></div>
             </div>
+            {targetCopy.help && <p className="-mt-2 text-xs text-muted-foreground">{targetCopy.help}</p>}
             <div className="grid gap-1.5"><Label htmlFor="source-cidr">Allowed source CIDR <span className="font-normal text-muted-foreground">(recommended)</span></Label><Input id="source-cidr" value={currentForm.sourceCidr} onChange={(event) => update({ sourceCidr: event.target.value })} placeholder="203.0.113.0/24" /><p className={cn("text-xs", currentForm.sourceCidr ? "text-muted-foreground" : "text-warning")}>{currentForm.sourceCidr ? "Only this source range can enter the rule." : "Blank allows traffic from any internet address."}</p></div>
             <div className="flex items-center justify-between gap-4 rounded-lg border p-3"><div><Label htmlFor="nat-enabled">Rule enabled</Label><p className="text-xs text-muted-foreground">Disabled rules remain saved but are not installed.</p></div><Switch id="nat-enabled" checked={currentForm.enabled} onCheckedChange={(enabled) => update({ enabled })} /></div>
           </div>
-          <DialogFooter><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={mutation.isPending}>{mutation.isPending && <Loader2 className="animate-spin" />}{rule ? "Save rule" : "Add rule"}</Button></DialogFooter>
+          <DialogFooter><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={mutation.isPending || connectorMissing}>{mutation.isPending && <Loader2 className="animate-spin" />}{rule ? "Save rule" : "Add rule"}</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
   );
 }
 
-interface NatRuleForm { ruleId: string | null; name: string; protocol: NatProtocol; publicPort: string; targetAddress: string; targetPort: string; sourceCidr: string; enabled: boolean }
-function ruleToForm(rule: EdgeNatRule | null): NatRuleForm { return { ruleId: rule?.id ?? null, name: rule?.name ?? "", protocol: rule?.protocol ?? "tcp", publicPort: rule ? String(rule.publicPort) : "", targetAddress: rule?.targetAddress ?? "", targetPort: rule ? String(rule.targetPort) : "", sourceCidr: rule?.sourceCidr ?? "", enabled: rule?.enabled ?? true }; }
+interface NatRuleForm { ruleId: string | null; name: string; protocol: NatProtocol; publicPort: string; targetAddress: string; targetPort: string; sourceCidr: string; enabled: boolean; mode: EdgeRouteMode; connectorId: string | null }
+function ruleToForm(rule: EdgeNatRule | null): NatRuleForm { return { ruleId: rule?.id ?? null, name: rule?.name ?? "", protocol: rule?.protocol ?? "tcp", publicPort: rule ? String(rule.publicPort) : "", targetAddress: rule?.targetAddress ?? "", targetPort: rule ? String(rule.targetPort) : "", sourceCidr: rule?.sourceCidr ?? "", enabled: rule?.enabled ?? true, mode: rule ? ruleRouteMode(rule) : "direct", connectorId: rule?.connectorId ?? null }; }
 
 function TailscaleCard({ network }: { network: EdgeNetworksOverview["tailscale"][number] }) {
   const details = tailscaleDetails(network);

@@ -1,3 +1,52 @@
+import type { WireguardTunnel } from "@/lib/validators/integrations";
+
+/**
+ * Ready-to-paste values for the HOME (OPNsense) side of the tunnel, derived
+ * entirely from the edge tunnel settings. The edge is the LISTENER, so OPNsense
+ * needs the edge's public key, its `host:listenPort` endpoint, the tunnel
+ * addressing, a suggested local address (the `.2` host of the edge /24), and the
+ * AllowedIPs to assign the edge peer (the edge tunnel address as a `/32`).
+ * The private key is never part of this shape.
+ */
+export interface EdgeWireguardPeerConfig {
+  edgePublicKey: string | null;
+  edgeEndpoint: string;
+  edgeAddress: string;
+  recommendedOpnsenseAddress: string;
+  allowedIps: string[];
+}
+
+function edgeTunnelIp(address: string): string {
+  return address.split("/")[0];
+}
+
+/** Suggest the OPNsense local address as the `.2` host of the edge /24. */
+function opnsenseAddressFromEdge(address: string): string {
+  const [ip, prefix] = address.split("/");
+  const octets = ip.split(".");
+  const valid = octets.length === 4 &&
+    octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255);
+  if (!valid) return address;
+  octets[3] = "2";
+  return prefix ? `${octets.join(".")}/${prefix}` : octets.join(".");
+}
+
+/** Format a WireGuard endpoint, bracketing IPv6 literals. */
+function edgeEndpoint(host: string, listenPort: number): string {
+  return host.includes(":") ? `[${host}]:${listenPort}` : `${host}:${listenPort}`;
+}
+
+export function deriveEdgeWireguardPeerConfig(host: string, tunnel: WireguardTunnel): EdgeWireguardPeerConfig {
+  const ip = edgeTunnelIp(tunnel.address);
+  return {
+    edgePublicKey: tunnel.publicKey,
+    edgeEndpoint: edgeEndpoint(host, tunnel.listenPort),
+    edgeAddress: tunnel.address,
+    recommendedOpnsenseAddress: opnsenseAddressFromEdge(tunnel.address),
+    allowedIps: [`${ip}/32`],
+  };
+}
+
 export interface EdgeLifecycleInput {
   enabled: boolean;
   pendingChanges: boolean;

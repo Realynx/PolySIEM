@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { deriveEdgeLifecycle, matchesExpectedEdgeApply, nextEdgeApplyRevision } from "./edge-network-state";
+import { deriveEdgeLifecycle, deriveEdgeWireguardPeerConfig, matchesExpectedEdgeApply, nextEdgeApplyRevision } from "./edge-network-state";
+import { wireguardTunnelSchema } from "@/lib/validators/integrations";
 
 describe("Edge network reconciliation state", () => {
   it("keeps disabled servers with live rules in an explicit cleanup state", () => {
@@ -37,5 +38,30 @@ describe("Edge network reconciliation state", () => {
   it("reserves a fresh generation for every explicit repair apply", () => {
     expect(nextEdgeApplyRevision(7, 7)).toBe(8);
     expect(nextEdgeApplyRevision(3, 9)).toBe(10);
+  });
+});
+
+describe("Edge WireGuard peer config derivation", () => {
+  const pub = `${"A".repeat(43)}=`;
+
+  it("derives the OPNsense-side paste values from the edge tunnel", () => {
+    const tunnel = wireguardTunnelSchema.parse({
+      enabled: true, address: "10.9.9.1/24", listenPort: 51820, publicKey: pub, hasPrivateKey: true,
+    });
+    expect(deriveEdgeWireguardPeerConfig("23.94.251.183", tunnel)).toEqual({
+      edgePublicKey: pub,
+      edgeEndpoint: "23.94.251.183:51820",
+      edgeAddress: "10.9.9.1/24",
+      recommendedOpnsenseAddress: "10.9.9.2/24",
+      allowedIps: ["10.9.9.1/32"],
+    });
+  });
+
+  it("brackets IPv6 endpoints and tolerates a missing edge public key", () => {
+    const tunnel = wireguardTunnelSchema.parse({ address: "10.9.9.1/24", listenPort: 51821 });
+    const config = deriveEdgeWireguardPeerConfig("2001:db8::1", tunnel);
+    expect(config.edgeEndpoint).toBe("[2001:db8::1]:51821");
+    expect(config.edgePublicKey).toBeNull();
+    expect(config.allowedIps).toEqual(["10.9.9.1/32"]);
   });
 });

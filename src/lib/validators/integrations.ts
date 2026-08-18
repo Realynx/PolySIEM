@@ -192,9 +192,15 @@ export const edgeNatCredentialsSchema = z.object({
 });
 export type EdgeNatCredentials = z.infer<typeof edgeNatCredentialsSchema>;
 
-/** Internal encrypted credential shape. Never expose this schema's privateKey field via REST. */
+/** 44-character base64 encoding of a 32-byte Curve25519 WireGuard key. */
+export const wireguardKeyRegex = /^[A-Za-z0-9+/]{43}=$/;
+
+/** Internal encrypted credential shape. Never expose privateKey / wireguardPrivateKey via REST. */
 export const storedEdgeNatCredentialsSchema = edgeNatCredentialsSchema.extend({
   privateKey: z.string().startsWith("-----BEGIN OPENSSH PRIVATE KEY-----").max(20_000),
+  // The edge host's own WireGuard private key. Lives ONLY in encrypted credentials,
+  // never in settings JSON. Absent until the WireGuard tunnel is configured.
+  wireguardPrivateKey: z.string().regex(wireguardKeyRegex).optional(),
 });
 
 const edgeInterfaceSchema = z.string().trim().regex(/^[A-Za-z0-9_.:-]{1,15}$/, "Use a Linux interface name");
@@ -216,6 +222,43 @@ export const edgeNatSnapshotSchema = z.object({
   rulesetDrift: z.boolean().default(false),
 });
 export type EdgeNatSnapshot = z.infer<typeof edgeNatSnapshotSchema>;
+
+/**
+ * The remote WireGuard peer (the home OPNsense endpoint). Because the home side
+ * sits behind CGNAT/PPPoE with no reachable public IP, OPNsense INITIATES the
+ * tunnel outbound to the edge, so `endpoint` is normally null here — the edge
+ * only listens and learns the peer address from the incoming handshake.
+ */
+export const wireguardPeerSchema = z.object({
+  publicKey: z.string().regex(wireguardKeyRegex, "Enter a 44-character WireGuard public key"),
+  // Home-side subnets the edge should route into the tunnel (the DNAT targets live here).
+  allowedIps: z.array(z.string().max(64)).max(64).default([]),
+  endpoint: z.string().max(256).nullable().default(null),
+  persistentKeepalive: z.number().int().min(0).max(65535).default(25),
+});
+export type WireguardPeer = z.infer<typeof wireguardPeerSchema>;
+
+/**
+ * WireGuard tunnel state for the edge host. The private key is NOT here — it is
+ * stored in encrypted credentials (storedEdgeNatCredentialsSchema.wireguardPrivateKey).
+ * Only the derived public key (safe to display / paste into OPNsense) is kept here.
+ */
+export const wireguardTunnelSchema = z.object({
+  enabled: z.boolean().default(false),
+  interfaceName: edgeInterfaceSchema.default("wg0"),
+  // Edge tunnel address in CIDR form, e.g. 10.9.9.1/24 (OPNsense uses 10.9.9.2/24).
+  address: z.string().max(64).default("10.9.9.1/24"),
+  listenPort: z.number().int().min(1).max(65535).default(51820),
+  // The edge's OWN public key, derived from the stored private key. Safe to show.
+  publicKey: z.string().regex(wireguardKeyRegex).nullable().default(null),
+  hasPrivateKey: z.boolean().default(false),
+  peer: wireguardPeerSchema.nullable().default(null),
+  // sha256 of the canonical WireGuard config last confirmed applied on the host.
+  appliedConfigHash: z.string().regex(/^[0-9a-f]{64}$/).nullable().default(null),
+  lastHandshakeAt: z.string().nullable().optional(),
+  lastApplyError: z.string().max(2000).nullable().optional(),
+});
+export type WireguardTunnel = z.infer<typeof wireguardTunnelSchema>;
 
 export const edgeNatSettingsSchema = z.object({
   publicKey: z.string().startsWith("ssh-ed25519 ").max(10_000).optional(),
@@ -247,6 +290,10 @@ export const edgeNatSettingsSchema = z.object({
   })).max(200).default([]),
   lastAppliedAt: z.string().optional(),
   lastApplyError: z.string().max(2000).nullable().optional(),
+  // Optional WireGuard tunnel. When enabled, the edge brings up this interface
+  // and the NAT outbound (outboundInterface) is pointed at it so DNATed traffic
+  // is routed to the home network over the tunnel instead of the public Internet.
+  wireguard: wireguardTunnelSchema.optional(),
 });
 export type EdgeNatSettings = z.infer<typeof edgeNatSettingsSchema>;
 

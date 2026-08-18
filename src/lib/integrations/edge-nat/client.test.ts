@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEdgeApplyResponse, parseEdgeNatStatus } from "./client";
+import { parseEdgeApplyResponse, parseEdgeNatStatus, parseEdgeNatWireguardStatus } from "./client";
 
 describe("Edge NAT helper responses", () => {
   it("parses bounded status inventory", () => {
@@ -31,5 +31,34 @@ describe("Edge NAT helper responses", () => {
     });
     expect(parseEdgeApplyResponse("APPLIED\t2\n")).toBeNull();
     expect(parseEdgeApplyResponse("not applied\n")).toBeNull();
+  });
+
+  it("parses the optional WireGuard status lines", () => {
+    const pub = `${"A".repeat(43)}=`;
+    const wg = parseEdgeNatWireguardStatus([
+      "POLYSIEM_EDGE_STATUS_V1",
+      "WG_IF\twg0",
+      "WG_ENABLED\t1",
+      `WG_PUBKEY\t${pub}`,
+      "WG_LISTEN\t51820",
+      "WG_PEERS\t1",
+      "WG_LATEST_HANDSHAKE\t1700000000",
+      "",
+    ].join("\n"));
+    expect(wg).toEqual({
+      interfaceName: "wg0", enabled: true, publicKey: pub,
+      listenPort: 51820, peers: 1,
+      latestHandshakeAt: new Date(1700000000 * 1000).toISOString(),
+    });
+  });
+
+  it("reports a disabled tunnel and 0 handshake, and null for legacy agents", () => {
+    const disabled = parseEdgeNatWireguardStatus([
+      "POLYSIEM_EDGE_STATUS_V1", "WG_IF\twg0", "WG_ENABLED\t0",
+      "WG_PEERS\t0", "WG_LATEST_HANDSHAKE\t0", "",
+    ].join("\n"));
+    expect(disabled).toMatchObject({ enabled: false, peers: 0, latestHandshakeAt: null, publicKey: null });
+    // A legacy agent emits no WG_* lines at all.
+    expect(parseEdgeNatWireguardStatus("POLYSIEM_EDGE_STATUS_V1\nIP_FORWARD\t1\n")).toBeNull();
   });
 });

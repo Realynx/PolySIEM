@@ -1,16 +1,18 @@
 import "server-only";
-import { Prisma } from "@prisma/client";
+import { Prisma, type IntegrationConfig } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { audit, type AuditActor } from "@/lib/audit";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
+import { generateWireguardKeypair, isValidWireguardKey, wireguardPublicFromPrivate } from "@/lib/wireguard";
 import { toDriverConfig } from "@/lib/integrations/config";
 import { parseEdgeApplyResponse, testEdgeNatConnection } from "@/lib/integrations/edge-nat/client";
 import { buildApplyProtocol, desiredEdgeRulesetHash, type EdgeApplyRule } from "@/lib/integrations/edge-nat/agent";
 import { EdgeHostKeyScanError, parseEdgeSshUrl, runVerifiedSsh, scanEdgeHostKeys } from "@/lib/integrations/edge-nat/ssh";
 import { runEdgeNatProvisioning } from "@/lib/integrations/edge-nat/provision";
-import { cloudflareSettingsSchema, edgeNatSettingsSchema, elasticsearchSettingsSchema, tailscaleSettingsSchema } from "@/lib/validators/integrations";
-import { edgeNatRulesConflict, edgeNatRuleUsesManagementPort, type EdgeNatRuleInput } from "@/lib/validators/edge-nat";
-import { deriveEdgeLifecycle, matchesExpectedEdgeApply, nextEdgeApplyRevision } from "./edge-network-state";
+import { cloudflareSettingsSchema, edgeNatSettingsSchema, elasticsearchSettingsSchema, storedEdgeNatCredentialsSchema, tailscaleSettingsSchema, wireguardTunnelSchema, type EdgeNatSettings } from "@/lib/validators/integrations";
+import { edgeNatRulesConflict, edgeNatRuleUsesManagementPort, type ConfigureWireguardInput, type EdgeNatRuleInput } from "@/lib/validators/edge-nat";
+import { deriveEdgeLifecycle, deriveEdgeWireguardPeerConfig, matchesExpectedEdgeApply, nextEdgeApplyRevision } from "./edge-network-state";
 import { edgePortForwardEvidence } from "./edge-forwarding-evidence";
 import { inspectCloudflareRouteManagementCapability } from "@/lib/integrations/cloudflare/client";
 
@@ -33,35 +35,182 @@ async function withEdgeRuleLock<T>(
   }, { maxWait: 10_000, timeout: 60_000 });
 }
 
-function applyRules(rows: Array<{
+/** The connector columns an apply needs; null for direct-mode rules. */
+type RuleConnector = { tunnelAddress: string; publicKey: string | null; status: string } | null;
+
+interface EdgeRuleRow {
   id: string; name: string; protocol: string; publicPort: number;
   targetAddress: string; targetPort: number; sourceCidr: string | null;
-}>): Array<EdgeApplyRule & { id: string; name: string }> {
-  return rows.map((rule) => ({
-    id: rule.id, name: rule.name, protocol: rule.protocol as "tcp" | "udp",
-    publicPort: rule.publicPort, targetAddress: rule.targetAddress,
-    targetPort: rule.targetPort, sourceCidr: rule.sourceCidr,
-  }));
+  mode?: string; connector?: RuleConnector;
+}
+
+/** Prisma selection carrying just enough of the connector to render a rule. */
+const RULE_CONNECTOR_INCLUDE = {
+  connector: { select: { tunnelAddress: true, publicKey: true, status: true } },
+} as const;
+
+/**
+ * Desired edge-side rules (§1b).
+ *
+ * A `direct` rule renders exactly as it always has — the edge DNATs straight to
+ * `targetAddress:targetPort`. A `connector` rule instead DNATs to the connector's
+ * tunnel address on the SAME public port; the connector performs the last hop.
+ * Connector rules whose connector is missing, disabled, or not yet enrolled have
+ * no peer on the edge, so they are dropped rather than DNATed into a black hole.
+ */
+export function deriveEdgeApplyRules(rows: EdgeRuleRow[]): Array<EdgeApplyRule & { id: string; name: string }> {
+  return rows.flatMap((rule) => {
+    const base = {
+      id: rule.id, name: rule.name, protocol: rule.protocol as "tcp" | "udp",
+      publicPort: rule.publicPort, sourceCidr: rule.sourceCidr,
+    };
+    if (rule.mode === "connector") {
+      const connector = rule.connector;
+      if (!connector || !connector.publicKey || connector.status === "disabled") return [];
+      return [{ ...base, targetAddress: connector.tunnelAddress, targetPort: rule.publicPort }];
+    }
+    return [{ ...base, targetAddress: rule.targetAddress, targetPort: rule.targetPort }];
+  });
 }
 
 function normalizeRule(input: EdgeNatRuleInput) {
-  return { ...input, sourceCidr: input.sourceCidr?.trim() || null };
+  const mode = input.mode ?? "direct";
+  return {
+    ...input,
+    sourceCidr: input.sourceCidr?.trim() || null,
+    mode,
+    // A direct rule never carries a connector reference, even if one was posted.
+    connectorId: mode === "connector" ? input.connectorId ?? null : null,
+  };
 }
 
-async function markEdgeRulesPending(tx: Prisma.TransactionClient, integrationId: string) {
+/** Enrolled, non-disabled connectors — the derived half of the edge peer list (§1c). */
+async function loadConnectorPeers(tx: Prisma.TransactionClient, integrationId: string) {
+  return tx.connector.findMany({
+    where: { integrationId, status: { not: "disabled" }, publicKey: { not: null } },
+    select: { publicKey: true, tunnelAddress: true },
+    orderBy: [{ tunnelAddress: "asc" }, { connectorId: "asc" }],
+  });
+}
+
+type ConnectorPeerRow = { publicKey: string | null; tunnelAddress: string };
+
+/**
+ * The transient WireGuard block folded into an APPLY. Structurally identical to
+ * `EdgeApplyConfig.wireguard`; presence means "bring the tunnel up". The private
+ * key travels only here (over the verified SSH channel) — never persisted in
+ * settings, DTOs, or logs.
+ */
+interface EdgeWireguardApply {
+  interfaceName: string;
+  address: string;
+  listenPort: number;
+  privateKey: string;
+  peers: Array<{ publicKey: string; allowedIps: string[]; endpoint: string | null; persistentKeepalive: number }>;
+}
+
+function edgeWireguardPrivateKey(integration: IntegrationConfig): string | undefined {
+  try {
+    const stored = storedEdgeNatCredentialsSchema.parse(JSON.parse(decryptSecret(integration.encryptedCredentials)));
+    return stored.wireguardPrivateKey;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Peer list per §1c: the optional manually-entered peer (e.g. OPNsense) followed
+ * by every enrolled, non-disabled connector as a `/32`. With no connectors the
+ * array is byte-identical to the pre-connector output, so already-applied hashes
+ * never move.
+ */
+export function deriveConnectorPeers(connectors: ConnectorPeerRow[]) {
+  return connectors.flatMap((connector) =>
+    connector.publicKey
+      ? [{
+          publicKey: connector.publicKey,
+          allowedIps: [`${connector.tunnelAddress}/32`],
+          endpoint: null,
+          persistentKeepalive: 25,
+        }]
+      : []);
+}
+
+function wireguardApplyFromSettings(
+  settings: EdgeNatSettings,
+  privateKey: string | undefined,
+  connectors: ConnectorPeerRow[] = [],
+): EdgeWireguardApply | undefined {
+  const wg = settings.wireguard;
+  if (!wg?.enabled || !privateKey) return undefined;
+  return {
+    interfaceName: wg.interfaceName,
+    address: wg.address,
+    listenPort: wg.listenPort,
+    privateKey,
+    peers: [
+      ...(wg.peer
+        ? [{
+            publicKey: wg.peer.publicKey,
+            allowedIps: wg.peer.allowedIps,
+            endpoint: wg.peer.endpoint,
+            persistentKeepalive: wg.peer.persistentKeepalive,
+          }]
+        : []),
+      ...deriveConnectorPeers(connectors),
+    ],
+  };
+}
+
+/**
+ * Resolve the effective apply plan. When the tunnel is enabled (and its key is
+ * present) the NAT outbound is pointed at the WG interface so DNATed traffic is
+ * routed down the tunnel; otherwise behaviour is exactly as before WireGuard
+ * (no WG block, configured outbound interface).
+ */
+function edgeApplyPlan(
+  settings: EdgeNatSettings,
+  integration: IntegrationConfig,
+  connectors: ConnectorPeerRow[] = [],
+) {
+  const privateKey = settings.wireguard?.enabled ? edgeWireguardPrivateKey(integration) : undefined;
+  const wireguard = wireguardApplyFromSettings(settings, privateKey, connectors);
+  const outboundInterface = wireguard ? wireguard.interfaceName : settings.outboundInterface;
+  return { wireguard, outboundInterface };
+}
+
+function edgeDesiredHash(
+  settings: EdgeNatSettings,
+  outboundInterface: string,
+  rules: Array<EdgeApplyRule & { id: string; name: string }>,
+  wireguard: EdgeWireguardApply | undefined,
+): string {
+  return desiredEdgeRulesetHash({
+    publicInterface: settings.publicInterface,
+    outboundInterface,
+    enableIpForwarding: settings.enableIpForwarding,
+    rules,
+    ...(wireguard ? { wireguard } : {}),
+  });
+}
+
+/**
+ * Recompute the desired ruleset hash and flag the Apply button. Exported so the
+ * connector service can call it from inside the SAME advisory-lock transaction
+ * whenever the derived peer list changes (enroll, disable, delete).
+ */
+export async function markEdgeRulesPending(tx: Prisma.TransactionClient, integrationId: string) {
   const integration = await edgeIntegration(integrationId, tx);
   const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
   const rows = await tx.edgeNatRule.findMany({
-    where: { integrationId, enabled: true }, orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
+    where: { integrationId, enabled: true },
+    include: RULE_CONNECTOR_INCLUDE,
+    orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
   });
-  const rules = applyRules(rows);
+  const rules = deriveEdgeApplyRules(rows);
+  const plan = edgeApplyPlan(settings, integration, await loadConnectorPeers(tx, integrationId));
   const revision = nextEdgeApplyRevision(settings.rulesRevision, settings.appliedRevision);
-  const desiredRulesHash = desiredEdgeRulesetHash({
-    publicInterface: settings.publicInterface,
-    outboundInterface: settings.outboundInterface,
-    enableIpForwarding: settings.enableIpForwarding,
-    rules,
-  });
+  const desiredRulesHash = edgeDesiredHash(settings, plan.outboundInterface, rules, plan.wireguard);
   await tx.integrationConfig.update({
     where: { id: integrationId },
     data: { settings: {
@@ -85,7 +234,34 @@ async function assertRuleCanListen(tx: Prisma.TransactionClient, integrationId: 
   if (candidates.some((candidate) => edgeNatRulesConflict(value, candidate as Pick<EdgeNatRuleInput, "protocol" | "publicPort">))) {
     throw new ApiError(409, "port_conflict", "That protocol and public port are already managed on this edge server");
   }
+  await assertConnectorRoutable(tx, integrationId, value);
   return value;
+}
+
+/**
+ * A connector-mode rule may only reference a connector that belongs to THIS edge
+ * server and has finished enrolling — otherwise the edge would DNAT to a tunnel
+ * address with no peer behind it.
+ */
+async function assertConnectorRoutable(
+  tx: Prisma.TransactionClient,
+  integrationId: string,
+  value: { mode: string; connectorId: string | null },
+) {
+  if (value.mode !== "connector") return;
+  if (!value.connectorId) {
+    throw new ApiError(400, "connector_not_enrolled", "Select a connector for a connector-routed rule");
+  }
+  const connector = await tx.connector.findFirst({
+    where: { id: value.connectorId, integrationId },
+    select: { publicKey: true, status: true },
+  });
+  if (!connector) {
+    throw new ApiError(400, "connector_not_enrolled", "That connector does not belong to this edge server");
+  }
+  if (!connector.publicKey || connector.status === "disabled") {
+    throw new ApiError(400, "connector_not_enrolled", "Install and enroll that connector before routing a port through it");
+  }
 }
 
 export async function createEdgeNatRule(actor: AuditActor, integrationId: string, input: EdgeNatRuleInput) {
@@ -120,6 +296,8 @@ export async function updateEdgeNatRule(actor: AuditActor, integrationId: string
       targetPort: patch.targetPort ?? existing.targetPort,
       sourceCidr: patch.sourceCidr === undefined ? existing.sourceCidr : patch.sourceCidr,
       enabled: patch.enabled ?? existing.enabled,
+      mode: (patch.mode ?? existing.mode) as EdgeNatRuleInput["mode"],
+      connectorId: patch.connectorId === undefined ? existing.connectorId : patch.connectorId,
     };
     const value = await assertRuleCanListen(tx, integrationId, merged, id);
     try {
@@ -184,19 +362,24 @@ export async function applyEdgeNatRules(
     }
     const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
     const rows = options.clear ? [] : await tx.edgeNatRule.findMany({
-      where: { integrationId, enabled: true }, orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
+      where: { integrationId, enabled: true },
+      include: RULE_CONNECTOR_INCLUDE,
+      orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
     });
-    const rules = applyRules(rows);
+    const rules = deriveEdgeApplyRules(rows);
+    // A clear reverts to the pre-WireGuard protocol (no WG block); a normal apply
+    // brings the tunnel up (when enabled) and routes the NAT outbound through it.
+    const plan = options.clear
+      ? { wireguard: undefined as EdgeWireguardApply | undefined, outboundInterface: settings.outboundInterface }
+      : edgeApplyPlan(settings, integration, await loadConnectorPeers(tx, integrationId));
+    if (!options.clear && settings.wireguard?.enabled && !plan.wireguard) {
+      throw new ApiError(409, "wireguard_key_missing", "Configure the WireGuard tunnel key before applying its ruleset");
+    }
     // Every explicit apply gets a fresh generation, even when the desired hash
     // is unchanged. This repairs out-of-band chain tampering instead of taking
     // the helper's same-revision idempotent fast path.
     const revision = nextEdgeApplyRevision(settings.rulesRevision, settings.appliedRevision);
-    const hash = desiredEdgeRulesetHash({
-      publicInterface: settings.publicInterface,
-      outboundInterface: settings.outboundInterface,
-      enableIpForwarding: settings.enableIpForwarding,
-      rules,
-    });
+    const hash = edgeDesiredHash(settings, plan.outboundInterface, rules, plan.wireguard);
     const nextSettings = edgeNatSettingsSchema.parse({
       ...settings,
       rulesRevision: revision,
@@ -206,14 +389,15 @@ export async function applyEdgeNatRules(
       where: { id: integrationId },
       data: { settings: nextSettings as unknown as Prisma.InputJsonValue },
     });
-    return { integration: current, settings: nextSettings, rules, revision, hash };
+    return { integration: current, settings: nextSettings, rules, revision, hash, plan };
   });
   const protocol = buildApplyProtocol(
     prepared.settings.publicInterface,
-    prepared.settings.outboundInterface,
+    prepared.plan.outboundInterface,
     prepared.settings.enableIpForwarding,
     prepared.rules,
     prepared.revision,
+    prepared.plan.wireguard,
   );
   try {
     const result = await runVerifiedSsh(toDriverConfig(prepared.integration), "APPLY", protocol);
@@ -228,15 +412,13 @@ export async function applyEdgeNatRules(
       const latest = await edgeIntegration(integrationId, tx);
       const settings = edgeNatSettingsSchema.parse(latest.settings ?? {});
       const desiredRows = await tx.edgeNatRule.findMany({
-        where: { integrationId, enabled: true }, orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
+        where: { integrationId, enabled: true },
+        include: RULE_CONNECTOR_INCLUDE,
+        orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
       });
-      const desired = applyRules(desiredRows);
-      const currentDesiredHash = desiredEdgeRulesetHash({
-        publicInterface: settings.publicInterface,
-        outboundInterface: settings.outboundInterface,
-        enableIpForwarding: settings.enableIpForwarding,
-        rules: desired,
-      });
+      const desired = deriveEdgeApplyRules(desiredRows);
+      const desiredPlan = edgeApplyPlan(settings, latest, await loadConnectorPeers(tx, integrationId));
+      const currentDesiredHash = edgeDesiredHash(settings, desiredPlan.outboundInterface, desired, desiredPlan.wireguard);
       const pendingChanges = currentDesiredHash !== applied.hash;
       const stale = !options.clear && pendingChanges;
       const syncedSnapshot = settings.syncedSnapshot
@@ -291,6 +473,95 @@ export async function applyEdgeNatRules(
 
 export async function clearEdgeNatRules(actor: AuditActor, integrationId: string) {
   return applyEdgeNatRules(actor, integrationId, { clear: true });
+}
+
+/** Sanitized tunnel settings (never carries a private key) plus paste-ready OPNsense values. */
+function edgeWireguardView(baseUrl: string, settings: EdgeNatSettings) {
+  const tunnel = settings.wireguard ?? wireguardTunnelSchema.parse({});
+  const { host } = parseEdgeSshUrl(baseUrl);
+  return { settings: tunnel, peerConfig: deriveEdgeWireguardPeerConfig(host, tunnel) };
+}
+
+/**
+ * Configure (or rotate) the edge WireGuard tunnel. The private key is generated
+ * server-side (or accepted as a validated paste, or regenerated on request),
+ * stored ONLY in encrypted credentials, and the derived public key is saved in
+ * settings alongside the tunnel + peer. An apply is required to push it, so this
+ * marks pendingChanges. The private key is never returned, logged, or audited.
+ */
+export async function configureEdgeWireguard(
+  actor: AuditActor,
+  integrationId: string,
+  input: ConfigureWireguardInput,
+) {
+  const result = await withEdgeRuleLock(integrationId, async (tx) => {
+    const integration = await edgeIntegration(integrationId, tx);
+    const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
+    const stored = storedEdgeNatCredentialsSchema.parse(JSON.parse(decryptSecret(integration.encryptedCredentials)));
+    const existing = settings.wireguard;
+
+    let privateKey = stored.wireguardPrivateKey;
+    let keyRotated = false;
+    if (input.privateKey) {
+      if (!isValidWireguardKey(input.privateKey)) {
+        throw new ApiError(400, "invalid_wireguard_key", "That WireGuard private key is not a valid 32-byte key");
+      }
+      privateKey = input.privateKey;
+      keyRotated = true;
+    } else if (input.regenerateKey || !privateKey) {
+      privateKey = generateWireguardKeypair().privateKey;
+      keyRotated = true;
+    }
+    const publicKey = wireguardPublicFromPrivate(privateKey);
+
+    const nextCredentials = storedEdgeNatCredentialsSchema.parse({ ...stored, wireguardPrivateKey: privateKey });
+    const wireguard = wireguardTunnelSchema.parse({
+      ...(existing ?? {}),
+      enabled: input.enabled,
+      interfaceName: input.interfaceName ?? existing?.interfaceName,
+      address: input.address ?? existing?.address,
+      listenPort: input.listenPort ?? existing?.listenPort,
+      publicKey,
+      hasPrivateKey: true,
+      peer: {
+        publicKey: input.peer.publicKey,
+        allowedIps: input.peer.allowedIps,
+        endpoint: input.peer.endpoint,
+        persistentKeepalive: input.peer.keepalive,
+      },
+    });
+    const nextSettings = edgeNatSettingsSchema.parse({ ...settings, wireguard, pendingChanges: true });
+    const updated = await tx.integrationConfig.update({
+      where: { id: integrationId },
+      data: {
+        encryptedCredentials: encryptSecret(JSON.stringify(nextCredentials)),
+        settings: nextSettings as unknown as Prisma.InputJsonValue,
+      },
+    });
+    return { view: edgeWireguardView(updated.baseUrl, nextSettings), tunnel: nextSettings.wireguard!, keyRotated };
+  });
+  await audit(actor, "edge.wireguard.configure", { type: "integration", id: integrationId }, {
+    enabled: result.tunnel.enabled,
+    interfaceName: result.tunnel.interfaceName,
+    listenPort: result.tunnel.listenPort,
+    keyRotated: result.keyRotated,
+    peerAllowedIps: result.tunnel.peer?.allowedIps.length ?? 0,
+  });
+  return result.view;
+}
+
+/** Ready-to-paste OPNsense-side values (edge public key, endpoint, addressing). No private key. */
+export async function getEdgeWireguardPeerConfig(integrationId: string) {
+  const integration = await edgeIntegration(integrationId);
+  const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
+  return edgeWireguardView(integration.baseUrl, settings).peerConfig;
+}
+
+/** GET view: sanitized tunnel settings + paste-ready OPNsense peer config. */
+export async function getEdgeWireguardConfig(integrationId: string) {
+  const integration = await edgeIntegration(integrationId);
+  const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
+  return edgeWireguardView(integration.baseUrl, settings);
 }
 
 export async function inspectEdgeHostKeys(integrationId: string) {

@@ -53,6 +53,9 @@ export const BACKUP_MODELS = [
   "dyndnsHost",
   "networkGateway",
   "trafficCounterSample",
+  // Connector must precede edgeNatRule: connector-routed rules reference it.
+  "connector",
+  "edgeNatRule",
   "tunnel",
   "tunnelHostname",
   "sshKey",

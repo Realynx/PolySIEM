@@ -1,0 +1,43 @@
+/**
+ * PolySIEM connectors — the Cloudflare-Tunnel-style reverse-tunnel agent.
+ *
+ * Pure generation only: nothing in here touches the database or the network.
+ * The control plane (`src/lib/services/connectors.ts`) imports
+ * {@link connectorRulesetHash} so the `configHash` it publishes is computed by
+ * exactly the same code the on-host agent uses to verify what it parsed.
+ */
+
+export {
+  CONNECTOR_AGENT_SCRIPT,
+  CONNECTOR_AGENT_VERSION,
+  CONNECTOR_AGENT_PATH,
+  CONNECTOR_RULESET_VERSION,
+  CONNECTOR_CONFIG_DIR,
+  CONNECTOR_CONFIG_FILE,
+  CONNECTOR_TOKEN_FILE,
+  CONNECTOR_PRIVATE_KEY_FILE,
+  CONNECTOR_PUBLIC_KEY_FILE,
+  CONNECTOR_TUNNEL_FILE,
+  CONNECTOR_STATE_FILE,
+  CONNECTOR_SERVICE_NAME,
+  CONNECTOR_DNAT_CHAIN,
+  CONNECTOR_SNAT_CHAIN,
+  CONNECTOR_FORWARD_CHAIN,
+  CONNECTOR_DNAT_GENERATION_PREFIX,
+  CONNECTOR_SNAT_GENERATION_PREFIX,
+  CONNECTOR_FORWARD_GENERATION_PREFIX,
+  canonicalConnectorRuleset,
+  connectorRulesetHash,
+} from "./agent";
+
+export type { ConnectorRoute, ConnectorEdgeParams, ConnectorConfigPayload } from "./agent";
+
+export {
+  CONNECTOR_SERVICE_PATH,
+  buildConnectorInstallScript,
+  buildConnectorInstallCommand,
+  buildConnectorInstallErrorScript,
+  normalizeConnectorBaseUrl,
+} from "./install";
+
+export type { ConnectorInstallOptions } from "./install";
