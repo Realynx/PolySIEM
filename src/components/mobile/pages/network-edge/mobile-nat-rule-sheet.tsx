@@ -1,8 +1,8 @@
 "use client";
 
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Cable, Loader2, Route } from "lucide-react";
+import { Cable, Loader2, Route, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
@@ -13,11 +13,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import {
+  connectorKindLabel,
+  connectorRouteWarning,
   isConnectorSelectable,
   natRuleRouting,
   natRuleTargetCopy,
   ruleRouteMode,
+  EDGE_NETWORKS_QUERY_KEY,
   ROUTE_MODE_CHOICES,
+  type ConnectorDto,
   type EdgeNatRule,
   type EdgeNatServer,
   type EdgeRouteMode,
@@ -26,6 +30,245 @@ import {
 } from "@/components/network/edge-networks-types";
 import { isValidNetworkPort } from "@/components/network/edge-network-utils";
 import { useConnectorsQuery } from "./mobile-connectors";
+import { MobileOptionCard } from "./mobile-form-controls";
+
+/**
+ * Edit state for one NAT rule. Seeded and validated by the pure helpers below
+ * so the sheet itself only wires state to fields — the same shape the tunnel
+ * form uses (`seedWireguardForm`). If the desktop layer ever exports a shared
+ * seed for this form, drop these two helpers and import that instead.
+ */
+interface NatRuleFormState {
+  name: string;
+  protocol: NatProtocol;
+  publicPort: string;
+  targetAddress: string;
+  targetPort: string;
+  sourceCidr: string;
+  enabled: boolean;
+  mode: EdgeRouteMode;
+  connectorId: string;
+}
+
+function seedNatRuleForm(rule: EdgeNatRule | null): NatRuleFormState {
+  if (!rule) {
+    return {
+      name: "",
+      protocol: "tcp",
+      publicPort: "",
+      targetAddress: "",
+      targetPort: "",
+      sourceCidr: "",
+      enabled: true,
+      mode: "direct",
+      connectorId: "",
+    };
+  }
+  return {
+    name: rule.name,
+    protocol: rule.protocol,
+    publicPort: String(rule.publicPort),
+    targetAddress: rule.targetAddress,
+    targetPort: String(rule.targetPort),
+    sourceCidr: rule.sourceCidr ?? "",
+    enabled: rule.enabled,
+    mode: ruleRouteMode(rule),
+    connectorId: rule.connectorId ?? "",
+  };
+}
+
+/** The one message to toast when the form cannot be submitted, or null. */
+function natRuleFormError(form: NatRuleFormState): string | null {
+  const portsValid = isValidNetworkPort(Number(form.publicPort)) && isValidNetworkPort(Number(form.targetPort));
+  if (!form.name.trim() || !form.targetAddress.trim() || !portsValid) {
+    return "Enter a name, private target, and valid ports from 1–65535.";
+  }
+  if (form.mode === "connector" && !form.connectorId) {
+    return "Pick the connector that reaches this target.";
+  }
+  return null;
+}
+
+function natRuleInputFrom(form: NatRuleFormState): NatRuleInput {
+  return {
+    name: form.name.trim(),
+    protocol: form.protocol,
+    publicPort: Number(form.publicPort),
+    targetAddress: form.targetAddress.trim(),
+    targetPort: Number(form.targetPort),
+    sourceCidr: form.sourceCidr.trim() || undefined,
+    enabled: form.enabled,
+    ...natRuleRouting(form.mode, form.connectorId || null),
+  };
+}
+
+/** Direct or via-connector — the choice that changes what "target" means. */
+function NatRuleRouteModePicker({
+  mode,
+  onChange,
+  connectorsAvailable,
+  connectorsLoading,
+}: {
+  mode: EdgeRouteMode;
+  onChange: (mode: EdgeRouteMode) => void;
+  connectorsAvailable: boolean;
+  connectorsLoading: boolean;
+}) {
+  return (
+    <div className="grid gap-1.5">
+      <Label>How traffic reaches the target</Label>
+      <div className="grid gap-2">
+        {ROUTE_MODE_CHOICES.map((choice) => (
+          <MobileOptionCard
+            key={choice.value}
+            icon={choice.value === "connector" ? <Cable className="size-4" /> : <Route className="size-4" />}
+            title={choice.title}
+            detail={choice.detail}
+            selected={mode === choice.value}
+            onSelect={() => onChange(choice.value)}
+            disabled={choice.value === "connector" && !connectorsAvailable}
+            disabledHint={
+              connectorsLoading
+                ? "Loading connectors…"
+                : "Add a connector on this server first — an agent, OPNsense, or another WireGuard peer."
+            }
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Which connector carries the route, plus the manual-peer warning: PolySIEM
+ * cannot program a hand-configured far end, so the operator has to.
+ */
+function NatRuleConnectorField({
+  connectors,
+  connectorId,
+  onChange,
+  publicPort,
+}: {
+  connectors: readonly ConnectorDto[];
+  connectorId: string;
+  onChange: (id: string) => void;
+  publicPort: string;
+}) {
+  const selected = connectors.find((connector) => connector.id === connectorId) ?? null;
+  // Non-null only for manual kinds: PolySIEM cannot program the far side there.
+  const warning = selected ? connectorRouteWarning(selected, { publicPort: publicPort || null }) : null;
+  return (
+    <div className="grid gap-1.5">
+      <Label>Connector</Label>
+      <Select value={connectorId} onValueChange={onChange}>
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder="Choose a connector" />
+        </SelectTrigger>
+        <SelectContent>
+          {connectors.map((connector) => (
+            <SelectItem key={connector.id} value={connector.id}>
+              {connector.name} · {connectorKindLabel(connector)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        The edge port is preserved across the tunnel. Agent connectors must be enrolled; OPNsense and other WireGuard
+        peers only need their key registered.
+      </p>
+      {warning && (
+        <div className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          <span className="min-w-0">
+            <span className="block font-medium">{warning.title}</span>
+            <span className="mt-0.5 block leading-snug">{warning.detail}</span>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Listener (protocol + edge port) and target (address + port), with per-mode copy. */
+function NatRuleEndpointFields({
+  form,
+  update,
+}: {
+  form: NatRuleFormState;
+  update: (patch: Partial<NatRuleFormState>) => void;
+}) {
+  const targetCopy = natRuleTargetCopy(form.mode);
+  return (
+    <>
+      <div className="grid grid-cols-[0.7fr_1fr] gap-3">
+        <div className="grid gap-1.5">
+          <Label>Protocol</Label>
+          <Select value={form.protocol} onValueChange={(value) => update({ protocol: value as NatProtocol })}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="tcp">TCP</SelectItem>
+              <SelectItem value="udp">UDP</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="m-nat-public">Edge port</Label>
+          <Input
+            id="m-nat-public"
+            inputMode="numeric"
+            value={form.publicPort}
+            onChange={(event) => update({ publicPort: event.target.value })}
+            placeholder="443"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-[1fr_0.55fr] gap-3">
+        <div className="grid gap-1.5">
+          <Label htmlFor="m-nat-target">{targetCopy.label}</Label>
+          <Input
+            id="m-nat-target"
+            value={form.targetAddress}
+            onChange={(event) => update({ targetAddress: event.target.value })}
+            placeholder={targetCopy.placeholder}
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="m-nat-target-port">Port</Label>
+          <Input
+            id="m-nat-target-port"
+            inputMode="numeric"
+            value={form.targetPort}
+            onChange={(event) => update({ targetPort: event.target.value })}
+            placeholder="32400"
+          />
+        </div>
+      </div>
+      {targetCopy.help && <p className="-mt-2 text-xs text-muted-foreground">{targetCopy.help}</p>}
+    </>
+  );
+}
+
+/** Source CIDR, with the standing warning that blank means the whole internet. */
+function NatRuleSourceField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="grid gap-1.5">
+      <Label htmlFor="m-nat-cidr">
+        Allowed source CIDR <span className="font-normal text-muted-foreground">(recommended)</span>
+      </Label>
+      <Input
+        id="m-nat-cidr"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="203.0.113.0/24"
+      />
+      <p className={cn("text-xs", value ? "text-muted-foreground" : "text-warning")}>
+        {value ? "Only this source range can enter the rule." : "Blank allows traffic from any internet address."}
+      </p>
+    </div>
+  );
+}
 
 /** Add/edit NAT rule form in a bottom sheet, posting to the same endpoints as desktop. */
 export function MobileNatRuleSheet({
@@ -38,20 +281,13 @@ export function MobileNatRuleSheet({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [name, setName] = useState(rule?.name ?? "");
-  const [protocol, setProtocol] = useState<NatProtocol>(rule?.protocol ?? "tcp");
-  const [publicPort, setPublicPort] = useState(rule ? String(rule.publicPort) : "");
-  const [targetAddress, setTargetAddress] = useState(rule?.targetAddress ?? "");
-  const [targetPort, setTargetPort] = useState(rule ? String(rule.targetPort) : "");
-  const [sourceCidr, setSourceCidr] = useState(rule?.sourceCidr ?? "");
-  const [enabled, setEnabled] = useState(rule?.enabled ?? true);
-  const [mode, setMode] = useState<EdgeRouteMode>(rule ? ruleRouteMode(rule) : "direct");
-  const [connectorId, setConnectorId] = useState(rule?.connectorId ?? "");
+  const [form, setForm] = useState<NatRuleFormState>(() => seedNatRuleForm(rule));
+  const update = (patch: Partial<NatRuleFormState>) => setForm((current) => ({ ...current, ...patch }));
 
   const connectorsQuery = useConnectorsQuery(server.id, { enabled: server.enabled });
+  // The shared predicate is kind-aware: an agent connector proves itself by
+  // enrolling, a manual peer by having its public key registered.
   const usable = (connectorsQuery.data ?? []).filter(isConnectorSelectable);
-  const viaConnector = mode === "connector";
-  const targetCopy = natRuleTargetCopy(mode);
 
   const mutation = useMutation({
     mutationFn: (input: NatRuleInput) =>
@@ -64,36 +300,22 @@ export function MobileNatRuleSheet({
     onSuccess: () => {
       toast.success(`${rule ? "Updated" : "Added"} NAT rule. Apply changes when ready.`);
       onOpenChange(false);
-      void queryClient.invalidateQueries({ queryKey: ["edge-networks"] });
+      void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
     onError: (error: Error) => toast.error(error.message),
   });
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const publicPortNum = Number(publicPort);
-    const targetPortNum = Number(targetPort);
-    if (!name.trim() || !targetAddress.trim() || !isValidNetworkPort(publicPortNum) || !isValidNetworkPort(targetPortNum)) {
-      toast.error("Enter a name, private target, and valid ports from 1–65535.");
+    const error = natRuleFormError(form);
+    if (error) {
+      toast.error(error);
       return;
     }
-    if (viaConnector && !connectorId) {
-      toast.error("Pick the connector that reaches this target.");
-      return;
-    }
-    mutation.mutate({
-      name: name.trim(),
-      protocol,
-      publicPort: publicPortNum,
-      targetAddress: targetAddress.trim(),
-      targetPort: targetPortNum,
-      sourceCidr: sourceCidr.trim() || undefined,
-      enabled,
-      ...natRuleRouting(mode, connectorId || null),
-    });
+    mutation.mutate(natRuleInputFrom(form));
   };
 
-  const sheet = () => (
+  return (
     <BottomSheet
       open
       onOpenChange={onOpenChange}
@@ -103,118 +325,43 @@ export function MobileNatRuleSheet({
       <form onSubmit={submit} className="flex flex-col gap-4 pb-2">
         <div className="grid gap-1.5">
           <Label htmlFor="m-nat-name">Rule name</Label>
-          <Input id="m-nat-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Plex HTTPS" />
+          <Input
+            id="m-nat-name"
+            value={form.name}
+            onChange={(event) => update({ name: event.target.value })}
+            placeholder="Plex HTTPS"
+          />
         </div>
 
-        <div className="grid gap-1.5">
-          <Label>How traffic reaches the target</Label>
-          <div className="grid gap-2">
-            {ROUTE_MODE_CHOICES.map((choice) => (
-              <RouteModeOption
-                key={choice.value}
-                icon={choice.value === "connector" ? <Cable className="size-4" /> : <Route className="size-4" />}
-                title={choice.title}
-                detail={choice.detail}
-                selected={mode === choice.value}
-                onSelect={() => setMode(choice.value)}
-                disabled={choice.value === "connector" && usable.length === 0}
-                disabledHint={
-                  connectorsQuery.isLoading
-                    ? "Loading connectors…"
-                    : "Install and enroll a connector on this server first."
-                }
-              />
-            ))}
-          </div>
-        </div>
+        <NatRuleRouteModePicker
+          mode={form.mode}
+          onChange={(mode) => update({ mode })}
+          connectorsAvailable={usable.length > 0}
+          connectorsLoading={connectorsQuery.isLoading}
+        />
 
-        {viaConnector && (
-          <div className="grid gap-1.5">
-            <Label>Connector</Label>
-            <Select value={connectorId} onValueChange={setConnectorId}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Choose a connector" />
-              </SelectTrigger>
-              <SelectContent>
-                {usable.map((connector) => (
-                  <SelectItem key={connector.id} value={connector.id}>
-                    {connector.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Only enrolled connectors can carry a route. The edge port is preserved across the tunnel.
-            </p>
-          </div>
+        {form.mode === "connector" && (
+          <NatRuleConnectorField
+            connectors={usable}
+            connectorId={form.connectorId}
+            onChange={(connectorId) => update({ connectorId })}
+            publicPort={form.publicPort}
+          />
         )}
 
-        <div className="grid grid-cols-[0.7fr_1fr] gap-3">
-          <div className="grid gap-1.5">
-            <Label>Protocol</Label>
-            <Select value={protocol} onValueChange={(value) => setProtocol(value as NatProtocol)}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="tcp">TCP</SelectItem>
-                <SelectItem value="udp">UDP</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="m-nat-public">Edge port</Label>
-            <Input
-              id="m-nat-public"
-              inputMode="numeric"
-              value={publicPort}
-              onChange={(event) => setPublicPort(event.target.value)}
-              placeholder="443"
-            />
-          </div>
-        </div>
-        <div className="grid grid-cols-[1fr_0.55fr] gap-3">
-          <div className="grid gap-1.5">
-            <Label htmlFor="m-nat-target">{targetCopy.label}</Label>
-            <Input
-              id="m-nat-target"
-              value={targetAddress}
-              onChange={(event) => setTargetAddress(event.target.value)}
-              placeholder={targetCopy.placeholder}
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="m-nat-target-port">Port</Label>
-            <Input
-              id="m-nat-target-port"
-              inputMode="numeric"
-              value={targetPort}
-              onChange={(event) => setTargetPort(event.target.value)}
-              placeholder="32400"
-            />
-          </div>
-        </div>
-        {targetCopy.help && <p className="-mt-2 text-xs text-muted-foreground">{targetCopy.help}</p>}
-        <div className="grid gap-1.5">
-          <Label htmlFor="m-nat-cidr">
-            Allowed source CIDR <span className="font-normal text-muted-foreground">(recommended)</span>
-          </Label>
-          <Input
-            id="m-nat-cidr"
-            value={sourceCidr}
-            onChange={(event) => setSourceCidr(event.target.value)}
-            placeholder="203.0.113.0/24"
-          />
-          <p className={cn("text-xs", sourceCidr ? "text-muted-foreground" : "text-warning")}>
-            {sourceCidr ? "Only this source range can enter the rule." : "Blank allows traffic from any internet address."}
-          </p>
-        </div>
+        <NatRuleEndpointFields form={form} update={update} />
+        <NatRuleSourceField value={form.sourceCidr} onChange={(sourceCidr) => update({ sourceCidr })} />
+
         <div className="flex items-center justify-between gap-4 rounded-xl border p-3">
           <div>
             <Label htmlFor="m-nat-enabled">Rule enabled</Label>
             <p className="text-xs text-muted-foreground">Disabled rules remain saved but are not installed.</p>
           </div>
-          <Switch id="m-nat-enabled" checked={enabled} onCheckedChange={setEnabled} />
+          <Switch
+            id="m-nat-enabled"
+            checked={form.enabled}
+            onCheckedChange={(enabled) => update({ enabled })}
+          />
         </div>
         <Button type="submit" className="w-full" disabled={mutation.isPending}>
           {mutation.isPending && <Loader2 className="animate-spin" />}
@@ -222,47 +369,5 @@ export function MobileNatRuleSheet({
         </Button>
       </form>
     </BottomSheet>
-  );
-  return sheet();
-}
-
-/** Big tappable route-mode card — a phone-sized radio with room to explain itself. */
-function RouteModeOption({
-  icon,
-  title,
-  detail,
-  selected,
-  onSelect,
-  disabled = false,
-  disabledHint,
-}: {
-  icon: ReactNode;
-  title: string;
-  detail: string;
-  selected: boolean;
-  onSelect: () => void;
-  disabled?: boolean;
-  disabledHint?: string;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      disabled={disabled}
-      onClick={onSelect}
-      className={cn(
-        "flex min-h-13 w-full items-start gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-colors",
-        selected ? "border-primary bg-primary/5" : "bg-card active:bg-muted/70",
-        disabled && "opacity-50",
-      )}
-    >
-      <span className={cn("mt-0.5 shrink-0", selected ? "text-primary" : "text-muted-foreground")}>{icon}</span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-sm leading-tight font-medium">{title}</span>
-        <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">
-          {disabled && disabledHint ? disabledHint : detail}
-        </span>
-      </span>
-    </button>
   );
 }

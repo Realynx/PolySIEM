@@ -1,23 +1,20 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useMemo, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowDownToLine,
-  Check,
   KeyRound,
   Loader2,
+  PlugZap,
   Radio,
   RefreshCw,
   TriangleAlert,
   Waypoints,
-  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/format";
 import { apiFetch } from "@/components/shared/api-client";
-import { copyText } from "@/components/shared/clipboard";
 import { CopyButton } from "@/components/ssh/copy-button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -31,57 +28,71 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { ConfigSelect } from "./config-select";
 import {
-  buildOpnsenseWireguardConfig,
   deriveWireguardView,
   edgeWireguardStatus,
   EDGE_NETWORKS_QUERY_KEY,
   isWireguardFormValid,
-  isWireguardPublicKey,
   looksLikeCidr,
-  parseAllowedIps,
   seedWireguardForm,
   toWireguardConfigInput,
+  WIREGUARD_ADDRESS_CHOICES,
+  WIREGUARD_INTERFACE_CHOICES,
+  WIREGUARD_KEEPALIVE_CHOICES,
+  WIREGUARD_LISTEN_PORT_CHOICES,
   WIREGUARD_QUERY_KEY,
   type EdgeNatServer,
   type EdgeWireguardResponse,
   type WireguardConfigInput,
   type WireguardFormState,
   type WireguardPeerConfigDto,
+  type WireguardPeerDto,
   type WireguardTunnelDto,
 } from "./edge-networks-types";
 
 /**
- * WireGuard tunnel sub-panel for an Edge server card. The edge is the tunnel
- * LISTENER; the home OPNsense box initiates. Centerpiece: a copy-ready block of
- * everything the user pastes into OPNsense's WireGuard peer for the edge.
+ * The edge's own half of the tunnel, shared by the Tunnel tab and by the tab
+ * trigger's On / Off / Incomplete badge — one fetch backs both.
  */
-export function EdgeWireguardCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: boolean }) {
-  const [configOpen, setConfigOpen] = useState(false);
-  const wgQuery = useQuery({
+export function useEdgeWireguardQuery(server: EdgeNatServer) {
+  return useQuery({
     queryKey: [WIREGUARD_QUERY_KEY, server.id],
     queryFn: () => apiFetch<EdgeWireguardResponse>(`/api/network/edge-networks/servers/${server.id}/wireguard`),
     enabled: server.enabled,
   });
+}
+
+/** The tunnel's headline state, from the query when it has landed, else cached settings. */
+export function edgeWireguardTabStatus(server: EdgeNatServer, data?: EdgeWireguardResponse) {
+  return edgeWireguardStatus(data?.settings ?? server.settings?.wireguard);
+}
+
+/**
+ * WireGuard tunnel tab for an Edge server card. The edge is the tunnel
+ * LISTENER; every peer dials in to it.
+ *
+ * Peers are NOT edited here any more — an OPNsense box or any other WireGuard
+ * endpoint is added as a connector, which is where its paste-ready block lives.
+ * This card owns the edge's own half of the tunnel: interface, port, address,
+ * and its keypair. A legacy hand-entered peer is shown read-only.
+ */
+export function EdgeWireguardCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: boolean }) {
+  const [configOpen, setConfigOpen] = useState(false);
+  const wgQuery = useEdgeWireguardQuery(server);
   const data = wgQuery.data;
-  const fallbackWg = server.settings?.wireguard;
-  const status = edgeWireguardStatus(data?.settings ?? fallbackWg);
 
   return (
-    <section className="overflow-hidden rounded-lg border" aria-labelledby={`wg-${server.id}`}>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/20 px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <Waypoints className="size-4 text-primary" aria-hidden="true" />
-          <h4 id={`wg-${server.id}`} className="text-sm font-semibold">WireGuard tunnel</h4>
-          <Badge variant={status.tone === "on" ? "secondary" : "outline"} className={cn("font-normal", status.tone === "pending" && "text-warning")}>
-            {status.tone === "on" && <span className="size-1.5 rounded-full bg-success" />}
-            {status.label}
-          </Badge>
-        </div>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+          The edge box only <span className="font-medium text-foreground">listens</span>. Every peer — a PolySIEM
+          connector, an OPNsense box, any other WireGuard endpoint — dials in from its side and holds the tunnel open
+          with keepalive, so nothing at home needs a public IP or an inbound port.
+        </p>
         {isAdmin && (
           <Button variant="outline" size="sm" onClick={() => setConfigOpen(true)} disabled={wgQuery.isLoading}>
             <KeyRound /> {data?.settings.hasPrivateKey ? "Configure tunnel" : "Set up tunnel"}
@@ -89,27 +100,19 @@ export function EdgeWireguardCard({ server, isAdmin }: { server: EdgeNatServer; 
         )}
       </div>
 
-      <div className="space-y-3 p-3">
-        <p className="text-xs text-muted-foreground">
-          The edge box only <span className="font-medium text-foreground">listens</span>. Your home OPNsense box
-          initiates the tunnel outbound (PersistentKeepalive), so inbound game traffic reaches the LAN even without a
-          public IP at home.
+      {wgQuery.isLoading && <Skeleton className="h-24 w-full rounded-lg" />}
+      {wgQuery.isError && (
+        <p className="flex items-start gap-1.5 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          Tunnel status is unavailable: {(wgQuery.error as Error).message}
         </p>
-
-        {wgQuery.isLoading && <Skeleton className="h-24 w-full rounded-lg" />}
-        {wgQuery.isError && (
-          <p className="flex items-start gap-1.5 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-            Tunnel status is unavailable: {(wgQuery.error as Error).message}
-          </p>
-        )}
-        {data && <WireguardBody data={data} fallbackWg={fallbackWg} isAdmin={isAdmin} />}
-      </div>
+      )}
+      {data && <WireguardBody data={data} fallbackWg={server.settings?.wireguard} isAdmin={isAdmin} />}
 
       {isAdmin && data && (
         <WireguardConfigDialog server={server} data={data} open={configOpen} onOpenChange={setConfigOpen} />
       )}
-    </section>
+    </div>
   );
 }
 
@@ -139,16 +142,18 @@ function WireguardBody({
       <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
         <WgFact label="Interface" value={settings.interfaceName} mono />
         <WgFact label="Listen port" value={String(settings.listenPort)} mono />
+        <WgFact label="Tunnel subnet" value={settings.address} mono />
         <WgFact label="Latest handshake" value={handshake} />
-        <WgFact label="Home subnets" value={view.subnetCount > 0 ? String(view.subnetCount) : "None"} />
       </div>
 
-      <WireguardPasteBlock edgePublicKey={view.edgePublicKey} peerConfig={peerConfig} keepalive={view.keepalive} />
+      <EdgeTunnelIdentity edgePublicKey={view.edgePublicKey} peerConfig={peerConfig} keepalive={view.keepalive} />
+
+      {settings.peer && <LegacyPeerNotice peer={settings.peer} />}
 
       {isAdmin && !settings.hasPrivateKey && (
         <p className="rounded-lg border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
-          No edge key yet. Open <span className="font-medium">Set up tunnel</span> to paste your OPNsense public key and
-          generate the edge keypair — the edge private key never leaves the server.
+          No edge key yet. Open <span className="font-medium">Set up tunnel</span> to generate the edge keypair — the
+          private half never leaves the server, and peers need the public half below.
         </p>
       )}
       <p className="text-xs text-muted-foreground">
@@ -159,8 +164,12 @@ function WireguardBody({
   );
 }
 
-/** Centerpiece: everything to paste into OPNsense's WireGuard peer for the edge. */
-function WireguardPasteBlock({
+/**
+ * The edge's own half of the tunnel — the values every peer needs, whatever kind
+ * it is. The per-peer block (with that peer's allocated address) lives on the
+ * connector, because that is where a peer is added now.
+ */
+function EdgeTunnelIdentity({
   edgePublicKey,
   peerConfig,
   keepalive,
@@ -169,27 +178,52 @@ function WireguardPasteBlock({
   peerConfig: WireguardPeerConfigDto;
   keepalive: number;
 }) {
-  const snippet = buildOpnsenseWireguardConfig({
-    edgePublicKey,
-    edgeEndpoint: peerConfig.edgeEndpoint,
-    opnsenseAddress: peerConfig.recommendedOpnsenseAddress,
-    allowedIps: peerConfig.allowedIps,
-    keepalive,
-  });
   return (
     <div className="space-y-2.5 rounded-lg border bg-primary/[0.03] p-3">
       <div className="flex items-center gap-2">
-        <ArrowDownToLine className="size-4 text-primary" aria-hidden="true" />
-        <p className="text-sm font-medium">Paste into OPNsense</p>
+        <Waypoints className="size-4 text-primary" aria-hidden="true" />
+        <p className="text-sm font-medium">What peers dial</p>
       </div>
       <CopyField label="Edge public key" value={edgePublicKey} emptyHint="Generate the edge key to reveal it" mono emphasized />
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid gap-2 sm:grid-cols-3">
         <CopyField label="Edge endpoint" value={peerConfig.edgeEndpoint} mono />
-        <CopyField label="Allowed IPs (on OPNsense)" value={peerConfig.allowedIps.join(", ")} mono />
-        <CopyField label="OPNsense tunnel address" value={peerConfig.recommendedOpnsenseAddress} mono />
+        <CopyField label="Allowed IPs (on the peer)" value={peerConfig.allowedIps.join(", ")} mono />
         <CopyField label="Persistent keepalive" value={String(keepalive)} mono />
       </div>
-      <CopyAllSnippet snippet={snippet} />
+      <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+        <PlugZap className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" />
+        Adding an OPNsense box or another WireGuard endpoint? Add it in the{" "}
+        <span className="font-medium text-foreground">Connectors</span> tab and pick its kind — PolySIEM allocates its
+        tunnel address and hands you a paste-ready block for that side.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * A peer typed into this card before connector kinds existed. Read-only on
+ * purpose: it still works, but the way to manage a peer now is to add it as a
+ * connector, so nothing here invites another hand-entered one.
+ */
+function LegacyPeerNotice({ peer }: { peer: WireguardPeerDto }) {
+  return (
+    <div className="rounded-lg border border-dashed p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Radio className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <p className="text-sm font-medium">Manually entered peer</p>
+        <Badge variant="outline" className="font-normal">Now managed as a connector</Badge>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        This peer was added before OPNsense became a connector kind. It keeps working exactly as it does today, and the
+        edge still routes its subnets. To change it — or to add another one — add a connector and choose{" "}
+        <span className="font-medium text-foreground">OPNsense</span> or{" "}
+        <span className="font-medium text-foreground">Other WireGuard peer</span>.
+      </p>
+      <div className="mt-2.5 grid gap-2 sm:grid-cols-3">
+        <CopyField label="Peer public key" value={peer.publicKey} mono />
+        <CopyField label="Allowed IPs" value={peer.allowedIps.join(", ")} mono />
+        <CopyField label="Keepalive" value={String(peer.persistentKeepalive)} mono />
+      </div>
     </div>
   );
 }
@@ -231,28 +265,6 @@ function CopyField({
   );
 }
 
-function CopyAllSnippet({ snippet }: { snippet: string }) {
-  const [copied, setCopied] = useState(false);
-  const copyAll = async () => {
-    try {
-      await copyText(snippet);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toast.error("Clipboard unavailable — copy manually");
-    }
-  };
-  return (
-    <div className="relative rounded-lg bg-muted p-3 pr-12">
-      <pre className="max-h-48 overflow-auto text-xs leading-relaxed"><code>{snippet}</code></pre>
-      <Button type="button" variant="ghost" size="sm" className="absolute right-1.5 top-1.5" onClick={copyAll}>
-        {copied ? <Check className="text-primary" /> : <RefreshCw />}
-        {copied ? "Copied" : "Copy all"}
-      </Button>
-    </div>
-  );
-}
-
 function WireguardConfigDialog({
   server,
   data,
@@ -290,7 +302,7 @@ function WireguardConfigDialog({
 
   const save = (regenerateKey: boolean) => {
     if (!formValid) {
-      toast.error("Add the OPNsense public key and at least one home subnet, plus a valid address and port.");
+      toast.error("Enter a valid tunnel address, listen port, and keepalive.");
       return;
     }
     mutation.mutate(toWireguardConfigInput(form, settings, regenerateKey));
@@ -305,8 +317,8 @@ function WireguardConfigDialog({
           <DialogHeader>
             <DialogTitle>WireGuard tunnel — {server.name}</DialogTitle>
             <DialogDescription>
-              The edge listens; OPNsense initiates. Paste OPNsense&apos;s public key and your home subnets, then generate
-              the edge key to paste back into OPNsense.
+              The edge&apos;s own half of the tunnel: which interface it brings up, which UDP port it listens on, and the
+              subnet peers are addressed from. Peers themselves are added as connectors.
             </DialogDescription>
           </DialogHeader>
 
@@ -319,41 +331,85 @@ function WireguardConfigDialog({
               <Switch id="wg-enabled" checked={form.enabled} onCheckedChange={(enabled) => update({ enabled })} />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-[1fr_0.8fr]">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
                 <Label htmlFor="wg-interface">Interface</Label>
-                <Input id="wg-interface" value={form.interfaceName} onChange={(e) => update({ interfaceName: e.target.value })} placeholder="wg0" className="font-mono" />
+                <ConfigSelect
+                  id="wg-interface"
+                  value={form.interfaceName}
+                  onChange={(interfaceName) => update({ interfaceName })}
+                  choices={WIREGUARD_INTERFACE_CHOICES}
+                  customLabel="Custom interface…"
+                  customAriaLabel="Custom WireGuard interface name"
+                  inputPlaceholder="wg0"
+                />
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="wg-port">Listen port</Label>
-                <Input id="wg-port" inputMode="numeric" value={form.listenPort} onChange={(e) => update({ listenPort: e.target.value })} placeholder="51820" className="font-mono" />
+                <ConfigSelect
+                  id="wg-port"
+                  value={form.listenPort}
+                  onChange={(listenPort) => update({ listenPort })}
+                  choices={WIREGUARD_LISTEN_PORT_CHOICES}
+                  customLabel="Custom port…"
+                  customAriaLabel="Custom WireGuard listen port"
+                  inputPlaceholder="51820"
+                  inputMode="numeric"
+                />
               </div>
             </div>
 
-            <div className="grid gap-1.5">
-              <Label htmlFor="wg-address">Edge tunnel address</Label>
-              <Input
-                id="wg-address"
-                value={form.address}
-                onChange={(e) => update({ address: e.target.value })}
-                placeholder="10.9.9.1/24"
-                className={cn("font-mono", form.address && !looksLikeCidr(form.address) && "border-destructive")}
-              />
-              <p className="text-xs text-muted-foreground">OPNsense uses the next address (e.g. 10.9.9.2/24).</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="wg-address">Edge tunnel address</Label>
+                <ConfigSelect
+                  id="wg-address"
+                  value={form.address}
+                  onChange={(address) => update({ address })}
+                  choices={WIREGUARD_ADDRESS_CHOICES}
+                  customLabel="Custom subnet…"
+                  customAriaLabel="Custom edge tunnel address"
+                  inputPlaceholder="10.9.9.1/24"
+                  invalid={Boolean(form.address) && !looksLikeCidr(form.address)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Peers get addresses from this subnet automatically (10.9.9.2, .3, …) — you never assign one.
+                </p>
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="wg-keepalive">Persistent keepalive</Label>
+                <ConfigSelect
+                  id="wg-keepalive"
+                  value={form.keepalive}
+                  onChange={(keepalive) => update({ keepalive })}
+                  choices={WIREGUARD_KEEPALIVE_CHOICES}
+                  customLabel="Custom interval…"
+                  customAriaLabel="Custom keepalive in seconds"
+                  inputPlaceholder="25"
+                  inputMode="numeric"
+                  // Only the legacy manual peer stores a keepalive. Connector peers
+                  // are derived with 25s, so with no legacy peer this would edit
+                  // nothing — better inert and explained than silently discarded.
+                  disabled={!settings.peer}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {settings.peer
+                    ? "How often the manually entered peer re-announces itself so the edge keeps its mapping open."
+                    : "Connectors dial in every 25 seconds; PolySIEM sets that for them. This applies to a manually entered peer only."}
+                </p>
+              </div>
             </div>
-
-            <WireguardPeerFields form={form} update={update} />
 
             <Alert>
               <Radio />
-              <AlertTitle>OPNsense is the initiator</AlertTitle>
+              <AlertTitle>The far side always initiates</AlertTitle>
               <AlertDescription>
-                Leave the edge peer&apos;s endpoint blank — OPNsense dials in from its dynamic address and keeps the tunnel
-                open with keepalive. The edge only listens on the port above.
+                The edge only listens on the port above. Connectors, OPNsense boxes, and any other peer dial in from
+                their dynamic address and hold the tunnel open with keepalive — no inbound port at home.
               </AlertDescription>
             </Alert>
 
-            {edgePublicKey && <CopyField label="Edge public key (paste into OPNsense)" value={edgePublicKey} mono emphasized />}
+            {edgePublicKey && <CopyField label="Edge public key (peers trust this)" value={edgePublicKey} mono emphasized />}
           </div>
 
           <DialogFooter className="gap-2 sm:justify-between">
@@ -375,96 +431,5 @@ function WireguardConfigDialog({
         </form>
       </DialogContent>
     </Dialog>
-  );
-}
-
-/** The "Home OPNsense peer" fieldset: peer public key, subnets, keepalive. */
-function WireguardPeerFields({
-  form,
-  update,
-}: {
-  form: WireguardFormState;
-  update: (patch: Partial<WireguardFormState>) => void;
-}) {
-  const peerKeyValid = isWireguardPublicKey(form.peerPublicKey);
-  const peerKeyError = form.peerPublicKey.length > 0 && !peerKeyValid;
-  return (
-    <div className="rounded-lg border border-dashed p-3">
-      <p className="flex items-center gap-1.5 text-sm font-medium"><Radio className="size-3.5 text-primary" /> Home OPNsense peer</p>
-      <div className="mt-3 grid gap-3">
-        <div className="grid gap-1.5">
-          <Label htmlFor="wg-peer-key">OPNsense public key</Label>
-          <Input
-            id="wg-peer-key"
-            value={form.peerPublicKey}
-            onChange={(e) => update({ peerPublicKey: e.target.value })}
-            placeholder="paste the 44-character key ending in ="
-            className={cn("font-mono text-xs", peerKeyError && "border-destructive")}
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {peerKeyError && <p className="text-xs text-destructive">Expected a 44-character base64 key ending in &quot;=&quot;.</p>}
-        </div>
-        <AllowedIpsField values={form.allowedIps} onChange={(allowedIps) => update({ allowedIps })} />
-        <div className="grid gap-1.5">
-          <Label htmlFor="wg-keepalive">Persistent keepalive (seconds)</Label>
-          <Input id="wg-keepalive" inputMode="numeric" value={form.keepalive} onChange={(e) => update({ keepalive: e.target.value })} placeholder="25" className="w-28 font-mono" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Chip editor for home subnets / AllowedIPs. Accepts comma/space/enter to add. */
-function AllowedIpsField({ values, onChange }: { values: string[]; onChange: (next: string[]) => void }) {
-  const [draft, setDraft] = useState("");
-  const commit = (raw: string) => {
-    const parsed = parseAllowedIps(raw);
-    if (parsed.length === 0) return;
-    const merged = [...values];
-    for (const entry of parsed) if (!merged.includes(entry)) merged.push(entry);
-    onChange(merged);
-    setDraft("");
-  };
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter" || event.key === ",") {
-      event.preventDefault();
-      commit(draft);
-    } else if (event.key === "Backspace" && draft === "" && values.length > 0) {
-      onChange(values.slice(0, -1));
-    }
-  };
-  return (
-    <div className="grid gap-1.5">
-      <Label htmlFor="wg-allowed">Home subnets (AllowedIPs)</Label>
-      {values.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {values.map((value) => (
-            <Badge key={value} variant={looksLikeCidr(value) ? "secondary" : "destructive"} className="gap-1 font-mono font-normal">
-              {value}
-              <button type="button" onClick={() => onChange(values.filter((entry) => entry !== value))} aria-label={`Remove ${value}`} className="rounded-full hover:text-foreground">
-                <X className="size-3" />
-              </button>
-            </Badge>
-          ))}
-        </div>
-      )}
-      <Input
-        id="wg-allowed"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={onKeyDown}
-        onBlur={() => commit(draft)}
-        placeholder="10.0.0.0/24, 10.0.3.20/32"
-        className="font-mono text-xs"
-        autoComplete="off"
-        spellCheck={false}
-      />
-      <p className={cn("text-xs", values.length > 0 ? "text-muted-foreground" : "text-warning")}>
-        {values.length > 0
-          ? "The edge routes these subnets into the tunnel toward the home LAN."
-          : "Add at least one home subnet that contains your DNAT targets."}
-      </p>
-    </div>
   );
 }

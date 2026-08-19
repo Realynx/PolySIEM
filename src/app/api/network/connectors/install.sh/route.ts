@@ -46,11 +46,17 @@ export const GET = handleApi(async (req: NextRequest) => {
   if (!context) return script(INVALID_TOKEN_SCRIPT);
 
   const insecure = req.nextUrl.searchParams.get("insecure") === "1";
+  // When the row carries a restricted key, the installer also creates the
+  // `polysiem-connector` account and plants that authorized_keys line, so
+  // PolySIEM can manage this end over SSH as well as by polling. A phase-1 row
+  // without one gets the original token/poll-only script, unchanged.
   return script(buildConnectorInstallScript({
     baseUrl: resolveConnectorBaseUrl(req.headers),
     token: context.token,
     connectorId: context.connectorId,
     interfaceName: context.interfaceName,
     insecure,
+    ...(context.sshAuthorizedKey ? { authorizedKey: context.sshAuthorizedKey } : {}),
+    ...(context.sshUsername ? { sshUsername: context.sshUsername } : {}),
   }));
 });

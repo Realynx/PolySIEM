@@ -11,7 +11,7 @@ import { buildApplyProtocol, desiredEdgeRulesetHash, type EdgeApplyRule } from "
 import { EdgeHostKeyScanError, parseEdgeSshUrl, runVerifiedSsh, scanEdgeHostKeys } from "@/lib/integrations/edge-nat/ssh";
 import { runEdgeNatProvisioning } from "@/lib/integrations/edge-nat/provision";
 import { cloudflareSettingsSchema, edgeNatSettingsSchema, elasticsearchSettingsSchema, storedEdgeNatCredentialsSchema, tailscaleSettingsSchema, wireguardTunnelSchema, type EdgeNatSettings } from "@/lib/validators/integrations";
-import { edgeNatRulesConflict, edgeNatRuleUsesManagementPort, type ConfigureWireguardInput, type EdgeNatRuleInput } from "@/lib/validators/edge-nat";
+import { edgeNatRulesConflict, edgeNatRuleUsesManagementPort, isManualConnectorKind, type ConfigureWireguardInput, type EdgeNatRuleInput } from "@/lib/validators/edge-nat";
 import { deriveEdgeLifecycle, deriveEdgeWireguardPeerConfig, matchesExpectedEdgeApply, nextEdgeApplyRevision } from "./edge-network-state";
 import { edgePortForwardEvidence } from "./edge-forwarding-evidence";
 import { inspectCloudflareRouteManagementCapability } from "@/lib/integrations/cloudflare/client";
@@ -84,7 +84,11 @@ function normalizeRule(input: EdgeNatRuleInput) {
   };
 }
 
-/** Enrolled, non-disabled connectors — the derived half of the edge peer list (§1c). */
+/**
+ * Every non-disabled connector that has a public key — the derived half of the
+ * edge peer list (§1c). Deliberately kind-agnostic: an OPNsense box added as an
+ * `opnsense` connector is a peer on exactly the same terms as an agent host.
+ */
 async function loadConnectorPeers(tx: Prisma.TransactionClient, integrationId: string) {
   return tx.connector.findMany({
     where: { integrationId, status: { not: "disabled" }, publicKey: { not: null } },
@@ -136,6 +140,31 @@ export function deriveConnectorPeers(connectors: ConnectorPeerRow[]) {
       : []);
 }
 
+type EdgeWireguardPeer = EdgeWireguardApply["peers"][number];
+
+/**
+ * The complete peer list (§1, phase 3).
+ *
+ * OPNsense is now just a connector, so the peers come from the connector rows.
+ * `settings.wireguard.peer` — the old hand-entered single peer — stays READABLE
+ * for installs that still have it: it is emitted first (preserving the original
+ * ordering, so an already-applied hash never moves for an untouched install) but
+ * only when its key is not already contributed by a connector. Converting an
+ * OPNsense peer into an `opnsense` connector therefore never registers the same
+ * key twice, and the legacy field is never deleted behind the operator's back.
+ */
+export function deriveEdgeWireguardPeers(
+  legacyPeer: EdgeWireguardPeer | null | undefined,
+  connectors: ConnectorPeerRow[],
+): EdgeWireguardPeer[] {
+  const derived = deriveConnectorPeers(connectors);
+  const claimed = new Set(derived.map((peer) => peer.publicKey));
+  return [
+    ...(legacyPeer && !claimed.has(legacyPeer.publicKey) ? [legacyPeer] : []),
+    ...derived,
+  ];
+}
+
 function wireguardApplyFromSettings(
   settings: EdgeNatSettings,
   privateKey: string | undefined,
@@ -148,17 +177,17 @@ function wireguardApplyFromSettings(
     address: wg.address,
     listenPort: wg.listenPort,
     privateKey,
-    peers: [
-      ...(wg.peer
-        ? [{
+    peers: deriveEdgeWireguardPeers(
+      wg.peer
+        ? {
             publicKey: wg.peer.publicKey,
             allowedIps: wg.peer.allowedIps,
             endpoint: wg.peer.endpoint,
             persistentKeepalive: wg.peer.persistentKeepalive,
-          }]
-        : []),
-      ...deriveConnectorPeers(connectors),
-    ],
+          }
+        : null,
+      connectors,
+    ),
   };
 }
 
@@ -240,8 +269,14 @@ async function assertRuleCanListen(tx: Prisma.TransactionClient, integrationId: 
 
 /**
  * A connector-mode rule may only reference a connector that belongs to THIS edge
- * server and has finished enrolling — otherwise the edge would DNAT to a tunnel
- * address with no peer behind it.
+ * server and is not disabled.
+ *
+ * For an `agent` connector we additionally require enrollment: PolySIEM pushes
+ * the last hop to it, and DNATing to a tunnel address with no peer behind it is
+ * a black hole. A MANUAL connector (§1) is allowed BEFORE its key arrives — the
+ * operator legitimately publishes the port first and configures the OPNsense side
+ * afterwards. The rule simply stays out of the applied ruleset until the key
+ * exists (`deriveEdgeApplyRules` drops it), so nothing is ever DNATed nowhere.
  */
 async function assertConnectorRoutable(
   tx: Prisma.TransactionClient,
@@ -254,12 +289,15 @@ async function assertConnectorRoutable(
   }
   const connector = await tx.connector.findFirst({
     where: { id: value.connectorId, integrationId },
-    select: { publicKey: true, status: true },
+    select: { publicKey: true, status: true, kind: true },
   });
   if (!connector) {
     throw new ApiError(400, "connector_not_enrolled", "That connector does not belong to this edge server");
   }
-  if (!connector.publicKey || connector.status === "disabled") {
+  if (connector.status === "disabled") {
+    throw new ApiError(400, "connector_not_enrolled", "Re-enable that connector before routing a port through it");
+  }
+  if (!connector.publicKey && !isManualConnectorKind(connector.kind ?? "agent")) {
     throw new ApiError(400, "connector_not_enrolled", "Install and enroll that connector before routing a port through it");
   }
 }
@@ -489,6 +527,27 @@ function edgeWireguardView(baseUrl: string, settings: EdgeNatSettings) {
  * settings alongside the tunnel + peer. An apply is required to push it, so this
  * marks pendingChanges. The private key is never returned, logged, or audited.
  */
+/**
+ * Decide which private key the tunnel should use: an operator-pasted one (validated
+ * for value, not just shape), a freshly generated one when rotating or when none is
+ * stored yet, or the stored key untouched. The key itself never leaves this module.
+ */
+function resolveEdgeWireguardKey(
+  storedKey: string | undefined,
+  input: Pick<ConfigureWireguardInput, "privateKey" | "regenerateKey">,
+): { privateKey: string; keyRotated: boolean } {
+  if (input.privateKey) {
+    if (!isValidWireguardKey(input.privateKey)) {
+      throw new ApiError(400, "invalid_wireguard_key", "That WireGuard private key is not a valid 32-byte key");
+    }
+    return { privateKey: input.privateKey, keyRotated: true };
+  }
+  if (input.regenerateKey || !storedKey) {
+    return { privateKey: generateWireguardKeypair().privateKey, keyRotated: true };
+  }
+  return { privateKey: storedKey, keyRotated: false };
+}
+
 export async function configureEdgeWireguard(
   actor: AuditActor,
   integrationId: string,
@@ -500,18 +559,7 @@ export async function configureEdgeWireguard(
     const stored = storedEdgeNatCredentialsSchema.parse(JSON.parse(decryptSecret(integration.encryptedCredentials)));
     const existing = settings.wireguard;
 
-    let privateKey = stored.wireguardPrivateKey;
-    let keyRotated = false;
-    if (input.privateKey) {
-      if (!isValidWireguardKey(input.privateKey)) {
-        throw new ApiError(400, "invalid_wireguard_key", "That WireGuard private key is not a valid 32-byte key");
-      }
-      privateKey = input.privateKey;
-      keyRotated = true;
-    } else if (input.regenerateKey || !privateKey) {
-      privateKey = generateWireguardKeypair().privateKey;
-      keyRotated = true;
-    }
+    const { privateKey, keyRotated } = resolveEdgeWireguardKey(stored.wireguardPrivateKey, input);
     const publicKey = wireguardPublicFromPrivate(privateKey);
 
     const nextCredentials = storedEdgeNatCredentialsSchema.parse({ ...stored, wireguardPrivateKey: privateKey });
@@ -523,12 +571,17 @@ export async function configureEdgeWireguard(
       listenPort: input.listenPort ?? existing?.listenPort,
       publicKey,
       hasPrivateKey: true,
-      peer: {
-        publicKey: input.peer.publicKey,
-        allowedIps: input.peer.allowedIps,
-        endpoint: input.peer.endpoint,
-        persistentKeepalive: input.peer.keepalive,
-      },
+      // Peers are connectors now, so the tunnel form stops sending `peer`.
+      // An absent peer PRESERVES the stored legacy one rather than clearing it;
+      // clearing is done by deleting the legacy peer, not by saving the tunnel.
+      peer: input.peer
+        ? {
+            publicKey: input.peer.publicKey,
+            allowedIps: input.peer.allowedIps,
+            endpoint: input.peer.endpoint,
+            persistentKeepalive: input.peer.keepalive,
+          }
+        : (existing?.peer ?? null),
     });
     const nextSettings = edgeNatSettingsSchema.parse({ ...settings, wireguard, pendingChanges: true });
     const updated = await tx.integrationConfig.update({
@@ -557,11 +610,28 @@ export async function getEdgeWireguardPeerConfig(integrationId: string) {
   return edgeWireguardView(integration.baseUrl, settings).peerConfig;
 }
 
-/** GET view: sanitized tunnel settings + paste-ready OPNsense peer config. */
+/**
+ * GET view: sanitized tunnel settings + paste-ready peer config.
+ *
+ * `legacyPeer` describes the old hand-entered `settings.wireguard.peer` (§1,
+ * phase 3). It is never deleted, but OPNsense is now added as a CONNECTOR, so
+ * the UI shows it read-only. `active` is false once a connector contributes the
+ * same public key — at that point the connector row owns the peer and the legacy
+ * field is inert.
+ */
 export async function getEdgeWireguardConfig(integrationId: string) {
   const integration = await edgeIntegration(integrationId);
   const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
-  return edgeWireguardView(integration.baseUrl, settings);
+  const peer = settings.wireguard?.peer ?? null;
+  const duplicate = peer
+    ? await prisma.connector.count({
+        where: { integrationId, publicKey: peer.publicKey, status: { not: "disabled" } },
+      })
+    : 0;
+  return {
+    ...edgeWireguardView(integration.baseUrl, settings),
+    legacyPeer: peer ? { publicKey: peer.publicKey, allowedIps: peer.allowedIps, active: duplicate === 0 } : null,
+  };
 }
 
 export async function inspectEdgeHostKeys(integrationId: string) {

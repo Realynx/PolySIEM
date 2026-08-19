@@ -1,29 +1,62 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildConnectorPeerSnippet,
   connectorAgentSummary,
   connectorContactFallback,
   connectorDisplayName,
   connectorInstallProgress,
+  connectorInstallReveal,
+  connectorKindLabel,
+  connectorKindOf,
   connectorLastContactAt,
+  connectorHandshakeAt,
+  connectorPeerProgress,
+  connectorRouteWarning,
+  connectorSshEndpoint,
+  connectorSshPresentation,
+  connectorSshUsername,
   connectorStatusPresentation,
   connectorSummary,
+  connectorWgStatePresentation,
+  deriveConnectorPeerBlock,
+  edgeInstallStep,
+  edgeInterfaceChoices,
+  edgeInterfaceOptionLabel,
+  edgeInterfaceOptions,
   edgeOverviewCounts,
   edgeOverviewPresentation,
   edgeReconciliation,
   edgeServerState,
   edgeTunnelEndpoint,
+  hostKeyAlgorithmLabel,
   infrastructureEdgeDetails,
   isConnectorSelectable,
+  isEdgeInterfaceFormValid,
+  isManualConnector,
   isValidConnectorName,
+  isValidConnectorSshUsername,
+  isValidEdgeInterfaceName,
+  isValidSshHost,
+  isValidSshPort,
+  isWireguardFormValid,
   natRuleRouting,
   natRuleTargetCopy,
   otherEdgeDetails,
+  parseEdgeInterfaceOptions,
   isRuleApplied,
+  resolveConnectorPeerBlock,
   ruleRouteMode,
+  seedEdgeInterfaceForm,
   sshEndpoint,
   tailscaleDetails,
+  toWireguardConfigInput,
+  withCurrentChoice,
+  CONNECTOR_SSH_PORT_CHOICES,
+  WIREGUARD_INTERFACE_CHOICES,
   type ConnectorDto,
   type EdgeNatServer,
+  type WireguardFormState,
+  type WireguardTunnelDto,
 } from "./edge-networks-types";
 
 const server = (overrides: Partial<EdgeNatServer> = {}): EdgeNatServer => ({
@@ -192,6 +225,14 @@ const connector = (overrides: Partial<ConnectorDto> = {}): ConnectorDto => ({
   notes: null,
   createdAt: "2026-08-18T09:59:00.000Z",
   updatedAt: "2026-08-18T10:06:00.000Z",
+  sshHost: null,
+  sshPort: 22,
+  sshUsername: "polysiem-connector",
+  sshPublicKey: null,
+  sshAuthorizedKey: null,
+  sshHostKeyFingerprint: null,
+  sshProvisionedAt: null,
+  hasSshCredentials: true,
   ...overrides,
 });
 
@@ -300,5 +341,310 @@ describe("route mode mapping", () => {
       },
     })).label).toBe("23.94.251.183:51821/udp");
     expect(edgeTunnelEndpoint(server({ settings: {} })).label).toBe("the edge public IP on UDP 51820");
+  });
+});
+
+describe("connector SSH management helpers", () => {
+  it("walks the readiness ladder from no address to fully managed", () => {
+    expect(connectorSshPresentation(connector())).toMatchObject({ readiness: "unconfigured", canManage: false, endpoint: null });
+    expect(connectorSshPresentation(connector({ sshHost: "10.0.3.12" }))).toMatchObject({
+      readiness: "untrusted", canManage: false, endpoint: "10.0.3.12:22", tone: "warning",
+    });
+    expect(connectorSshPresentation(connector({ sshHost: "10.0.3.12", sshHostKeyFingerprint: "SHA256:abc" }))).toMatchObject({
+      readiness: "ready", canManage: true, tone: "success",
+    });
+  });
+
+  it("refuses to claim readiness when PolySIEM holds no key for the connector", () => {
+    expect(connectorSshPresentation(connector({
+      sshHost: "10.0.3.12", sshHostKeyFingerprint: "SHA256:abc", hasSshCredentials: false,
+    }))).toMatchObject({ readiness: "unconfigured", canManage: false });
+  });
+
+  it("formats endpoints, brackets bare IPv6, and defaults the service account", () => {
+    expect(connectorSshEndpoint(connector({ sshHost: "10.0.3.12", sshPort: 2222 }))).toBe("10.0.3.12:2222");
+    expect(connectorSshEndpoint(connector({ sshHost: "fd00::5" }))).toBe("[fd00::5]:22");
+    expect(connectorSshEndpoint(connector({ sshHost: "[fd00::5]" }))).toBe("[fd00::5]:22");
+    expect(connectorSshEndpoint(connector())).toBeNull();
+    expect(connectorSshUsername(connector({ sshUsername: "" }))).toBe("polysiem-connector");
+  });
+
+  it("normalizes the handshake stamp and treats 0 as never", () => {
+    expect(connectorHandshakeAt({ latestHandshakeAt: 0 })).toBeNull();
+    expect(connectorHandshakeAt({ latestHandshakeAt: null })).toBeNull();
+    expect(connectorHandshakeAt({ latestHandshakeAt: 1_760_000_000 })).toBe(new Date(1_760_000_000_000).toISOString());
+    expect(connectorHandshakeAt({ latestHandshakeAt: "2026-08-18T10:06:00.000Z" })).toBe("2026-08-18T10:06:00.000Z");
+    expect(connectorHandshakeAt({ latestHandshakeAt: "not a date" })).toBeNull();
+  });
+
+  it("tones the WireGuard interface state", () => {
+    expect(connectorWgStatePresentation("up")).toEqual({ label: "Up", tone: "success" });
+    expect(connectorWgStatePresentation("absent")).toEqual({ label: "Not created", tone: "warning" });
+    expect(connectorWgStatePresentation(null)).toEqual({ label: "Unknown", tone: "muted" });
+  });
+
+  it("accepts either scan field name for the host key algorithm", () => {
+    expect(hostKeyAlgorithmLabel({ algorithm: "ssh-ed25519", fingerprint: "SHA256:a" })).toBe("SSH-ED25519");
+    expect(hostKeyAlgorithmLabel({ type: "ecdsa-sha2-nistp256", fingerprint: "SHA256:a" })).toBe("ECDSA-SHA2-NISTP256");
+    expect(hostKeyAlgorithmLabel({ fingerprint: "SHA256:a" })).toBe("HOST KEY");
+  });
+
+  it("validates SSH endpoints without being precious about hostname forms", () => {
+    expect(isValidSshHost("10.0.3.12")).toBe(true);
+    expect(isValidSshHost("connector.lab.internal")).toBe(true);
+    expect(isValidSshHost("[fd00::5]")).toBe(true);
+    expect(isValidSshHost("")).toBe(false);
+    expect(isValidSshHost("root@10.0.3.12")).toBe(false);
+    expect(isValidSshHost("10.0.3.12/24")).toBe(false);
+    expect(isValidSshPort(22)).toBe(true);
+    expect(isValidSshPort(0)).toBe(false);
+    expect(isValidSshPort(65_536)).toBe(false);
+  });
+
+  it("reports the edge end of the two-ended install as satisfied only once it is enrolled", () => {
+    const pending = edgeInstallStep(server({ hostKeyEnrolled: false, settings: { publicKey: "ssh-ed25519 AAAA" } }));
+    expect(pending).toMatchObject({ satisfied: false, verified: false, publicKey: "ssh-ed25519 AAAA" });
+
+    const enrolled = edgeInstallStep(server({
+      hostKeyEnrolled: true,
+      settings: { hostKeyFingerprint: "SHA256:edge", hostKeyVerified: true },
+    }));
+    expect(enrolled).toMatchObject({ satisfied: true, verified: true, hostKeyFingerprint: "SHA256:edge" });
+
+    const offline = edgeInstallStep(server({ hostKeyEnrolled: true, lastSyncStatus: "FAILED", settings: {} }));
+    expect(offline).toMatchObject({ satisfied: true, verified: false });
+  });
+});
+
+describe("connector kinds", () => {
+  it("defaults legacy rows to agent and degrades an unknown kind to a manual peer", () => {
+    expect(connectorKindOf({ kind: undefined })).toBe("agent");
+    expect(connectorKindOf({ kind: "agent" })).toBe("agent");
+    expect(connectorKindOf({ kind: "opnsense" })).toBe("opnsense");
+    // A kind this build does not know must never be treated as a managed agent.
+    expect(connectorKindOf({ kind: "something-new" as never })).toBe("peer");
+    expect(connectorKindLabel({ kind: "opnsense" })).toBe("OPNsense");
+    expect(connectorKindLabel({ kind: undefined })).toBe("PolySIEM agent");
+  });
+
+  it("trusts the API's manual flag and falls back to the kind", () => {
+    expect(isManualConnector({ kind: "agent", isManual: undefined })).toBe(false);
+    expect(isManualConnector({ kind: "opnsense", isManual: undefined })).toBe(true);
+    expect(isManualConnector({ kind: "peer", isManual: false })).toBe(false);
+  });
+
+  it("gives a manual peer its own pending wording and a configured state", () => {
+    expect(connectorStatusPresentation({ status: "pending", kind: "opnsense" })).toMatchObject({
+      label: "Awaiting key", tone: "muted",
+    });
+    expect(connectorStatusPresentation({ status: "pending", kind: "agent" }).label).toBe("Awaiting install");
+    expect(connectorStatusPresentation({ status: "configured", kind: "opnsense" })).toMatchObject({
+      label: "Configured", tone: "success",
+    });
+    expect(connectorContactFallback({ status: "pending", kind: "peer" })).toBe("Waiting for its public key");
+    expect(connectorContactFallback({ status: "configured", kind: "peer" })).toBe("No handshake reported");
+  });
+
+  it("makes a manual peer routable on its public key alone, never on enrollment", () => {
+    const manual = connector({ kind: "opnsense", status: "configured", enrolledAt: null });
+    expect(isConnectorSelectable(manual)).toBe(true);
+    expect(isConnectorSelectable(connector({ kind: "opnsense", status: "pending", enrolledAt: null, publicKey: null }))).toBe(false);
+    expect(isConnectorSelectable(connector({ kind: "opnsense", status: "disabled" }))).toBe(false);
+    expect(connectorSummary([manual, connector({ id: "row-2", status: "connected" })]))
+      .toMatchObject({ total: 2, connected: 1, configured: 1, ready: 2, manual: 1, selectable: 2 });
+  });
+
+  it("walks the manual peer from awaiting a key to registered", () => {
+    expect(connectorPeerProgress({ status: "pending", publicKey: null, kind: "opnsense" })).toMatchObject({ state: "pending" });
+    expect(connectorPeerProgress({ status: "configured", publicKey: "key", kind: "opnsense" })).toMatchObject({ state: "configured" });
+    expect(connectorPeerProgress({ status: "disabled", publicKey: "key", kind: "peer" })).toMatchObject({ state: "disabled" });
+  });
+
+  it("warns that PolySIEM cannot program the far side of a manual connector", () => {
+    expect(connectorRouteWarning(connector({ kind: "agent" }))).toBeNull();
+    const warning = connectorRouteWarning(connector({ kind: "opnsense", name: "Home OPNsense" }), { publicPort: 8211 });
+    expect(warning?.title).toContain("cannot program");
+    expect(warning?.detail).toContain("10.9.9.3");
+    expect(warning?.detail).toContain("8211");
+    expect(connectorRouteWarning(connector({ kind: "peer" }))?.detail).toContain("forward");
+  });
+
+  it("reads the one-time reveal only when the API actually minted one", () => {
+    expect(connectorInstallReveal({ connector: connector(), installToken: "pscx_x", installCommand: "curl | sh" }))
+      .toEqual({ installToken: "pscx_x", installCommand: "curl | sh" });
+    expect(connectorInstallReveal({ connector: connector(), installToken: null, installCommand: null })).toBeNull();
+    expect(connectorInstallReveal({ connector: connector() })).toBeNull();
+  });
+});
+
+describe("manual connector peer block", () => {
+  const edge = server({
+    baseUrl: "ssh://23.94.251.183:22",
+    settings: {
+      publicIp: "23.94.251.183",
+      wireguard: {
+        enabled: true, interfaceName: "wg0", address: "10.9.9.1/24", listenPort: 51820,
+        publicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=", hasPrivateKey: true,
+        peer: null, appliedConfigHash: null,
+      },
+    },
+  });
+
+  it("derives every far-side value from the edge tunnel and the allocated address", () => {
+    expect(deriveConnectorPeerBlock({ server: edge, connector: { tunnelAddress: "10.9.9.4" } })).toEqual({
+      edgeEndpoint: "23.94.251.183:51820",
+      edgePublicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=",
+      edgeAddress: "10.9.9.1/24",
+      allowedIps: ["10.9.9.1/32"],
+      tunnelAddress: "10.9.9.4",
+      tunnelAddressCidr: "10.9.9.4/24",
+      interfaceName: "wg0",
+      persistentKeepalive: 25,
+    });
+  });
+
+  it("falls back to the SSH host and the tunnel defaults before anything is configured", () => {
+    const bare = deriveConnectorPeerBlock({
+      server: server({ baseUrl: "ssh://edge.example:2222", settings: {} }),
+      connector: { tunnelAddress: "10.9.9.2" },
+    });
+    expect(bare).toMatchObject({
+      edgeEndpoint: "edge.example:51820",
+      edgePublicKey: null,
+      allowedIps: ["10.9.9.1/32"],
+      tunnelAddressCidr: "10.9.9.2/24",
+      interfaceName: "wg0",
+    });
+  });
+
+  it("prefers server-supplied values and keeps the derived ones for whatever it omits", () => {
+    const merged = resolveConnectorPeerBlock({
+      server: edge,
+      connector: { tunnelAddress: "10.9.9.4" },
+      peerConfig: { edgeEndpoint: "vpn.example:51821", allowedIps: [], persistentKeepalive: 15 },
+    });
+    expect(merged).toMatchObject({
+      edgeEndpoint: "vpn.example:51821",
+      allowedIps: ["10.9.9.1/32"],
+      persistentKeepalive: 15,
+      edgePublicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=",
+    });
+    expect(resolveConnectorPeerBlock({ server: edge, connector: { tunnelAddress: "10.9.9.4" } }))
+      .toEqual(deriveConnectorPeerBlock({ server: edge, connector: { tunnelAddress: "10.9.9.4" } }));
+  });
+
+  it("builds a paste-ready snippet that never carries a private key", () => {
+    const snippet = buildConnectorPeerSnippet(
+      deriveConnectorPeerBlock({ server: edge, connector: { tunnelAddress: "10.9.9.4" } }),
+      { kind: "opnsense", name: "Home OPNsense" },
+    );
+    expect(snippet).toContain("Address = 10.9.9.4/24");
+    expect(snippet).toContain("Endpoint = 23.94.251.183:51820");
+    expect(snippet).toContain("AllowedIPs = 10.9.9.1/32");
+    expect(snippet).toContain("PersistentKeepalive = 25");
+    expect(snippet).toContain("OPNsense");
+    expect(snippet).toContain("PrivateKey = <generated on this device");
+  });
+});
+
+describe("edge interface options", () => {
+  const addresses = [
+    "1: lo    inet 127.0.0.1/8 scope host lo",
+    "2: eth0    inet 23.94.251.183/26 brd 23.94.251.191 scope global eth0",
+    "2: eth0    inet 10.0.0.9/24 brd 10.0.0.255 scope global secondary eth0",
+    "3: tailscale0    inet 100.64.0.7/32 scope global tailscale0",
+    "not an address line",
+  ];
+
+  it("parses real interfaces, dedupes by name, and drops loopback", () => {
+    expect(parseEdgeInterfaceOptions(addresses)).toEqual([
+      { name: "eth0", ip: "23.94.251.183" },
+      { name: "tailscale0", ip: "100.64.0.7" },
+    ]);
+    expect(parseEdgeInterfaceOptions(undefined)).toEqual([]);
+    expect(parseEdgeInterfaceOptions([])).toEqual([]);
+  });
+
+  it("tolerates lines without an index and container veth names", () => {
+    expect(parseEdgeInterfaceOptions(["eth0@if12    inet 10.0.3.9/24 scope global eth0"]))
+      .toEqual([{ name: "eth0", ip: "10.0.3.9" }]);
+  });
+
+  it("adds the configured WireGuard interface when the snapshot has not seen it", () => {
+    const withTunnel = server({
+      settings: {
+        syncedSnapshot: { addresses },
+        wireguard: {
+          enabled: true, interfaceName: "wg0", address: "10.9.9.1/24", listenPort: 51820,
+          publicKey: null, hasPrivateKey: false, peer: null, appliedConfigHash: null,
+        },
+      },
+    });
+    expect(edgeInterfaceOptions(withTunnel)).toEqual([
+      { name: "eth0", ip: "23.94.251.183" },
+      { name: "tailscale0", ip: "100.64.0.7" },
+      { name: "wg0", ip: "10.9.9.1" },
+    ]);
+    expect(edgeInterfaceChoices(withTunnel)[0]).toEqual({ value: "eth0", label: "eth0 — 23.94.251.183" });
+    expect(edgeInterfaceOptionLabel({ name: "eth0", ip: "" })).toBe("eth0");
+    // No snapshot at all: the caller falls back to a text input.
+    expect(edgeInterfaceChoices(server({ settings: {} }))).toEqual([]);
+  });
+
+  it("seeds and validates the interface form", () => {
+    expect(seedEdgeInterfaceForm(server({ settings: { publicInterface: "eth0", outboundInterface: "wg0" } })))
+      .toEqual({ publicInterface: "eth0", outboundInterface: "wg0" });
+    expect(seedEdgeInterfaceForm(server({ settings: {} }))).toEqual({ publicInterface: "", outboundInterface: "" });
+    expect(isEdgeInterfaceFormValid({ publicInterface: "eth0", outboundInterface: "wg0" })).toBe(true);
+    expect(isEdgeInterfaceFormValid({ publicInterface: "eth0", outboundInterface: "" })).toBe(false);
+    expect(isValidEdgeInterfaceName("eth0.100")).toBe(true);
+    expect(isValidEdgeInterfaceName("an-interface-name-far-too-long")).toBe(false);
+    expect(isValidEdgeInterfaceName("eth 0")).toBe(false);
+    expect(isValidConnectorSshUsername("polysiem-connector")).toBe(true);
+    expect(isValidConnectorSshUsername("Root")).toBe(false);
+  });
+
+  it("keeps an unknown stored value selectable without duplicating a known one", () => {
+    expect(withCurrentChoice(WIREGUARD_INTERFACE_CHOICES, "wg0")).toEqual([...WIREGUARD_INTERFACE_CHOICES]);
+    expect(withCurrentChoice(WIREGUARD_INTERFACE_CHOICES, "wg7")).toEqual([
+      ...WIREGUARD_INTERFACE_CHOICES,
+      { value: "wg7", label: "wg7", hint: "current" },
+    ]);
+    expect(withCurrentChoice(CONNECTOR_SSH_PORT_CHOICES, "")).toEqual([...CONNECTOR_SSH_PORT_CHOICES]);
+    expect(withCurrentChoice(CONNECTOR_SSH_PORT_CHOICES, undefined)).toEqual([...CONNECTOR_SSH_PORT_CHOICES]);
+  });
+});
+
+describe("wireguard form without a peer editor", () => {
+  const tunnel: WireguardTunnelDto = {
+    enabled: true, interfaceName: "wg0", address: "10.9.9.1/24", listenPort: 51820,
+    publicKey: null, hasPrivateKey: true, peer: null, appliedConfigHash: null,
+  };
+  const wgForm = (overrides: Partial<WireguardFormState> = {}): WireguardFormState => ({
+    enabled: true, interfaceName: "wg0", address: "10.9.9.1/24", listenPort: "51820",
+    peerPublicKey: "", allowedIps: [], keepalive: "25", ...overrides,
+  });
+
+  it("no longer requires a peer to save the tunnel", () => {
+    expect(isWireguardFormValid(wgForm())).toBe(true);
+    expect(isWireguardFormValid(wgForm({ address: "not-an-address" }))).toBe(false);
+    expect(isWireguardFormValid(wgForm({ listenPort: "0" }))).toBe(false);
+    expect(isWireguardFormValid(wgForm({ peerPublicKey: "too short" }))).toBe(false);
+  });
+
+  it("omits the peer entirely when there is none, and passes a legacy peer through", () => {
+    expect(toWireguardConfigInput(wgForm(), tunnel, false).peer).toBeUndefined();
+    const legacy = toWireguardConfigInput(
+      wgForm({ peerPublicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=", allowedIps: ["10.0.3.0/24"], keepalive: "15" }),
+      tunnel,
+      false,
+    );
+    expect(legacy.peer).toEqual({
+      publicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=",
+      allowedIps: ["10.0.3.0/24"],
+      endpoint: null,
+      keepalive: 15,
+    });
+    expect(toWireguardConfigInput(wgForm(), { ...tunnel, hasPrivateKey: false }, false).regenerateKey).toBe(true);
   });
 });

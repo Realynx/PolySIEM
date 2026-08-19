@@ -8,8 +8,9 @@ import {
   canonicalWireguardConfig,
   desiredEdgeRulesetHash,
   restrictedAuthorizedKey,
+  type EdgeApplyRule,
+  type EdgeWireguardConfig,
 } from "./agent";
-import type { EdgeApplyRule, EdgeWireguardConfig } from "./agent";
 
 describe("Edge NAT forced-command agent", () => {
   const publicKey = generateEd25519Keypair("edge@test").publicKeyLine;

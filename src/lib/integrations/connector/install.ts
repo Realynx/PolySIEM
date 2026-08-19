@@ -4,6 +4,8 @@ import {
   CONNECTOR_AGENT_VERSION,
   CONNECTOR_CONFIG_DIR,
   CONNECTOR_SERVICE_NAME,
+  CONNECTOR_SSH_USERNAME,
+  CONNECTOR_SUDOERS_PATH,
 } from "./agent";
 
 /**
@@ -24,6 +26,20 @@ export interface ConnectorInstallOptions {
   interfaceName?: string;
   /** Skip TLS verification (PolySIEM commonly serves a self-signed certificate). */
   insecure?: boolean;
+  /**
+   * Phase 2 — SSH management. The complete `authorized_keys` line, normally built
+   * with {@link connectorRestrictedAuthorizedKey}: `restrict,command="sudo -n
+   * <agent>" <pubkey>`. When supplied, the installer additionally creates the
+   * {@link CONNECTOR_SSH_USERNAME} system account, installs this line at 0600, and
+   * writes a visudo-validated sudoers drop-in granting NOPASSWD on the agent path
+   * only.
+   *
+   * When it is absent the generated script is byte-for-byte the phase-1 installer:
+   * no account, no authorized_keys, no sudoers. Token/poll management alone.
+   */
+  authorizedKey?: string;
+  /** Account the restricted key belongs to. Defaults to {@link CONNECTOR_SSH_USERNAME}. */
+  sshUsername?: string;
 }
 
 /** Absolute path of the systemd unit written by the installer. */
@@ -33,6 +49,19 @@ const BASE_URL_PATTERN = /^https?:\/\/[A-Za-z0-9._~-]+(:[0-9]{1,5})?(\/[A-Za-z0-
 const TOKEN_PATTERN = /^pscx_[A-Za-z0-9_-]{24,96}$/;
 const CONNECTOR_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const INTERFACE_PATTERN = /^[A-Za-z0-9_.:-]{1,15}$/;
+const USERNAME_PATTERN = /^[a-z_][a-z0-9_-]{0,31}$/;
+/**
+ * An authorized_keys line is embedded in a quoted heredoc, so the shell never
+ * expands it — but it still must be a single line of printable ASCII that cannot
+ * contain the heredoc terminator, and it must actually look like a key.
+ */
+const AUTHORIZED_KEY_SHAPE = /^[\x20-\x7E]{1,4096}$/;
+const AUTHORIZED_KEY_BODY =
+  /(?:^|\s)(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)\s+[A-Za-z0-9+/]+={0,3}(?:\s|$)/;
+
+/** Markers around every line the SSH-management option adds. Purely additive. */
+const SSH_BLOCK_OPEN = "# >>> polysiem-connector ssh management";
+const SSH_BLOCK_CLOSE = "# <<< polysiem-connector ssh management";
 
 /** Trims and drops trailing slashes so the agent can concatenate `$BASE_URL$path`. */
 export function normalizeConnectorBaseUrl(baseUrl: string): string {
@@ -58,6 +87,20 @@ function assertConnectorId(connectorId: string): string {
 function assertInterfaceName(interfaceName: string): string {
   const trimmed = String(interfaceName ?? "").trim();
   if (!INTERFACE_PATTERN.test(trimmed)) throw new Error("Invalid WireGuard interface name");
+  return trimmed;
+}
+
+function assertSshUsername(username: string): string {
+  const trimmed = String(username ?? "").trim();
+  if (!USERNAME_PATTERN.test(trimmed) || trimmed === "root") throw new Error("Invalid connector SSH username");
+  return trimmed;
+}
+
+function assertAuthorizedKey(line: string): string {
+  const trimmed = String(line ?? "").trim();
+  if (!AUTHORIZED_KEY_SHAPE.test(trimmed) || !AUTHORIZED_KEY_BODY.test(trimmed)) {
+    throw new Error("Invalid connector authorized_keys line");
+  }
   return trimmed;
 }
 
@@ -90,6 +133,61 @@ exit 1
 }
 
 /**
+ * The account + authorized_keys + sudoers half of the installer. Returns "" when
+ * no key was supplied, which is what keeps the phase-1 output byte-identical.
+ *
+ * Mirrors `buildEdgeAgentInstallScript`: same existing-account safety check, same
+ * 0600 authorized_keys, same visudo-validated NOPASSWD drop-in scoped to exactly
+ * one command path.
+ */
+function buildSshProvisioning(authorizedKey: string, sshUsername: string): string {
+  return `${SSH_BLOCK_OPEN}
+# PolySIEM manages this connector over SSH as well as by polling. The key below
+# is pinned to a forced command, so it can only run the agent (STATUS / APPLY) —
+# never a shell, a pty, or a forwarded port. The connector's WireGuard private
+# key never leaves this machine: PolySIEM only ever reads the derived public key
+# out of the agent's STATUS output.
+SSH_USER='${sshUsername}'
+for binary in useradd getent chown cut sudo visudo; do
+  command -v "$binary" >/dev/null 2>&1 || {
+    printf 'Missing required command for SSH management: %s\\nInstall shadow-utils/passwd and sudo, then re-run.\\n' "$binary" >&2
+    exit 1
+  }
+done
+if id "$SSH_USER" >/dev/null 2>&1; then
+  existing_home="$(getent passwd "$SSH_USER" | cut -d: -f6)"
+  [ "$existing_home" = "/home/$SSH_USER" ] || {
+    printf 'Existing %s account has an unexpected home directory; refusing to reuse it.\\n' "$SSH_USER" >&2
+    exit 1
+  }
+else
+  useradd --create-home --user-group --shell /bin/sh "$SSH_USER"
+fi
+install -d -m 0700 -o "$SSH_USER" -g "$SSH_USER" "/home/$SSH_USER/.ssh"
+cat > "/home/$SSH_USER/.ssh/authorized_keys.new" <<'POLYSIEM_CONNECTOR_KEY'
+${authorizedKey}
+POLYSIEM_CONNECTOR_KEY
+chown "$SSH_USER:$SSH_USER" "/home/$SSH_USER/.ssh/authorized_keys.new"
+chmod 0600 "/home/$SSH_USER/.ssh/authorized_keys.new"
+mv "/home/$SSH_USER/.ssh/authorized_keys.new" "/home/$SSH_USER/.ssh/authorized_keys"
+printf '%s ALL=(root) NOPASSWD: ${CONNECTOR_AGENT_PATH} ""\\n' "$SSH_USER" > ${CONNECTOR_SUDOERS_PATH}.new
+chmod 0440 ${CONNECTOR_SUDOERS_PATH}.new
+visudo -cf ${CONNECTOR_SUDOERS_PATH}.new >/dev/null
+mv ${CONNECTOR_SUDOERS_PATH}.new ${CONNECTOR_SUDOERS_PATH}
+${SSH_BLOCK_CLOSE}
+`;
+}
+
+/** The two extra summary lines that belong with {@link buildSshProvisioning}. */
+function buildSshSummary(): string {
+  return `${SSH_BLOCK_OPEN}
+printf '  ssh user  %s (restricted key; it can only run the agent)\\n' "$SSH_USER"
+printf '  sudoers   ${CONNECTOR_SUDOERS_PATH} (NOPASSWD on the agent path only)\\n'
+${SSH_BLOCK_CLOSE}
+`;
+}
+
+/**
  * Idempotent, root-run installer for the PolySIEM connector.
  *
  * It installs the dependencies it actually needs (`wireguard-tools`, `iproute2`,
@@ -99,6 +197,11 @@ exit 1
  * `Type=simple` systemd unit that runs the agent's poll loop with
  * `Restart=always`. The agent — not any interface wrapper — creates and
  * configures the WireGuard link, so boot persistence is just the unit starting.
+ *
+ * With `authorizedKey` it also provisions the SSH side: the
+ * {@link CONNECTOR_SSH_USERNAME} account, a 0600 `authorized_keys` holding the
+ * forced-command line, and a visudo-validated `/etc/sudoers.d/polysiem-connector`.
+ * Without it, the output is exactly the phase-1 script.
  *
  * Re-running is safe: every file is written to a `.new` sibling and moved into
  * place, the service is enabled and restarted rather than only started, and the
@@ -113,6 +216,11 @@ export function buildConnectorInstallScript(options: ConnectorInstallOptions): s
     : assertConnectorId(options.connectorId);
   const interfaceName = assertInterfaceName(options.interfaceName ?? "wg0");
   const insecure = options.insecure === true ? "1" : "0";
+  const hasSsh = options.authorizedKey !== undefined && options.authorizedKey !== null && options.authorizedKey !== "";
+  const authorizedKey = hasSsh ? assertAuthorizedKey(options.authorizedKey as string) : "";
+  const sshUsername = hasSsh ? assertSshUsername(options.sshUsername ?? CONNECTOR_SSH_USERNAME) : "";
+  const sshProvisioning = hasSsh ? buildSshProvisioning(authorizedKey, sshUsername) : "";
+  const sshSummary = hasSsh ? buildSshSummary() : "";
 
   return `#!/bin/sh
 # PolySIEM connector installer (agent version ${CONNECTOR_AGENT_VERSION}).
@@ -191,7 +299,7 @@ chown root:root "$AGENT_PATH.new" 2>/dev/null || true
 chmod 0755 "$AGENT_PATH.new"
 mv "$AGENT_PATH.new" "$AGENT_PATH"
 
-if command -v systemctl >/dev/null 2>&1; then
+${sshProvisioning}if command -v systemctl >/dev/null 2>&1; then
   cat > "$SERVICE_PATH.new" <<'POLYSIEM_CONNECTOR_UNIT'
 [Unit]
 Description=PolySIEM connector (reverse tunnel and last-hop NAT)
@@ -235,9 +343,28 @@ printf '  service   %s (enabled, restart=always)\\n' "$SERVICE_NAME"
 printf '  config    %s/config\\n' "$CONF_DIR"
 printf '  token     %s/token (0600, replaces any previously stored token)\\n' "$CONF_DIR"
 printf '  tunnel    %s (created by the agent; no reboot needed)\\n' "$IFACE"
-printf '\\n'
+${sshSummary}printf '\\n'
 printf 'It enrolls itself on the next poll and should show as connected in PolySIEM within a minute.\\n'
 printf 'Watch it:  journalctl -u %s -f\\n' "$SERVICE_NAME"
 printf 'Inspect:   %s status\\n' "$AGENT_PATH"
 `;
+}
+
+/**
+ * Removes every SSH-management region from a generated installer. Exported for
+ * tests (and useful for diffing): stripping them from an SSH-enabled script must
+ * yield the phase-1 script byte for byte.
+ */
+export function stripConnectorSshBlocks(script: string): string {
+  let out = "";
+  let cursor = 0;
+  for (;;) {
+    const open = script.indexOf(SSH_BLOCK_OPEN, cursor);
+    if (open === -1) break;
+    const close = script.indexOf(SSH_BLOCK_CLOSE, open);
+    if (close === -1) break;
+    out += script.slice(cursor, open);
+    cursor = close + SSH_BLOCK_CLOSE.length + 1; // include the marker's newline
+  }
+  return out + script.slice(cursor);
 }

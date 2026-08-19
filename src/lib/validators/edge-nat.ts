@@ -71,20 +71,93 @@ export const updateEdgeNatRuleSchema = edgeNatRuleBaseSchema.partial().refine(
 
 // ---------- connectors (Cloudflare-tunnel style) ----------
 
+/**
+ * What kind of WireGuard peer a connector is. Every kind is an edge peer with an
+ * allocated tunnel address; they differ in how the far side is set up.
+ *
+ * "agent"    — PolySIEM's connector agent on a Linux host (token/SSH managed).
+ * "opnsense" — an OPNsense box; PolySIEM shows a paste-ready peer block and only
+ *              needs the public key back. No install token, SSH key, or pushed rules.
+ * "peer"     — any other WireGuard endpoint; identical flow to "opnsense".
+ */
+export const connectorKindSchema = z.enum(["agent", "opnsense", "peer"]);
+export type ConnectorKind = z.infer<typeof connectorKindSchema>;
+
+/** Kinds the operator configures by hand — they never run a PolySIEM agent. */
+export const MANUAL_CONNECTOR_KINDS = ["opnsense", "peer"] as const;
+export function isManualConnectorKind(kind: string): boolean {
+  return (MANUAL_CONNECTOR_KINDS as readonly string[]).includes(kind);
+}
+
 /** Operator-facing connector fields. The tunnel address is allocated, never typed. */
 export const createConnectorSchema = z.object({
   name: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9 _.-]*$/, "Use a short descriptive name"),
   notes: z.string().trim().max(1000).nullable().optional(),
+  kind: connectorKindSchema.default("agent"),
+  /**
+   * WireGuard public key of a manual peer. Optional at create time (the operator
+   * often generates it on the far side afterwards) and rejected for "agent"
+   * connectors, which generate their own key on the host.
+   */
+  publicKey: z.string().trim().regex(wireguardKeyRegex, "Enter a 44-character WireGuard public key").nullable().optional(),
 });
 export type CreateConnectorInput = z.infer<typeof createConnectorSchema>;
 
-export const updateConnectorSchema = z
+/**
+ * Where PolySIEM reaches this connector over SSH (phase 2). Hostname or IP —
+ * the connector box normally has no public address, so this is a LAN/VPN address
+ * reachable from the PolySIEM server itself.
+ */
+const connectorSshHostSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(253)
+  .refine(
+    (value) =>
+      isIP(value) !== 0 ||
+      /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(value),
+    "Use a hostname or IP address reachable from the PolySIEM server",
+  );
+
+/**
+ * The Linux account whose `authorized_keys` carries the restricted PolySIEM key.
+ * Defaults to `polysiem-connector`; kept configurable only for hosts that must
+ * use a different service account.
+ */
+const connectorSshUsernameSchema = z
+  .string()
+  .trim()
+  .regex(/^[a-z_][a-z0-9_-]{0,31}$/, "Use a Linux service account name");
+
+/** Body of the SSH half of PATCH /api/network/connectors/[id]. */
+export const connectorSshEndpointSchema = z
   .object({
-    name: createConnectorSchema.shape.name.optional(),
-    notes: z.string().trim().max(1000).nullable().optional(),
-    /** Disabling keeps the row but tears the peer off the edge. */
-    disabled: z.boolean().optional(),
+    sshHost: connectorSshHostSchema.nullable().optional(),
+    sshPort: z.number().int().min(1).max(65535).optional(),
+    sshUsername: connectorSshUsernameSchema.optional(),
   })
+  .refine((value) => Object.keys(value).length > 0, "Provide at least one field");
+export type ConnectorSshEndpointInput = z.infer<typeof connectorSshEndpointSchema>;
+
+const updateConnectorBaseSchema = z.object({
+  name: createConnectorSchema.shape.name.optional(),
+  notes: z.string().trim().max(1000).nullable().optional(),
+  /** Disabling keeps the row but tears the peer off the edge. */
+  disabled: z.boolean().optional(),
+  /** SSH management endpoint (phase 2). Clearing the host disables SSH push. */
+  sshHost: connectorSshHostSchema.nullable().optional(),
+  sshPort: z.number().int().min(1).max(65535).optional(),
+  sshUsername: connectorSshUsernameSchema.optional(),
+  /**
+   * WireGuard public key for a manual ("opnsense"/"peer") connector — this is the
+   * write path the operator uses after generating the key on the far side. Rejected
+   * in the service for "agent" connectors, whose key is reported by the agent itself.
+   */
+  publicKey: z.string().trim().regex(wireguardKeyRegex, "Enter a 44-character WireGuard public key").nullable().optional(),
+});
+
+export const updateConnectorSchema = updateConnectorBaseSchema
   .refine((value) => Object.keys(value).length > 0, "Provide at least one field");
 export type UpdateConnectorInput = z.infer<typeof updateConnectorSchema>;
 
@@ -132,6 +205,13 @@ export const enrollEdgeHostKeySchema = z.object({
   fingerprint: z.string().trim().regex(/^SHA256:[A-Za-z0-9+/]{20,100}$/, "Use an observed SHA256 host-key fingerprint"),
 });
 
+/**
+ * POST /api/network/connectors/[id]/host-key. Same shape as the edge: the
+ * operator confirms one of the fingerprints the scan observed, out of band.
+ */
+export const enrollConnectorHostKeySchema = enrollEdgeHostKeySchema;
+export type EnrollConnectorHostKeyInput = z.infer<typeof enrollConnectorHostKeySchema>;
+
 export const provisionEdgeNatSchema = enrollEdgeHostKeySchema.extend({
   adminUsername: z.string().trim().regex(
     /^(?!polysiem-edge$)[A-Za-z_][A-Za-z0-9_-]{0,31}$/,
@@ -161,11 +241,18 @@ export const configureWireguardSchema = z.object({
   listenPort: z.number().int().min(1).max(65535).optional(),
   regenerateKey: z.boolean().optional().default(false),
   privateKey: z.string().trim().regex(wireguardKeyRegex, "Enter a 44-character WireGuard private key").optional(),
-  peer: z.object({
-    publicKey: z.string().trim().regex(wireguardKeyRegex, "Enter a 44-character WireGuard public key"),
-    allowedIps: z.array(z.string().trim().max(64)).max(64).default([]),
-    endpoint: z.string().trim().max(256).nullable().optional().default(null),
-    keepalive: z.number().int().min(0).max(65535).optional().default(25),
-  }),
+  /**
+   * The legacy single hand-entered peer. OPTIONAL since phase 3: peers are now
+   * connectors, so the tunnel form no longer collects one. Omitting it PRESERVES
+   * whatever is already stored (see configureEdgeWireguard) — it never clears it.
+   */
+  peer: z
+    .object({
+      publicKey: z.string().trim().regex(wireguardKeyRegex, "Enter a 44-character WireGuard public key"),
+      allowedIps: z.array(z.string().trim().max(64)).max(64).default([]),
+      endpoint: z.string().trim().max(256).nullable().optional().default(null),
+      keepalive: z.number().int().min(0).max(65535).optional().default(25),
+    })
+    .optional(),
 });
 export type ConfigureWireguardInput = z.infer<typeof configureWireguardSchema>;

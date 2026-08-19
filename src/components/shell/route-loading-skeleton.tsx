@@ -1,6 +1,22 @@
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
+/*
+ * Shared page-shaped skeletons for route `loading.tsx` files.
+ *
+ * Route loading UI has exactly one owner: the framework's own `loading.tsx`
+ * boundary for the segment being navigated to. Do NOT render any of these from
+ * a client component that watches pending navigation state — an overlay like
+ * that paints a second skeleton on top of the boundary's, which is the
+ * "skeletons show twice" bug. NavigationProgress owns nav feedback, and it is
+ * deliberately a thin progress bar, never a skeleton.
+ *
+ * Each page owns its `loading.tsx`, and every segment that has BOTH a page and
+ * child routes keeps that pair in an `(index)` route group so its skeleton is
+ * not also the loading boundary for its children (which would chain two
+ * different skeletons together during one navigation).
+ */
+
 export function PageHeaderSkeleton({ action = true }: { action?: boolean }) {
   return (
     <div className="mb-6 flex items-start justify-between gap-3">
@@ -94,15 +110,6 @@ export function SecurityPageSkeleton() {
   );
 }
 
-export function MapPageSkeleton() {
-  return (
-    <div aria-hidden="true">
-      <PageHeaderSkeleton />
-      <Skeleton className="h-[calc(100vh-13rem)] min-h-[600px] w-full rounded-xl" />
-    </div>
-  );
-}
-
 export function WifiPageSkeleton() {
   return (
     <div className="space-y-6" aria-hidden="true">
@@ -143,48 +150,6 @@ export function FirewallRulesSkeleton() {
     <div className="space-y-4" aria-hidden="true">
       <div className="flex gap-2"><Skeleton className="h-8 w-64" /><Skeleton className="h-8 w-40" /><Skeleton className="h-8 w-32" /></div>
       <div className="space-y-4">{Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-48 rounded-xl" />)}</div>
-    </div>
-  );
-}
-
-export function EditorPageSkeleton() {
-  return (
-    <div aria-hidden="true">
-      <PageHeaderSkeleton action={false} />
-      <div className="space-y-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_260px]">
-          <Skeleton className="h-14" /><Skeleton className="h-14" />
-        </div>
-        <Skeleton className="h-[60svh] w-full" />
-        <div className="flex justify-end gap-2"><Skeleton className="h-8 w-20" /><Skeleton className="h-8 w-28" /></div>
-      </div>
-    </div>
-  );
-}
-
-export function DocsIndexSkeleton() {
-  return (
-    <div aria-hidden="true">
-      <PageHeaderSkeleton />
-      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
-        <Skeleton className="h-[32rem] rounded-xl" />
-        <Skeleton className="h-[32rem] rounded-xl" />
-      </div>
-    </div>
-  );
-}
-
-export function DashboardPageSkeleton() {
-  return (
-    <div className="space-y-6" aria-hidden="true">
-      <PageHeaderSkeleton action={false} />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-        {Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-20 rounded-xl" />)}
-      </div>
-      <Skeleton className="h-[clamp(600px,72vh,820px)] rounded-xl" />
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-32 rounded-xl" />)}
-      </div>
     </div>
   );
 }

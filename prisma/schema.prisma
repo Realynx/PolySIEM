@@ -200,6 +200,16 @@ model Connector {
   integrationId String
   integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
   name          String
+  /// What kind of peer this connector is. Every kind is a WireGuard peer of the
+  /// edge and gets an allocated tunnel address; they differ only in how the far
+  /// side is set up and whether PolySIEM manages it.
+  ///   "agent"    — PolySIEM's connector agent is installed on a Linux host and
+  ///                managed over SSH/token; it performs the last hop itself.
+  ///   "opnsense" — an OPNsense box configured by the operator; PolySIEM shows a
+  ///                paste-ready peer block and only needs its public key back.
+  ///   "peer"     — any other WireGuard endpoint, same manual flow as OPNsense.
+  /// Non-agent kinds never receive an install token, SSH key, or pushed rules.
+  kind          String            @default("agent")
   /// Stable public identifier surfaced in the UI and used by the agent to
   /// identify itself. Opaque, URL-safe, generated once (never reused).
   connectorId   String            @unique
@@ -220,6 +230,22 @@ model Connector {
   agentVersion         String?
   notes                String?
   metadata             Json?
+
+  /// SSH management, mirroring the Edge NAT server's restricted forced-command
+  /// model so PolySIEM manages BOTH ends of the tunnel the same way. The private
+  /// half lives only in `encryptedCredentials` (AES-GCM under APP_SECRET); the
+  /// agent is reachable only as `sshUsername` and only runs the connector agent.
+  sshHost               String?
+  sshPort               Int       @default(22)
+  sshUsername           String    @default("polysiem-connector")
+  /// PolySIEM-generated public key the operator installs on the connector.
+  sshPublicKey          String?
+  /// The exact `restrict,command="…"` authorized_keys line for that public key.
+  sshAuthorizedKey      String?
+  sshHostKeyFingerprint String?
+  sshProvisionedAt      DateTime?
+  encryptedCredentials  String?
+
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
@@ -228,6 +254,7 @@ model Connector {
   @@unique([integrationId, name])
   @@unique([integrationId, tunnelAddress])
   @@index([integrationId, status])
+  @@index([integrationId, kind])
 }
 
 /// A narrowly-scoped inbound DNAT rule owned by one Edge NAT Server.

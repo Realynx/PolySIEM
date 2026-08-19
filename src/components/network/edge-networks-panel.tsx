@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useMemo, useState, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, type ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import {
   ArrowRight,
   Check,
@@ -12,7 +12,6 @@ import {
   Loader2,
   LockKeyhole,
   Network,
-  Pencil,
   PlugZap,
   Plus,
   RefreshCw,
@@ -24,6 +23,7 @@ import {
   ShieldCheck,
   Trash2,
   TriangleAlert,
+  Waypoints,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -58,39 +58,29 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  connectorDisplayName,
-  connectorStatusPresentation,
+  connectorSummary,
+  edgeInterfaceChoices,
   EDGE_NETWORKS_QUERY_KEY,
   EMPTY_EDGE_NETWORKS_OVERVIEW,
   edgeOverviewPresentation,
   edgeReconciliation,
   edgeServerState,
-  isConnectorSelectable,
   isRuleApplied,
-  natRuleRouting,
-  natRuleTargetCopy,
-  ROUTE_MODE_CHOICES,
-  ruleRouteMode,
   sshEndpoint,
   tailscaleDetails,
   type ConnectorDto,
   type EdgeNatRule,
   type EdgeNatServer,
   type EdgeNetworksOverview,
-  type EdgeRouteMode,
-  type NatProtocol,
-  type NatRuleInput,
 } from "./edge-networks-types";
 import { CloudflarePublishedRoutes } from "./edge-cloudflare-routes";
 import { ConnectorsCard, useConnectorsQuery } from "./connectors-card";
-import { EdgeWireguardCard } from "./edge-wireguard-card";
-import { isValidNetworkPort } from "./edge-network-utils";
+import { EdgeNatRulesTab, NatRuleDialog } from "./edge-nat-rules";
+import { EdgeInterfacesTab } from "./edge-interfaces-tab";
+import { EdgeWireguardCard, edgeWireguardTabStatus, useEdgeWireguardQuery } from "./edge-wireguard-card";
 
 export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
   const overviewQuery = useQuery({
@@ -100,7 +90,7 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
   });
   const overview = overviewQuery.data ?? EMPTY_EDGE_NETWORKS_OVERVIEW;
   const { cloudflare, counts, hasAnyNetwork, defaultTab } = edgeOverviewPresentation(overview);
-  const hasEdgeServers = overview.edgeServers.length > 0;
+  const loaded = !overviewQuery.isLoading && !overviewQuery.isError;
 
   return (
     <div>
@@ -135,27 +125,14 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
         <EmptyState
           icon={Router}
           title="Could not load edge networks"
-          description={(overviewQuery.error as Error)?.message ?? "The edge network inventory is unavailable."}
+          description={edgeOverviewErrorMessage(overviewQuery.error)}
           action={<Button onClick={() => void overviewQuery.refetch()}>Try again</Button>}
         />
       )}
 
-      {!overviewQuery.isLoading && !overviewQuery.isError && !hasAnyNetwork && (
-        <EmptyState
-          icon={Router}
-          title="No edge networks connected"
-          description="Add an Edge NAT server to publish selected services through a remote IP, or connect Tailscale to inventory private routes and entry points."
-          action={isAdmin ? (
-            <Button asChild>
-              <Link href="/settings/integrations?add=EDGE_NAT_SERVER">
-                <Plus className="size-4" /> Add Edge NAT server
-              </Link>
-            </Button>
-          ) : undefined}
-        />
-      )}
+      {loaded && !hasAnyNetwork && <EdgeNetworksEmpty isAdmin={isAdmin} />}
 
-      {!overviewQuery.isLoading && !overviewQuery.isError && hasAnyNetwork && (() => (
+      {loaded && hasAnyNetwork && (
         <Tabs defaultValue={defaultTab} className="gap-5">
           <div className="overflow-x-auto pb-1">
             <TabsList className="grid h-10 min-w-[19rem] w-full grid-cols-3 sm:inline-grid sm:w-auto">
@@ -166,75 +143,11 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
           </div>
 
           <TabsContent value="edge" className="space-y-6">
-            {hasEdgeServers ? (
-              <>
-                <TrafficBoundary servers={overview.edgeServers} />
-
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <SummaryCard label="Edge servers online" value={`${counts.onlineServers}/${overview.edgeServers.length}`} icon={Server} />
-                  <SummaryCard label="Enabled NAT rules" value={String(counts.enabledRules)} icon={Route} />
-                  <SummaryCard label="Servers needing review" value={String(counts.needsReconcile)} icon={TriangleAlert} />
-                </div>
-
-                <section className="space-y-3" aria-labelledby="edge-nat-heading">
-                  <div className="flex flex-wrap items-end justify-between gap-3">
-                    <div>
-                      <h2 id="edge-nat-heading" className="text-lg font-semibold">SSH-managed edge boxes</h2>
-                      <p className="text-sm text-muted-foreground">Only the selected edge IP and listening ports are published.</p>
-                    </div>
-                    {isAdmin && (
-                      <Button variant="outline" size="sm" asChild>
-                        <Link href="/settings/integrations?add=EDGE_NAT_SERVER"><Plus /> Add server</Link>
-                      </Button>
-                    )}
-                  </div>
-                  <Alert>
-                    <TriangleAlert />
-                    <AlertTitle>Disabling PolySIEM management does not remove remote NAT rules</AlertTitle>
-                    <AlertDescription>Previously applied rules can keep forwarding traffic until the edge server confirms an empty ruleset. Disabled servers stay listed here so cleanup remains visible and auditable.</AlertDescription>
-                  </Alert>
-                  <div className="space-y-4">
-                    {overview.edgeServers.map((server) => (
-                      <EdgeServerCard key={server.id} server={server} isAdmin={isAdmin} />
-                    ))}
-                  </div>
-                </section>
-              </>
-            ) : (
-              <EdgeNetworkTabEmpty
-                icon={Server}
-                title="No SSH-managed edge boxes"
-                description="Add an Edge NAT server to publish selected services through a remote IP."
-                addHref="/settings/integrations?add=EDGE_NAT_SERVER"
-                addLabel="Add Edge NAT server"
-                isAdmin={isAdmin}
-              />
-            )}
+            <EdgeServersTab servers={overview.edgeServers} counts={counts} isAdmin={isAdmin} />
           </TabsContent>
 
           <TabsContent value="tailscale">
-            {overview.tailscale.length > 0 ? (
-              <section className="space-y-3" aria-labelledby="tailscale-edge-heading">
-                <div>
-                  <h2 id="tailscale-edge-heading" className="text-lg font-semibold">Tailscale</h2>
-                  <p className="text-sm text-muted-foreground">Private overlay entry points, subnet routes, exit nodes, and DNS identity.</p>
-                </div>
-                <div className="grid gap-4 xl:grid-cols-2">
-                  {overview.tailscale.map((network, index) => (
-                    <TailscaleCard key={network.id ?? network.integrationId ?? index} network={network} />
-                  ))}
-                </div>
-              </section>
-            ) : (
-              <EdgeNetworkTabEmpty
-                icon={Share2}
-                title="No Tailscale integration"
-                description="Connect a tailnet to inventory private routes, exit nodes, devices, and DNS identity."
-                addHref="/settings/integrations?add=TAILSCALE"
-                addLabel="Connect Tailscale"
-                isAdmin={isAdmin}
-              />
-            )}
+            <TailscaleTab networks={overview.tailscale} isAdmin={isAdmin} />
           </TabsContent>
 
           <TabsContent value="cloudflare">
@@ -252,8 +165,121 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
             )}
           </TabsContent>
         </Tabs>
-      ))()}
+      )}
     </div>
+  );
+}
+
+function edgeOverviewErrorMessage(error: unknown): string {
+  return (error as Error | null)?.message ?? "The edge network inventory is unavailable.";
+}
+
+function EdgeNetworksEmpty({ isAdmin }: { isAdmin: boolean }) {
+  return (
+    <EmptyState
+      icon={Router}
+      title="No edge networks connected"
+      description="Add an Edge NAT server to publish selected services through a remote IP, or connect Tailscale to inventory private routes and entry points."
+      action={isAdmin ? (
+        <Button asChild>
+          <Link href="/settings/integrations?add=EDGE_NAT_SERVER">
+            <Plus className="size-4" /> Add Edge NAT server
+          </Link>
+        </Button>
+      ) : undefined}
+    />
+  );
+}
+
+function EdgeServersTab({
+  servers,
+  counts,
+  isAdmin,
+}: {
+  servers: EdgeNatServer[];
+  counts: ReturnType<typeof edgeOverviewPresentation>["counts"];
+  isAdmin: boolean;
+}) {
+  if (servers.length === 0) {
+    return (
+      <EdgeNetworkTabEmpty
+        icon={Server}
+        title="No SSH-managed edge boxes"
+        description="Add an Edge NAT server to publish selected services through a remote IP."
+        addHref="/settings/integrations?add=EDGE_NAT_SERVER"
+        addLabel="Add Edge NAT server"
+        isAdmin={isAdmin}
+      />
+    );
+  }
+  return (
+    <>
+      <TrafficBoundary servers={servers} />
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <SummaryCard label="Edge servers online" value={`${counts.onlineServers}/${servers.length}`} icon={Server} />
+        <SummaryCard label="Enabled NAT rules" value={String(counts.enabledRules)} icon={Route} />
+        <SummaryCard label="Servers needing review" value={String(counts.needsReconcile)} icon={TriangleAlert} />
+      </div>
+
+      <section className="space-y-3" aria-labelledby="edge-nat-heading">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 id="edge-nat-heading" className="text-lg font-semibold">SSH-managed edge boxes</h2>
+            <p className="text-sm text-muted-foreground">Only the selected edge IP and listening ports are published.</p>
+          </div>
+          {isAdmin && (
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/settings/integrations?add=EDGE_NAT_SERVER"><Plus /> Add server</Link>
+            </Button>
+          )}
+        </div>
+        <Alert>
+          <TriangleAlert />
+          <AlertTitle>Disabling PolySIEM management does not remove remote NAT rules</AlertTitle>
+          <AlertDescription>Previously applied rules can keep forwarding traffic until the edge server confirms an empty ruleset. Disabled servers stay listed here so cleanup remains visible and auditable.</AlertDescription>
+        </Alert>
+        <div className="space-y-4">
+          {servers.map((server) => (
+            <EdgeServerCard key={server.id} server={server} isAdmin={isAdmin} />
+          ))}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function TailscaleTab({
+  networks,
+  isAdmin,
+}: {
+  networks: EdgeNetworksOverview["tailscale"];
+  isAdmin: boolean;
+}) {
+  if (networks.length === 0) {
+    return (
+      <EdgeNetworkTabEmpty
+        icon={Share2}
+        title="No Tailscale integration"
+        description="Connect a tailnet to inventory private routes, exit nodes, devices, and DNS identity."
+        addHref="/settings/integrations?add=TAILSCALE"
+        addLabel="Connect Tailscale"
+        isAdmin={isAdmin}
+      />
+    );
+  }
+  return (
+    <section className="space-y-3" aria-labelledby="tailscale-edge-heading">
+      <div>
+        <h2 id="tailscale-edge-heading" className="text-lg font-semibold">Tailscale</h2>
+        <p className="text-sm text-muted-foreground">Private overlay entry points, subnet routes, exit nodes, and DNS identity.</p>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        {networks.map((network, index) => (
+          <TailscaleCard key={network.id ?? network.integrationId ?? index} network={network} />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -349,17 +375,23 @@ function SummaryCard({ label, value, icon: Icon }: { label: string; value: strin
   return <Card size="sm"><CardContent className="flex items-center justify-between gap-3"><div><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p></div><Icon className="size-5 text-muted-foreground" /></CardContent></Card>;
 }
 
+/**
+ * One edge server.
+ *
+ * The card head is the always-visible health story — identity, sync state, and
+ * the facts an operator scans for — and everything that is a *place to work*
+ * (routes, connectors, the tunnel, interfaces) sits behind the card's own tab
+ * bar, so a server with three connectors and a dozen rules stays one screen.
+ */
 function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: boolean }) {
   const queryClient = useQueryClient();
   const [ruleDialog, setRuleDialog] = useState<{ open: boolean; rule: EdgeNatRule | null }>({ open: false, rule: null });
   const [deleteRule, setDeleteRule] = useState<EdgeNatRule | null>(null);
   const [enrollmentOpen, setEnrollmentOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
-  const state = edgeServerState(server);
   const settings = server.settings ?? {};
-  const reconciliation = edgeReconciliation(server);
-  // Shared query key with the connectors card, so the rule editor and the list
-  // read one cached fetch.
+  // Shared query key with the connectors card, so the rule editor, the list, and
+  // the Connectors tab badge read one cached fetch.
   const connectors = useConnectorsQuery(server.id, { enabled: server.enabled }).data ?? [];
   const pending = settings.pendingChanges || server.rules.some((rule) => rule.enabled && !isRuleApplied(rule, settings.lastAppliedAt));
   const applyMutation = useMutation({
@@ -387,113 +419,56 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
     onError: (error: Error) => toast.error(`Remote cleanup failed: ${error.message}`),
   });
 
+  const openRule = (rule: EdgeNatRule | null) => setRuleDialog({ open: true, rule });
+
   return (
     <Card>
-      {(() => (<CardHeader className="border-b pb-4">
+      {/* Always visible: identity, sync state, and the health facts. Never tabbed. */}
+      <CardHeader className="gap-3 border-b pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Server className="size-5" /></div>
-            <div className="min-w-0">
-              <CardTitle className="flex flex-wrap items-center gap-2">{server.name}<ServerStateBadge state={state} /></CardTitle>
-              <CardDescription className="mt-1 font-mono">ssh://{sshEndpoint(server.baseUrl)}</CardDescription>
-            </div>
-          </div>
-          {isAdmin && (() => (
-            <div className="flex flex-wrap gap-2">
-              {!server.enabled && reconciliation.cleanupRequired && <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}><Trash2 /> Clear remote rules</Button>}
-              {server.enabled && <Button variant="outline" size="sm" onClick={() => setEnrollmentOpen(true)}>
-                <LockKeyhole /> {server.hostKeyEnrolled ? "SSH trust" : "Set up SSH"}
-              </Button>}
-              {server.enabled && server.hostKeyEnrolled && <Button variant="outline" size="sm" disabled={verifyMutation.isPending} onClick={() => verifyMutation.mutate()}>{verifyMutation.isPending ? <Loader2 className="animate-spin" /> : <ScanLine />} Verify SSH</Button>}
-              {server.enabled && <Button variant="outline" size="sm" onClick={() => setRuleDialog({ open: true, rule: null })}><Plus /> Add NAT rule</Button>}
-              {server.enabled && <Button size="sm" disabled={applyMutation.isPending || !server.hostKeyEnrolled} onClick={() => applyMutation.mutate()}>
-                {applyMutation.isPending ? <Loader2 className="animate-spin" /> : <Check />}{pending ? "Apply changes" : "Apply rules"}
-              </Button>}
-            </div>
-          ))()}
+          <EdgeServerIdentity server={server} />
+          {isAdmin && (
+            <EdgeServerActions
+              server={server}
+              pending={pending}
+              applying={applyMutation.isPending}
+              verifying={verifyMutation.isPending}
+              onClear={() => setClearOpen(true)}
+              onSetupSsh={() => setEnrollmentOpen(true)}
+              onVerify={() => verifyMutation.mutate()}
+              onAddRule={() => openRule(null)}
+              onApply={() => applyMutation.mutate()}
+            />
+          )}
         </div>
 
         <ReconciliationStatus server={server} />
+        <EdgeServerFacts server={server} />
+        <EdgeServerAlerts server={server} isAdmin={isAdmin} onSetupSsh={() => setEnrollmentOpen(true)} />
+      </CardHeader>
 
-        {!server.enabled && (() => (
-          <Alert variant={reconciliation.cleanupRequired ? "destructive" : "default"}>
-            <TriangleAlert />
-            <AlertTitle>{reconciliation.cleanupRequired ? "Disabled here, but remote rules may still be live" : "Disabled and remotely cleared"}</AlertTitle>
-            <AlertDescription>
-              {reconciliation.cleanupRequired
-                ? "Sync and normal management are off. Traffic can continue through the last applied ruleset until Clear remote rules succeeds and the remote server reports zero managed rules."
-                : "The integration is disabled and the last observed remote state contains no PolySIEM-managed NAT rules."}
-            </AlertDescription>
-          </Alert>
-        ))()}
-      </CardHeader>))()}
-      {(() => (<CardContent className="space-y-4">
-        {(() => (<div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-          <ServerFact label="Public IP" value={settings.syncedSnapshot?.publicIp ?? settings.publicIp ?? "Not detected"} mono />
-          <ServerFact
-            label="SSH host key"
-            value={server.hostKeyEnrolled || settings.hostKeyVerified
-              ? state === "online" ? "Pinned and verified" : "Pinned; verify connection"
-              : "Enrollment required"}
+      <CardContent>
+        {server.enabled ? (
+          <EdgeServerTabs
+            server={server}
+            isAdmin={isAdmin}
+            connectors={connectors}
+            onAddRule={() => openRule(null)}
+            onEditRule={(rule) => openRule(rule)}
+            onDeleteRule={setDeleteRule}
+            onSetupEdgeSsh={() => setEnrollmentOpen(true)}
           />
-          <ServerFact label="Forwarding" value={settings.syncedSnapshot?.ipForwarding ?? settings.enableIpForwarding ? "Enabled" : "Disabled"} />
-          <ServerFact label="Last checked" value={server.lastSyncAt ? formatRelative(server.lastSyncAt) : "Not checked yet"} />
-        </div>))()}
-
-        {(server.lastSyncError || settings.lastApplyError) && (
-          <Alert variant="destructive"><TriangleAlert /><AlertTitle>Server needs attention</AlertTitle><AlertDescription>{settings.lastApplyError ?? server.lastSyncError}</AlertDescription></Alert>
-        )}
-
-        {isAdmin && server.enabled && !server.hostKeyEnrolled && (
-          <Alert>
-            <LockKeyhole />
-            <AlertTitle>Finish SSH enrollment before applying rules</AlertTitle>
-            <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
-              Install this integration&apos;s generated public key, then pin the server&apos;s observed host key so PolySIEM cannot silently connect to an impostor.
-              <Button size="sm" onClick={() => setEnrollmentOpen(true)}>Set up SSH</Button>
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {(() => server.rules.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-6 text-center">
-            <p className="font-medium">No ports are published</p>
-            <p className="mt-1 text-sm text-muted-foreground">This server exposes no lab targets until an explicit rule is added and applied.</p>
-            {isAdmin && server.enabled && <Button variant="outline" size="sm" className="mt-3" onClick={() => setRuleDialog({ open: true, rule: null })}><Plus /> Add first rule</Button>}
-          </div>
         ) : (
-          <div className="overflow-hidden rounded-lg border">
-            <Table>
-              <TableHeader><TableRow><TableHead>Rule</TableHead><TableHead>Edge listener</TableHead><TableHead>Private target</TableHead><TableHead className="hidden md:table-cell">Allowed source</TableHead><TableHead>Status</TableHead>{isAdmin && server.enabled && <TableHead className="w-20"><span className="sr-only">Actions</span></TableHead>}</TableRow></TableHeader>
-              <TableBody>{server.rules.map((rule) => {
-                const applied = isRuleApplied(rule, settings.lastAppliedAt);
-                return (
-                <TableRow key={rule.id}>
-                  <TableCell className="font-medium">{rule.name}</TableCell>
-                  <TableCell className="font-mono text-xs"><span className="uppercase">{rule.protocol}</span> :{rule.publicPort}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {rule.targetAddress}:{rule.targetPort}
-                    {ruleRouteMode(rule) === "connector" && (
-                      <span className="mt-0.5 flex items-center gap-1 font-sans text-[0.6875rem] text-muted-foreground">
-                        <PlugZap className="size-3" aria-hidden="true" />
-                        via {connectorDisplayName(connectors, rule.connectorId) ?? "connector"}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="hidden font-mono text-xs md:table-cell">{rule.sourceCidr || <span className="font-sans text-warning">Any source</span>}</TableCell>
-                  <TableCell><Badge variant={applied ? "secondary" : "outline"}>{!rule.enabled ? "Disabled" : applied ? "Applied" : "Pending apply"}</Badge></TableCell>
-                  {isAdmin && server.enabled && <TableCell><div className="flex justify-end gap-1"><Button variant="ghost" size="icon-sm" aria-label={`Edit ${rule.name}`} onClick={() => setRuleDialog({ open: true, rule })}><Pencil /></Button><Button variant="ghost" size="icon-sm" className="text-destructive hover:text-destructive" aria-label={`Delete ${rule.name}`} onClick={() => setDeleteRule(rule)}><Trash2 /></Button></div></TableCell>}
-                </TableRow>
-                );
-              })}</TableBody>
-            </Table>
-          </div>
-        ))()}
-        <p className="text-xs text-muted-foreground">Only rules marked Applied are confirmed in the last successful remote ruleset. The forwarding rule publishes the edge address instead of directly publishing the home router&apos;s WAN address.</p>
-
-        {server.enabled && <EdgeWireguardCard server={server} isAdmin={isAdmin} />}
-        {server.enabled && <ConnectorsCard server={server} isAdmin={isAdmin} />}
-      </CardContent>))()}
+          <EdgeNatRulesTab
+            server={server}
+            connectors={connectors}
+            isAdmin={isAdmin}
+            onAdd={() => openRule(null)}
+            onEdit={(rule) => openRule(rule)}
+            onDelete={setDeleteRule}
+          />
+        )}
+      </CardContent>
 
       <SshEnrollmentDialog server={server} open={enrollmentOpen} onOpenChange={setEnrollmentOpen} />
       <NatRuleDialog server={server} rule={ruleDialog.rule} connectors={connectors} open={ruleDialog.open} onOpenChange={(open) => setRuleDialog((current) => ({ ...current, open }))} />
@@ -518,6 +493,256 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
   );
 }
 
+function EdgeServerIdentity({ server }: { server: EdgeNatServer }) {
+  return (
+    <div className="flex min-w-0 items-start gap-3">
+      <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Server className="size-5" /></div>
+      <div className="min-w-0">
+        <CardTitle className="flex flex-wrap items-center gap-2">{server.name}<ServerStateBadge state={edgeServerState(server)} /></CardTitle>
+        <CardDescription className="mt-1 font-mono">ssh://{sshEndpoint(server.baseUrl)}</CardDescription>
+      </div>
+    </div>
+  );
+}
+
+function EdgeServerActions({
+  server,
+  pending,
+  applying,
+  verifying,
+  onClear,
+  onSetupSsh,
+  onVerify,
+  onAddRule,
+  onApply,
+}: {
+  server: EdgeNatServer;
+  pending: boolean;
+  applying: boolean;
+  verifying: boolean;
+  onClear: () => void;
+  onSetupSsh: () => void;
+  onVerify: () => void;
+  onAddRule: () => void;
+  onApply: () => void;
+}) {
+  if (!server.enabled) {
+    if (!edgeReconciliation(server).cleanupRequired) return null;
+    return (
+      <div className="flex flex-wrap gap-2">
+        <Button variant="destructive" size="sm" onClick={onClear}><Trash2 /> Clear remote rules</Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Button variant="outline" size="sm" onClick={onSetupSsh}>
+        <LockKeyhole /> {server.hostKeyEnrolled ? "SSH trust" : "Set up SSH"}
+      </Button>
+      {server.hostKeyEnrolled && (
+        <Button variant="outline" size="sm" disabled={verifying} onClick={onVerify}>
+          {verifying ? <Loader2 className="animate-spin" /> : <ScanLine />} Verify SSH
+        </Button>
+      )}
+      <Button variant="outline" size="sm" onClick={onAddRule}><Plus /> Add NAT rule</Button>
+      <Button size="sm" disabled={applying || !server.hostKeyEnrolled} onClick={onApply}>
+        {applying ? <Loader2 className="animate-spin" /> : <Check />}{pending ? "Apply changes" : "Apply rules"}
+      </Button>
+    </div>
+  );
+}
+
+/** The at-a-glance facts. Never behind a tab — this is the health read. */
+function EdgeServerFacts({ server }: { server: EdgeNatServer }) {
+  const settings = server.settings ?? {};
+  return (
+    <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+      <ServerFact label="Public IP" value={settings.syncedSnapshot?.publicIp ?? settings.publicIp ?? "Not detected"} mono />
+      <ServerFact label="SSH host key" value={hostKeyFactValue(server)} />
+      <ServerFact label="Forwarding" value={settings.syncedSnapshot?.ipForwarding ?? settings.enableIpForwarding ? "Enabled" : "Disabled"} />
+      <ServerFact label="Last checked" value={server.lastSyncAt ? formatRelative(server.lastSyncAt) : "Not checked yet"} />
+    </div>
+  );
+}
+
+function hostKeyFactValue(server: EdgeNatServer): string {
+  if (!server.hostKeyEnrolled && !server.settings?.hostKeyVerified) return "Enrollment required";
+  return edgeServerState(server) === "online" ? "Pinned and verified" : "Pinned; verify connection";
+}
+
+function EdgeServerAlerts({
+  server,
+  isAdmin,
+  onSetupSsh,
+}: {
+  server: EdgeNatServer;
+  isAdmin: boolean;
+  onSetupSsh: () => void;
+}) {
+  const settings = server.settings ?? {};
+  return (
+    <>
+      <EdgeServerDisabledAlert server={server} />
+
+      {(server.lastSyncError || settings.lastApplyError) && (
+        <Alert variant="destructive"><TriangleAlert /><AlertTitle>Server needs attention</AlertTitle><AlertDescription>{settings.lastApplyError ?? server.lastSyncError}</AlertDescription></Alert>
+      )}
+
+      {isAdmin && server.enabled && !server.hostKeyEnrolled && (
+        <Alert>
+          <LockKeyhole />
+          <AlertTitle>Finish SSH enrollment before applying rules</AlertTitle>
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+            Install this integration&apos;s generated public key, then pin the server&apos;s observed host key so PolySIEM cannot silently connect to an impostor.
+            <Button size="sm" onClick={onSetupSsh}>Set up SSH</Button>
+          </AlertDescription>
+        </Alert>
+      )}
+    </>
+  );
+}
+
+function EdgeServerDisabledAlert({ server }: { server: EdgeNatServer }) {
+  if (server.enabled) return null;
+  const cleanupRequired = edgeReconciliation(server).cleanupRequired;
+  return (
+    <Alert variant={cleanupRequired ? "destructive" : "default"}>
+      <TriangleAlert />
+      <AlertTitle>{cleanupRequired ? "Disabled here, but remote rules may still be live" : "Disabled and remotely cleared"}</AlertTitle>
+      <AlertDescription>
+        {cleanupRequired
+          ? "Sync and normal management are off. Traffic can continue through the last applied ruleset until Clear remote rules succeeds and the remote server reports zero managed rules."
+          : "The integration is disabled and the last observed remote state contains no PolySIEM-managed NAT rules."}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+type EdgeServerTabValue = "routes" | "connectors" | "tunnel" | "interfaces";
+
+/**
+ * The card's own segmented control. Nested one level inside the page tabs, so it
+ * is deliberately smaller and quieter than the page-level bar above it.
+ */
+function EdgeServerTabs({
+  server,
+  isAdmin,
+  connectors,
+  onAddRule,
+  onEditRule,
+  onDeleteRule,
+  onSetupEdgeSsh,
+}: {
+  server: EdgeNatServer;
+  isAdmin: boolean;
+  connectors: ConnectorDto[];
+  onAddRule: () => void;
+  onEditRule: (rule: EdgeNatRule) => void;
+  onDeleteRule: (rule: EdgeNatRule) => void;
+  onSetupEdgeSsh: () => void;
+}) {
+  // Remembered per server, for as long as the card is mounted.
+  const [tab, setTab] = useState<EdgeServerTabValue>("routes");
+  const wgQuery = useEdgeWireguardQuery(server);
+  const summary = connectorSummary(connectors);
+  const tunnel = edgeWireguardTabStatus(server, wgQuery.data);
+  const interfaceCount = edgeInterfaceChoices(server).length;
+
+  return (
+    <Tabs value={tab} onValueChange={(next) => setTab(next as EdgeServerTabValue)} className="gap-4">
+      <div className="overflow-x-auto pb-1">
+        <TabsList className="grid h-9 w-full min-w-[21rem] grid-cols-4 bg-muted/60 sm:inline-grid sm:w-auto">
+          <EdgeServerTabTrigger
+            value="routes"
+            label="Routes"
+            icon={Route}
+            badge={String(server.rules.length)}
+            ariaLabel={`Routes, ${server.rules.length} rules`}
+          />
+          <EdgeServerTabTrigger
+            value="connectors"
+            label="Connectors"
+            icon={PlugZap}
+            badge={`${summary.ready}/${summary.total}`}
+            badgeTitle={`${summary.ready} of ${summary.total} connectors ready`}
+            ariaLabel={`Connectors, ${summary.ready} of ${summary.total} ready`}
+          />
+          <EdgeServerTabTrigger
+            value="tunnel"
+            label="Tunnel"
+            icon={Waypoints}
+            badge={tunnel.tone === "on" ? "On" : tunnel.label}
+            ariaLabel={`Tunnel, ${tunnel.label}`}
+          />
+          <EdgeServerTabTrigger
+            value="interfaces"
+            label="Interfaces"
+            icon={Network}
+            badge={String(interfaceCount)}
+            ariaLabel={`Interfaces, ${interfaceCount} detected`}
+          />
+        </TabsList>
+      </div>
+
+      <TabsContent value="routes">
+        <EdgeNatRulesTab
+          server={server}
+          connectors={connectors}
+          isAdmin={isAdmin}
+          onAdd={onAddRule}
+          onEdit={onEditRule}
+          onDelete={onDeleteRule}
+        />
+      </TabsContent>
+
+      <TabsContent value="connectors">
+        {/* The connector install flow walks BOTH ends, so its step ① hands the
+            operator straight back to this server's own SSH enrollment. */}
+        <ConnectorsCard server={server} isAdmin={isAdmin} onSetupEdgeSsh={onSetupEdgeSsh} />
+      </TabsContent>
+
+      <TabsContent value="tunnel">
+        <EdgeWireguardCard server={server} isAdmin={isAdmin} />
+      </TabsContent>
+
+      <TabsContent value="interfaces">
+        <EdgeInterfacesTab server={server} isAdmin={isAdmin} />
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+function EdgeServerTabTrigger({
+  value,
+  label,
+  icon: Icon,
+  badge,
+  badgeTitle,
+  ariaLabel,
+}: {
+  value: EdgeServerTabValue;
+  label: string;
+  icon: typeof Server;
+  badge: string;
+  badgeTitle?: string;
+  ariaLabel: string;
+}) {
+  return (
+    <TabsTrigger value={value} className="min-w-0 gap-1.5 px-2 text-xs" aria-label={ariaLabel}>
+      <Icon className="size-3.5" aria-hidden="true" />
+      <span className="truncate">{label}</span>
+      <Badge
+        variant="secondary"
+        className="h-5 min-w-5 justify-center px-1.5 text-[0.6875rem] font-normal tabular-nums"
+        title={badgeTitle}
+        aria-hidden="true"
+      >
+        {badge}
+      </Badge>
+    </TabsTrigger>
+  );
+}
+
 interface HostKeyProbe {
   host: string;
   port: number;
@@ -538,7 +763,7 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
     enabled: open,
     retry: false,
   });
-  const selected = selectedFingerprint || hostKeyQuery.data?.enrolledFingerprint || (hostKeyQuery.data?.keys.length === 1 ? hostKeyQuery.data.keys[0]?.fingerprint : "");
+  const selected = preferredEdgeHostKey(selectedFingerprint, hostKeyQuery.data);
   const enrollMutation = useMutation({
     mutationFn: ({ fingerprint, username }: { fingerprint: string; username: string }) =>
       apiFetch<{ installed: boolean; detail: string }>(`/api/network/edge-networks/servers/${server.id}/provision`, {
@@ -552,7 +777,7 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
     },
     onError: (error: Error) => toast.error(`Could not install the Edge service: ${error.message}`),
   });
-  const dialog = () => (
+  return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
@@ -574,45 +799,11 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
               <p className="text-xs text-muted-foreground">Use the account you normally SSH into. It must be root or have passwordless <code>sudo</code> for this one installation. The username is sent only for this request and is not saved.</p>
             </div>
             <p className="text-sm text-muted-foreground">Sign in to that account and run this short command. It adds a forced, temporary installer key—not a general shell key.</p>
-            {bootstrapCommand ? (
-              <CopyBlock value={bootstrapCommand} label="Setup command" />
-            ) : publicKey ? (
-              <>
-                <CopyBlock value={publicKey} label="Public key" />
-                <p className="text-xs text-warning">The setup command could not be generated. Recreate this integration before continuing.</p>
-              </>
-            ) : (
-              <Alert variant="destructive"><TriangleAlert /><AlertTitle>Generated public key unavailable</AlertTitle><AlertDescription>Edit or recreate the integration before continuing.</AlertDescription></Alert>
-            )}
+            <EnrollmentCommand bootstrapCommand={bootstrapCommand} publicKey={publicKey} />
             {settings.publicKeyFingerprint && <p className="text-xs text-muted-foreground">PolySIEM key fingerprint: <code>{settings.publicKeyFingerprint}</code></p>}
           </EnrollmentStep>
 
-          <EnrollmentStep number="2" title="Scan the server identity">
-            <p className="text-sm text-muted-foreground">Compare an observed fingerprint with the server console before trusting it. Pinning this key prevents a changed or impersonated SSH host from being accepted silently.</p>
-            {hostKeyQuery.isLoading && <div className="space-y-2"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div>}
-            {hostKeyQuery.isError && (
-              <Alert
-                variant="destructive"
-                aria-label={`Could not scan the SSH host key: ${(hostKeyQuery.error as Error).message}`}
-              >
-                <TriangleAlert />
-                <AlertTitle>Could not scan the SSH host key:</AlertTitle>
-                <AlertDescription>{` ${(hostKeyQuery.error as Error).message}`}</AlertDescription>
-              </Alert>
-            )}
-            {hostKeyQuery.data && (
-              <div className="space-y-2">
-                <p className="text-xs text-muted-foreground">Observed at <code>{hostKeyQuery.data.host}:{hostKeyQuery.data.port}</code></p>
-                {hostKeyQuery.data.keys.length === 0 ? <p className="text-sm text-warning">No host keys were returned.</p> : hostKeyQuery.data.keys.map((key) => (
-                  <button key={`${key.algorithm}:${key.fingerprint}`} type="button" onClick={() => setSelectedFingerprint(key.fingerprint)} className={cn("flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent", selected === key.fingerprint && "border-primary bg-primary/5")}>
-                    <span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border", selected === key.fingerprint && "border-primary bg-primary text-primary-foreground")}>{selected === key.fingerprint && <Check className="size-3" />}</span>
-                    <span className="min-w-0"><span className="block text-xs font-medium uppercase text-muted-foreground">{key.algorithm}</span><code className="block break-all text-xs">{key.fingerprint}</code></span>
-                  </button>
-                ))}
-              </div>
-            )}
-            <Button type="button" variant="outline" size="sm" disabled={hostKeyQuery.isFetching} onClick={() => void hostKeyQuery.refetch()}><RefreshCw className={cn(hostKeyQuery.isFetching && "animate-spin")} /> Scan again</Button>
-          </EnrollmentStep>
+          <EnrollmentScanStep probeQuery={hostKeyQuery} selected={selected} onSelect={setSelectedFingerprint} />
 
           <EnrollmentStep number="3" title="Let PolySIEM install the service">
             <p className="text-sm text-muted-foreground">PolySIEM rescans and pins the selected host identity, connects through the temporary installer key, installs the restricted <code>polysiem-edge</code> service, removes the temporary admin authorization, and verifies the service.</p>
@@ -634,7 +825,91 @@ function SshEnrollmentDialog({ server, open, onOpenChange }: { server: EdgeNatSe
       </DialogContent>
     </Dialog>
   );
-  return dialog();
+}
+
+/** What the dialog offers to pin: an explicit pick, the enrolled key, or a lone observed one. */
+function preferredEdgeHostKey(chosen: string, probe: HostKeyProbe | undefined): string {
+  const keys = probe?.keys ?? [];
+  return chosen || probe?.enrolledFingerprint || (keys.length === 1 ? keys[0].fingerprint : "");
+}
+
+/** Step ②: what the host presents, and which fingerprint gets pinned. */
+function EnrollmentScanStep({
+  probeQuery,
+  selected,
+  onSelect,
+}: {
+  probeQuery: UseQueryResult<HostKeyProbe>;
+  selected: string;
+  onSelect: (fingerprint: string) => void;
+}) {
+  const probe = probeQuery.data;
+  return (
+    <EnrollmentStep number="2" title="Scan the server identity">
+      <p className="text-sm text-muted-foreground">Compare an observed fingerprint with the server console before trusting it. Pinning this key prevents a changed or impersonated SSH host from being accepted silently.</p>
+      {probeQuery.isLoading && <div className="space-y-2"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div>}
+      {probeQuery.isError && (
+        <Alert
+          variant="destructive"
+          aria-label={`Could not scan the SSH host key: ${(probeQuery.error as Error).message}`}
+        >
+          <TriangleAlert />
+          <AlertTitle>Could not scan the SSH host key:</AlertTitle>
+          <AlertDescription>{` ${(probeQuery.error as Error).message}`}</AlertDescription>
+        </Alert>
+      )}
+      {probe && (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">Observed at <code>{probe.host}:{probe.port}</code></p>
+          {probe.keys.length === 0 ? <p className="text-sm text-warning">No host keys were returned.</p> : probe.keys.map((key) => (
+            <EnrollmentHostKeyOption
+              key={`${key.algorithm}:${key.fingerprint}`}
+              algorithm={key.algorithm}
+              fingerprint={key.fingerprint}
+              active={selected === key.fingerprint}
+              onSelect={() => onSelect(key.fingerprint)}
+            />
+          ))}
+        </div>
+      )}
+      <Button type="button" variant="outline" size="sm" disabled={probeQuery.isFetching} onClick={() => void probeQuery.refetch()}><RefreshCw className={cn(probeQuery.isFetching && "animate-spin")} /> Scan again</Button>
+    </EnrollmentStep>
+  );
+}
+
+function EnrollmentHostKeyOption({
+  algorithm,
+  fingerprint,
+  active,
+  onSelect,
+}: {
+  algorithm: string;
+  fingerprint: string;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button type="button" onClick={onSelect} className={cn("flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent", active && "border-primary bg-primary/5")}>
+      <span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border", active && "border-primary bg-primary text-primary-foreground")}>{active && <Check className="size-3" />}</span>
+      <span className="min-w-0"><span className="block text-xs font-medium uppercase text-muted-foreground">{algorithm}</span><code className="block break-all text-xs">{fingerprint}</code></span>
+    </button>
+  );
+}
+
+/** The setup one-liner, degrading to the raw key and then to an error. */
+function EnrollmentCommand({ bootstrapCommand, publicKey }: { bootstrapCommand: string; publicKey: string }) {
+  if (bootstrapCommand) return <CopyBlock value={bootstrapCommand} label="Setup command" />;
+  if (publicKey) {
+    return (
+      <>
+        <CopyBlock value={publicKey} label="Public key" />
+        <p className="text-xs text-warning">The setup command could not be generated. Recreate this integration before continuing.</p>
+      </>
+    );
+  }
+  return (
+    <Alert variant="destructive"><TriangleAlert /><AlertTitle>Generated public key unavailable</AlertTitle><AlertDescription>Edit or recreate the integration before continuing.</AlertDescription></Alert>
+  );
 }
 
 function EnrollmentStep({ number, title, children }: { number: string; title: string; children: ReactNode }) {
@@ -691,126 +966,6 @@ function ServerStateBadge({ state }: { state: ReturnType<typeof edgeServerState>
   const label = { online: "Online", offline: "Offline", unverified: "Awaiting verification", disabled: "Disabled" }[state];
   return <Badge variant={state === "online" ? "secondary" : state === "offline" ? "destructive" : "outline"} className="font-normal">{state === "online" && <span className="size-1.5 rounded-full bg-success" />}{label}</Badge>;
 }
-
-function NatRuleDialog({ server, rule, connectors, open, onOpenChange }: { server: EdgeNatServer; rule: EdgeNatRule | null; connectors: ConnectorDto[]; open: boolean; onOpenChange: (open: boolean) => void }) {
-  const queryClient = useQueryClient();
-  const initial = useMemo(() => ruleToForm(rule), [rule]);
-  const [form, setForm] = useState<NatRuleForm>(initial);
-  const currentForm = open && form.ruleId !== (rule?.id ?? null) ? initial : form;
-  const selectableConnectors = connectors.filter(isConnectorSelectable);
-  const targetCopy = natRuleTargetCopy(currentForm.mode);
-  const connectorMissing = currentForm.mode === "connector" && !currentForm.connectorId;
-  const mutation = useMutation({
-    mutationFn: (input: NatRuleInput) => apiFetch(
-      rule ? `/api/network/edge-networks/servers/${server.id}/rules/${rule.id}` : `/api/network/edge-networks/servers/${server.id}/rules`,
-      { method: rule ? "PATCH" : "POST", body: JSON.stringify(input) },
-    ),
-    onSuccess: () => { toast.success(`${rule ? "Updated" : "Added"} NAT rule. Apply changes when ready.`); onOpenChange(false); void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY }); },
-    onError: (error: Error) => toast.error(error.message),
-  });
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    const publicPort = Number(currentForm.publicPort);
-    const targetPort = Number(currentForm.targetPort);
-    if (!currentForm.name.trim() || !currentForm.targetAddress.trim() || !isValidNetworkPort(publicPort) || !isValidNetworkPort(targetPort)) { toast.error("Enter a name, private target, and valid ports from 1–65535."); return; }
-    if (connectorMissing) { toast.error("Choose the connector that makes the last hop, or switch back to a direct route."); return; }
-    mutation.mutate({
-      name: currentForm.name.trim(),
-      protocol: currentForm.protocol,
-      publicPort,
-      targetAddress: currentForm.targetAddress.trim(),
-      targetPort,
-      sourceCidr: currentForm.sourceCidr.trim() || undefined,
-      enabled: currentForm.enabled,
-      ...natRuleRouting(currentForm.mode, currentForm.connectorId),
-    });
-  };
-  const update = (patch: Partial<NatRuleForm>) => setForm({ ...currentForm, ...patch });
-  // Switching to connector mode preselects the only ready connector, if there is one.
-  const selectMode = (mode: EdgeRouteMode) => update({
-    mode,
-    connectorId: mode === "connector"
-      ? currentForm.connectorId ?? (selectableConnectors.length === 1 ? selectableConnectors[0].id : null)
-      : currentForm.connectorId,
-  });
-  return (
-    <Dialog open={open} onOpenChange={(next) => { if (next) setForm(initial); onOpenChange(next); }}>
-      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-lg">
-        <form onSubmit={submit} className="contents">
-          <DialogHeader><DialogTitle>{rule ? "Edit" : "Add"} NAT rule</DialogTitle><DialogDescription>Publish one listener on {server.name} and send it to a private lab address.</DialogDescription></DialogHeader>
-          <div className="grid gap-4 py-1">
-            <div className="grid gap-1.5"><Label htmlFor="nat-name">Rule name</Label><Input id="nat-name" value={currentForm.name} onChange={(event) => update({ name: event.target.value })} placeholder="Plex HTTPS" autoFocus /></div>
-
-            <div className="grid gap-1.5">
-              <Label id={`route-mode-${server.id}`}>How traffic reaches the target</Label>
-              <div role="radiogroup" aria-labelledby={`route-mode-${server.id}`} className="grid gap-2 sm:grid-cols-2">
-                {ROUTE_MODE_CHOICES.map((choice) => {
-                  const active = currentForm.mode === choice.value;
-                  return (
-                    <button
-                      key={choice.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={active}
-                      onClick={() => selectMode(choice.value)}
-                      className={cn("flex w-full items-start gap-2.5 rounded-lg border p-3 text-left transition-colors hover:bg-accent", active && "border-primary bg-primary/5")}
-                    >
-                      <span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border", active && "border-primary bg-primary text-primary-foreground")}>{active && <Check className="size-3" />}</span>
-                      <span className="min-w-0">
-                        <span className="block text-sm font-medium">{choice.title}</span>
-                        <span className="mt-0.5 block text-xs text-muted-foreground">{choice.detail}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {currentForm.mode === "connector" && (selectableConnectors.length === 0 ? (
-              <Alert>
-                <PlugZap />
-                <AlertTitle>No connector is ready yet</AlertTitle>
-                <AlertDescription>Add a connector in the Connectors section on this server and run its install command. Once it reports connected it can carry routes.</AlertDescription>
-              </Alert>
-            ) : (
-              <div className="grid gap-1.5">
-                <Label htmlFor="nat-connector">Connector</Label>
-                <Select value={currentForm.connectorId ?? ""} onValueChange={(value) => update({ connectorId: value })}>
-                  <SelectTrigger id="nat-connector" className="w-full"><SelectValue placeholder="Choose a connector" /></SelectTrigger>
-                  <SelectContent>
-                    {connectors.map((connector) => (
-                      <SelectItem key={connector.id} value={connector.id} disabled={!isConnectorSelectable(connector)}>
-                        {connector.name}
-                        {isConnectorSelectable(connector) ? "" : ` — ${connectorStatusPresentation(connector).label.toLowerCase()}`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">Traffic lands on the edge port below, crosses the tunnel, and this connector delivers it. Its tunnel IP is assigned automatically — you never enter it.</p>
-              </div>
-            ))}
-
-            <div className="grid gap-3 sm:grid-cols-[0.7fr_1fr]">
-              <div className="grid gap-1.5"><Label>Protocol</Label><Select value={currentForm.protocol} onValueChange={(value) => update({ protocol: value as NatProtocol })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tcp">TCP</SelectItem><SelectItem value="udp">UDP</SelectItem></SelectContent></Select></div>
-              <div className="grid gap-1.5"><Label htmlFor="public-port">Edge port</Label><Input id="public-port" inputMode="numeric" value={currentForm.publicPort} onChange={(event) => update({ publicPort: event.target.value })} placeholder="443" /></div>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-[1fr_0.55fr]">
-              <div className="grid gap-1.5"><Label htmlFor="target-address">{targetCopy.label}</Label><Input id="target-address" value={currentForm.targetAddress} onChange={(event) => update({ targetAddress: event.target.value })} placeholder={targetCopy.placeholder} /></div>
-              <div className="grid gap-1.5"><Label htmlFor="target-port">Target port</Label><Input id="target-port" inputMode="numeric" value={currentForm.targetPort} onChange={(event) => update({ targetPort: event.target.value })} placeholder="32400" /></div>
-            </div>
-            {targetCopy.help && <p className="-mt-2 text-xs text-muted-foreground">{targetCopy.help}</p>}
-            <div className="grid gap-1.5"><Label htmlFor="source-cidr">Allowed source CIDR <span className="font-normal text-muted-foreground">(recommended)</span></Label><Input id="source-cidr" value={currentForm.sourceCidr} onChange={(event) => update({ sourceCidr: event.target.value })} placeholder="203.0.113.0/24" /><p className={cn("text-xs", currentForm.sourceCidr ? "text-muted-foreground" : "text-warning")}>{currentForm.sourceCidr ? "Only this source range can enter the rule." : "Blank allows traffic from any internet address."}</p></div>
-            <div className="flex items-center justify-between gap-4 rounded-lg border p-3"><div><Label htmlFor="nat-enabled">Rule enabled</Label><p className="text-xs text-muted-foreground">Disabled rules remain saved but are not installed.</p></div><Switch id="nat-enabled" checked={currentForm.enabled} onCheckedChange={(enabled) => update({ enabled })} /></div>
-          </div>
-          <DialogFooter><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={mutation.isPending || connectorMissing}>{mutation.isPending && <Loader2 className="animate-spin" />}{rule ? "Save rule" : "Add rule"}</Button></DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-interface NatRuleForm { ruleId: string | null; name: string; protocol: NatProtocol; publicPort: string; targetAddress: string; targetPort: string; sourceCidr: string; enabled: boolean; mode: EdgeRouteMode; connectorId: string | null }
-function ruleToForm(rule: EdgeNatRule | null): NatRuleForm { return { ruleId: rule?.id ?? null, name: rule?.name ?? "", protocol: rule?.protocol ?? "tcp", publicPort: rule ? String(rule.publicPort) : "", targetAddress: rule?.targetAddress ?? "", targetPort: rule ? String(rule.targetPort) : "", sourceCidr: rule?.sourceCidr ?? "", enabled: rule?.enabled ?? true, mode: rule ? ruleRouteMode(rule) : "direct", connectorId: rule?.connectorId ?? null }; }
 
 function TailscaleCard({ network }: { network: EdgeNetworksOverview["tailscale"][number] }) {
   const details = tailscaleDetails(network);

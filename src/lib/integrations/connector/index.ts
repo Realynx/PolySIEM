@@ -4,7 +4,9 @@
  * Pure generation only: nothing in here touches the database or the network.
  * The control plane (`src/lib/services/connectors.ts`) imports
  * {@link connectorRulesetHash} so the `configHash` it publishes is computed by
- * exactly the same code the on-host agent uses to verify what it parsed.
+ * exactly the same code the on-host agent uses to verify what it parsed — and the
+ * SSH transport (`./ssh.ts`) hashes its APPLY payload with the very same function,
+ * so `configHash` means one thing on both transports.
  */
 
 export {
@@ -12,6 +14,9 @@ export {
   CONNECTOR_AGENT_VERSION,
   CONNECTOR_AGENT_PATH,
   CONNECTOR_RULESET_VERSION,
+  CONNECTOR_STATUS_BANNER,
+  CONNECTOR_SSH_USERNAME,
+  CONNECTOR_SUDOERS_PATH,
   CONNECTOR_CONFIG_DIR,
   CONNECTOR_CONFIG_FILE,
   CONNECTOR_TOKEN_FILE,
@@ -28,6 +33,7 @@ export {
   CONNECTOR_FORWARD_GENERATION_PREFIX,
   canonicalConnectorRuleset,
   connectorRulesetHash,
+  connectorRestrictedAuthorizedKey,
 } from "./agent";
 
 export type { ConnectorRoute, ConnectorEdgeParams, ConnectorConfigPayload } from "./agent";
@@ -38,6 +44,7 @@ export {
   buildConnectorInstallCommand,
   buildConnectorInstallErrorScript,
   normalizeConnectorBaseUrl,
+  stripConnectorSshBlocks,
 } from "./install";
 
 export type { ConnectorInstallOptions } from "./install";

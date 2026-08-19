@@ -180,8 +180,19 @@ async function scanWithSshHandshake(
   }
 }
 
-export async function scanEdgeHostKeys(baseUrl: string, runner: CommandRunner = runCommand): Promise<ObservedHostKey[]> {
-  const { host, port } = parseEdgeSshUrl(baseUrl);
+/**
+ * Observe the host keys presented by an SSH endpoint. Host/port form, so the
+ * connector transport (which stores host and port as plain columns rather than
+ * an `ssh://` URL) reuses exactly this scanner instead of duplicating it.
+ *
+ * Observing is not trusting: the administrator still confirms the fingerprint
+ * out of band before it is enrolled.
+ */
+export async function scanSshHostKeys(
+  host: string,
+  port: number,
+  runner: CommandRunner = runCommand,
+): Promise<ObservedHostKey[]> {
   let result: CommandResult;
   try {
     const familyArgs = isIP(host) === 6 ? ["-6"] : [];
@@ -211,6 +222,11 @@ export async function scanEdgeHostKeys(baseUrl: string, runner: CommandRunner = 
     throw scanFailure(host, port, result);
   }
   return keys;
+}
+
+export async function scanEdgeHostKeys(baseUrl: string, runner: CommandRunner = runCommand): Promise<ObservedHostKey[]> {
+  const { host, port } = parseEdgeSshUrl(baseUrl);
+  return scanSshHostKeys(host, port, runner);
 }
 
 export async function runVerifiedSsh(

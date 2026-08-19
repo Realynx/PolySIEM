@@ -89,6 +89,36 @@ export interface EdgeWireguardStatus {
  * Returns null when a legacy agent emits no WG_* lines at all; otherwise returns
  * the status object (with `enabled: false` when the box reports WG_ENABLED 0).
  */
+/**
+ * One parser per WG_* STATUS key. A Map (not an object literal) so a hostile
+ * status line naming `constructor` or `__proto__` cannot resolve to anything.
+ * Each parser validates its own field and leaves the default in place on junk.
+ */
+const WG_STATUS_PARSERS = new Map<string, (value: string, status: EdgeWireguardStatus) => void>([
+  ["WG_IF", (value, status) => {
+    if (/^[A-Za-z0-9_.:-]{1,15}$/.test(value)) status.interfaceName = value;
+  }],
+  ["WG_ENABLED", (value, status) => {
+    status.enabled = value === "1";
+  }],
+  ["WG_PUBKEY", (value, status) => {
+    if (wireguardKeyRegex.test(value)) status.publicKey = value;
+  }],
+  ["WG_LISTEN", (value, status) => {
+    const port = Number.parseInt(value, 10);
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) status.listenPort = port;
+  }],
+  ["WG_PEERS", (value, status) => {
+    status.peers = Math.max(0, Number.parseInt(value, 10) || 0);
+  }],
+  ["WG_LATEST_HANDSHAKE", (value, status) => {
+    const epoch = Number.parseInt(value, 10);
+    status.latestHandshakeAt = Number.isFinite(epoch) && epoch > 0
+      ? new Date(epoch * 1000).toISOString()
+      : null;
+  }],
+]);
+
 export function parseEdgeNatWireguardStatus(stdout: string): EdgeWireguardStatus | null {
   const status: EdgeWireguardStatus = {
     interfaceName: null, enabled: false, publicKey: null,
@@ -97,41 +127,10 @@ export function parseEdgeNatWireguardStatus(stdout: string): EdgeWireguardStatus
   let seen = false;
   for (const line of stdout.split(/\r?\n/)) {
     const [kind, ...rest] = line.split("\t");
-    const value = rest.join("\t").trim();
-    switch (kind) {
-      case "WG_IF":
-        seen = true;
-        if (/^[A-Za-z0-9_.:-]{1,15}$/.test(value)) status.interfaceName = value;
-        break;
-      case "WG_ENABLED":
-        seen = true;
-        status.enabled = value === "1";
-        break;
-      case "WG_PUBKEY":
-        seen = true;
-        if (wireguardKeyRegex.test(value)) status.publicKey = value;
-        break;
-      case "WG_LISTEN": {
-        seen = true;
-        const port = Number.parseInt(value, 10);
-        if (Number.isInteger(port) && port >= 1 && port <= 65535) status.listenPort = port;
-        break;
-      }
-      case "WG_PEERS":
-        seen = true;
-        status.peers = Math.max(0, Number.parseInt(value, 10) || 0);
-        break;
-      case "WG_LATEST_HANDSHAKE": {
-        seen = true;
-        const epoch = Number.parseInt(value, 10);
-        status.latestHandshakeAt = Number.isFinite(epoch) && epoch > 0
-          ? new Date(epoch * 1000).toISOString()
-          : null;
-        break;
-      }
-      default:
-        break;
-    }
+    const parse = WG_STATUS_PARSERS.get(kind);
+    if (!parse) continue;
+    seen = true;
+    parse(rest.join("\t").trim(), status);
   }
   return seen ? status : null;
 }

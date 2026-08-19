@@ -47,6 +47,7 @@ Rules that keep this maintainable (SOLID/DRY):
 | `MobileList`, `MobileListRow`, `MobileKeyRow`, `MobileEmpty` | Lists instead of tables; detail key/values |
 | `MobileStatStrip`, `MobileStat` | Horizontal stat chips |
 | `MobileSegmented` | Sibling views (tabs); URL-driven |
+| `MobileStateSegmented` (page-area, `pages/network-edge/mobile-edge-tabs.tsx`) | Sibling views **inside a repeated card**; component state, not the URL |
 | `MobileSearchBar` | URL-synced `q` search (same params as `TableToolbar`) |
 | `BottomSheet` | Filters, row details, pickers — instead of popover/side sheet |
 | `MobileFab` | The page's single primary action; composes with Radix triggers via prop spread |
@@ -63,6 +64,16 @@ type and looser on touch targets:
 - Lists, not tables. Two-line rows: name+badge on top, metadata below,
   numbers/chevron trailing.
 - Full-width primary buttons; icon buttons in the header; FAB for "Add".
+- One sheet at a time. A sub-sheet (edit form, scanner, picker) opened from a
+  row's detail sheet **replaces** it and reopens it on close — stacking two
+  `BottomSheet`s fights over the scroll lock and buries the back gesture.
+- A card with several long sections (the edge server card: routes, connectors,
+  tunnel, interfaces) gets a segmented control instead of one long scroll: the
+  identity, state and primary actions stay pinned, and **only the selected
+  section renders**. Several such cards can share a screen, so the selection
+  lives in component state and each segment carries a compact badge (count,
+  "2/3 ready", On/Off) so the tab strip doubles as the summary. Mirror the
+  desktop card's tab order so both views describe the same thing.
 - Safe areas: shell handles the tab bar inset; full-bleed screens use
   `pb-safe`/`pt-safe`. Horizontal scrollers get `no-scrollbar`.
 - Maps/canvases: full-bleed (own the space outside `MobilePage`), pinch to

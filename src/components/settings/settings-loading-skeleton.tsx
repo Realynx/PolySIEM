@@ -196,36 +196,3 @@ export function SettingsContentSkeleton({ section }: { section: SettingsSkeleton
   );
 }
 
-function sectionFromPathname(pathname: string): SettingsSkeletonSection {
-  const segment = pathname.split("/")[2];
-  const sections: SettingsSkeletonSection[] = [
-    "about", "ai", "api-tokens", "appearance", "backup", "certificate", "danger",
-    "integrations", "privacy", "profile", "system", "users",
-  ];
-  return sections.includes(segment as SettingsSkeletonSection)
-    ? (segment as SettingsSkeletonSection)
-    : "index";
-}
-
-/** Full Settings frame used by the instant, root-level navigation overlay. */
-export function SettingsRouteSkeleton({ pathname }: { pathname: string }) {
-  const section = sectionFromPathname(pathname);
-  return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 md:flex-row md:gap-10" aria-hidden="true">
-      <aside className="hidden w-44 shrink-0 space-y-5 md:block">
-        <Skeleton className="h-5 w-24" />
-        {Array.from({ length: 3 }, (_, group) => (
-          <div key={group} className="space-y-2">
-            <Skeleton className="h-3 w-20" />
-            {Array.from({ length: group === 1 ? 5 : 3 }, (_, row) => (
-              <Skeleton key={row} className="h-8 w-full rounded-md" />
-            ))}
-          </div>
-        ))}
-      </aside>
-      <div className="min-w-0 flex-1">
-        <SettingsContentSkeleton section={section} />
-      </div>
-    </div>
-  );
-}

@@ -27,6 +27,10 @@ import {
   parseAllowedIps,
   seedWireguardForm,
   toWireguardConfigInput,
+  WIREGUARD_ADDRESS_CHOICES,
+  WIREGUARD_INTERFACE_CHOICES,
+  WIREGUARD_KEEPALIVE_CHOICES,
+  WIREGUARD_LISTEN_PORT_CHOICES,
   WIREGUARD_QUERY_KEY,
   type EdgeNatServer,
   type EdgeWireguardResponse,
@@ -34,6 +38,7 @@ import {
   type WireguardFormState,
   type WireguardPeerConfigDto,
 } from "@/components/network/edge-networks-types";
+import { MobileSelectField } from "./mobile-form-controls";
 
 /**
  * Phone WireGuard tunnel block for an edge server: status, the copy-able edge
@@ -109,7 +114,14 @@ function MobileWireguardBody({
       </MobileList>
 
       <MobileCopyBlock label="Edge public key" value={view.edgePublicKey} emptyHint="Generate the edge key first" emphasized />
-      <MobileOpnsenseBlock peerConfig={peerConfig} edgePublicKey={view.edgePublicKey} keepalive={view.keepalive} />
+      {settings.peer ? (
+        <MobileOpnsenseBlock peerConfig={peerConfig} edgePublicKey={view.edgePublicKey} keepalive={view.keepalive} />
+      ) : (
+        <p className="rounded-xl border border-dashed px-3 py-2 text-[11px] text-muted-foreground">
+          Every far end is a connector now. Add one below and pick OPNsense or another WireGuard peer to get its
+          paste-ready tunnel settings and its own allocated address.
+        </p>
+      )}
 
       {isAdmin && (
         <Button variant="outline" size="sm" className="w-full" onClick={onConfigure}>
@@ -117,7 +129,7 @@ function MobileWireguardBody({
         </Button>
       )}
       <p className="px-0.5 text-[11px] text-muted-foreground">
-        The edge only listens; OPNsense initiates. Saving marks a pending change — use Apply to push it.
+        The edge only listens; every peer initiates. Saving marks a pending change — use Apply to push it.
       </p>
     </>
   );
@@ -141,7 +153,10 @@ function MobileOpnsenseBlock({
   });
   return (
     <div className="rounded-xl border bg-card p-3">
-      <p className="mb-2 font-mono text-[11px] tracking-wider text-muted-foreground uppercase">Paste into OPNsense</p>
+      <p className="mb-1 font-mono text-[11px] tracking-wider text-muted-foreground uppercase">Legacy manual peer</p>
+      <p className="mb-2 text-[11px] text-muted-foreground">
+        This peer predates connector kinds and is now managed as a connector — add an OPNsense connector to replace it.
+      </p>
       <div className="flex flex-col gap-2">
         <MobileCopyRow label="Endpoint" value={peerConfig.edgeEndpoint} />
         <MobileCopyRow label="Allowed IPs" value={peerConfig.allowedIps.join(", ")} />
@@ -239,7 +254,7 @@ function MobileWireguardSheet({
 
   const save = (regenerateKey: boolean) => {
     if (!formValid) {
-      toast.error("Add the OPNsense public key and a home subnet, plus a valid address and port.");
+      toast.error("Add the legacy peer's public key and a home subnet, plus a valid address and port.");
       return;
     }
     mutation.mutate(toWireguardConfigInput(form, settings, regenerateKey));
@@ -251,7 +266,7 @@ function MobileWireguardSheet({
       open
       onOpenChange={onOpenChange}
       title={`WireGuard tunnel — ${server.name}`}
-      description="The edge listens; OPNsense initiates. Paste OPNsense's key and home subnets, then generate the edge key."
+      description="The edge listens; every peer initiates. Set the interface, port and tunnel subnet, then generate the edge key."
     >
       <form onSubmit={submit} className="flex flex-col gap-4 pb-2">
         <div className="flex items-center justify-between gap-4 rounded-xl border p-3">
@@ -262,32 +277,44 @@ function MobileWireguardSheet({
           <Switch id="m-wg-enabled" checked={form.enabled} onCheckedChange={(enabled) => update({ enabled })} />
         </div>
 
-        <div className="grid grid-cols-[1fr_0.8fr] gap-3">
-          <div className="grid gap-1.5">
-            <Label htmlFor="m-wg-if">Interface</Label>
-            <Input id="m-wg-if" value={form.interfaceName} onChange={(e) => update({ interfaceName: e.target.value })} placeholder="wg0" className="font-mono" />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="m-wg-port">Listen port</Label>
-            <Input id="m-wg-port" inputMode="numeric" value={form.listenPort} onChange={(e) => update({ listenPort: e.target.value })} placeholder="51820" className="font-mono" />
-          </div>
-        </div>
-
-        <div className="grid gap-1.5">
-          <Label htmlFor="m-wg-addr">Edge tunnel address</Label>
-          <Input
-            id="m-wg-addr"
-            value={form.address}
-            onChange={(e) => update({ address: e.target.value })}
-            placeholder="10.9.9.1/24"
-            className={cn("font-mono", form.address && !looksLikeCidr(form.address) && "border-destructive")}
+        <div className="grid grid-cols-[1fr_0.9fr] gap-3">
+          <MobileSelectField
+            id="m-wg-if"
+            label="Interface"
+            value={form.interfaceName}
+            onChange={(interfaceName) => update({ interfaceName })}
+            choices={WIREGUARD_INTERFACE_CHOICES}
+            mono
+            customPlaceholder="wg0"
+          />
+          <MobileSelectField
+            id="m-wg-port"
+            label="Listen port"
+            value={form.listenPort}
+            onChange={(listenPort) => update({ listenPort })}
+            choices={WIREGUARD_LISTEN_PORT_CHOICES}
+            inputMode="numeric"
+            mono
+            customPlaceholder="51820"
           />
         </div>
+
+        <MobileSelectField
+          id="m-wg-addr"
+          label="Edge tunnel address"
+          value={form.address}
+          onChange={(address) => update({ address })}
+          choices={WIREGUARD_ADDRESS_CHOICES}
+          mono
+          invalid={Boolean(form.address) && !looksLikeCidr(form.address)}
+          customPlaceholder="10.9.9.1/24"
+          help="The edge takes the first address in this subnet; connector and peer addresses are allocated from it."
+        />
 
         <MobilePeerFields form={form} update={update} />
 
         <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
-          Leave the edge peer&apos;s endpoint blank — OPNsense dials in and keeps the tunnel open with keepalive.
+          Leave the peer&apos;s endpoint blank — the far side dials in and keeps the tunnel open with keepalive.
         </p>
 
         {(settings.publicKey ?? data.peerConfig.edgePublicKey) && (
@@ -332,8 +359,14 @@ function MobilePeerFields({
   };
   return (
     <>
+      <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
+        OPNsense is now added as a <span className="font-medium">connector</span> — pick &ldquo;OPNsense&rdquo; in Add
+        connector and PolySIEM hands you its paste-ready settings. The peer below is the legacy manual entry, kept for
+        installs that already use it.
+      </p>
+
       <div className="grid gap-1.5">
-        <Label htmlFor="m-wg-peer">OPNsense public key</Label>
+        <Label htmlFor="m-wg-peer">Legacy manual peer public key</Label>
         <Input
           id="m-wg-peer"
           value={form.peerPublicKey}
@@ -372,10 +405,17 @@ function MobilePeerFields({
         />
       </div>
 
-      <div className="grid gap-1.5">
-        <Label htmlFor="m-wg-keep">Persistent keepalive</Label>
-        <Input id="m-wg-keep" inputMode="numeric" value={form.keepalive} onChange={(e) => update({ keepalive: e.target.value })} placeholder="25" className="w-28 font-mono" />
-      </div>
+      <MobileSelectField
+        id="m-wg-keep"
+        label="Persistent keepalive"
+        value={form.keepalive}
+        onChange={(keepalive) => update({ keepalive })}
+        choices={WIREGUARD_KEEPALIVE_CHOICES}
+        inputMode="numeric"
+        mono
+        customPlaceholder="25"
+        help="Seconds between keepalive packets sent by the far side through NAT. 25 suits most home connections."
+      />
     </>
   );
 }

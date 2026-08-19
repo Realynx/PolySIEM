@@ -504,14 +504,21 @@ export interface EdgeWireguardResponse {
   peerConfig: WireguardPeerConfigDto;
 }
 
-/** PUT request body. `privateKey` is intentionally never sent from the UI. */
+/**
+ * PUT request body. `privateKey` is intentionally never sent from the UI.
+ *
+ * `peer` is the LEGACY single manual peer. Since connector kinds landed, an
+ * OPNsense box (or any other WireGuard endpoint) is added as a connector, so the
+ * UI no longer edits this — it only passes an existing legacy peer through
+ * unchanged, and omits the key entirely when there is none.
+ */
 export interface WireguardConfigInput {
   enabled: boolean;
   interfaceName?: string;
   address?: string;
   listenPort?: number;
   regenerateKey?: boolean;
-  peer: {
+  peer?: {
     publicKey: string;
     allowedIps: string[];
     endpoint?: string | null;
@@ -606,7 +613,13 @@ export function deriveWireguardView(data: EdgeWireguardResponse, fallback?: Wire
   };
 }
 
-/** Client-side edit state for the tunnel config form (strings for text inputs). */
+/**
+ * Client-side edit state for the tunnel config form.
+ *
+ * `peerPublicKey` / `allowedIps` are no longer edited anywhere: they carry the
+ * LEGACY manual peer through a save untouched so an existing install keeps
+ * working. New peers are added as connectors instead.
+ */
 export interface WireguardFormState {
   enabled: boolean;
   interfaceName: string;
@@ -630,43 +643,50 @@ export function seedWireguardForm(settings: WireguardTunnelDto): WireguardFormSt
   };
 }
 
-/** True when the form is safe to submit (valid peer key, subnet, address, ports). */
+/**
+ * True when the form is safe to submit: a valid tunnel address, port, and
+ * keepalive. A peer is no longer required — the tunnel exists for connectors,
+ * and a legacy manual peer is only carried through, never authored here.
+ */
 export function isWireguardFormValid(form: WireguardFormState): boolean {
   const port = Number(form.listenPort);
   const keepalive = Number(form.keepalive);
   const portOk = Number.isInteger(port) && port >= 1 && port <= 65535;
   const keepaliveOk = Number.isInteger(keepalive) && keepalive >= 0 && keepalive <= 65535;
-  return (
-    isWireguardPublicKey(form.peerPublicKey) &&
-    form.allowedIps.length > 0 &&
-    looksLikeCidr(form.address) &&
-    portOk &&
-    keepaliveOk
-  );
+  const peerOk = form.peerPublicKey.trim().length === 0 || isWireguardPublicKey(form.peerPublicKey);
+  return peerOk && looksLikeCidr(form.address) && portOk && keepaliveOk;
 }
 
 /**
  * Build the PUT body from the form. The edge generates its keypair on first save
- * (no key yet) or on an explicit regenerate; the peer endpoint is always null
- * because OPNsense dials in.
+ * (no key yet) or on an explicit regenerate.
+ *
+ * The legacy manual peer is included ONLY when one already exists, so saving the
+ * tunnel never invents a peer and never drops one that an older install still
+ * depends on. Its endpoint stays null because the far side always dials in.
  */
 export function toWireguardConfigInput(
   form: WireguardFormState,
   settings: WireguardTunnelDto,
   regenerateKey: boolean,
 ): WireguardConfigInput {
+  const legacyPeerKey = form.peerPublicKey.trim();
   return {
     enabled: form.enabled,
     interfaceName: form.interfaceName.trim() || WIREGUARD_DEFAULTS.interfaceName,
     address: form.address.trim(),
     listenPort: Number(form.listenPort),
     regenerateKey: regenerateKey || !settings.hasPrivateKey,
-    peer: {
-      publicKey: form.peerPublicKey.trim(),
-      allowedIps: form.allowedIps,
-      endpoint: null,
-      keepalive: Number(form.keepalive),
-    },
+    ...(isWireguardPublicKey(legacyPeerKey)
+      ? {
+        peer: {
+          publicKey: legacyPeerKey,
+          allowedIps: form.allowedIps,
+          endpoint: null,
+          keepalive: Number(form.keepalive),
+        },
+      }
+      : {}),
   };
 }
 
@@ -676,23 +696,53 @@ export function toWireguardConfigInput(
 //   POST             /api/network/connectors
 //   GET/PATCH/DELETE /api/network/connectors/:id
 //   POST             /api/network/connectors/:id/rotate-token
+//   GET/POST         /api/network/connectors/:id/host-key
+//   POST             /api/network/connectors/:id/apply
+//   GET              /api/network/connectors/:id/status
 //
 // A connector DIALS OUT from inside the private network and holds the tunnel
 // open, so nothing at home needs a public IP or an inbound port. Its tunnel
 // address is allocated by PolySIEM and is never typed by an operator.
 //
+// Two management transports converge on the same state: SSH push (immediate,
+// and the STATUS source) and the token poll (self-healing fallback).
+//
 // No token, token hash, or private key appears in any of these shapes. The
 // plaintext install token exists ONLY in the create / rotate-token response and
-// is never persisted client-side beyond the dialog that reveals it.
+// is never persisted client-side beyond the dialog that reveals it. The SSH
+// private key never leaves the server at all — only its public half and the
+// exact authorized_keys line are ever sent to the UI.
 // ---------------------------------------------------------------------------
 
-export type ConnectorStatus = "pending" | "connected" | "stale" | "disabled";
+/**
+ * `configured` belongs to the MANUAL kinds only: their public key is registered,
+ * so the edge accepts them as a peer, but PolySIEM has no agent on the far side
+ * to prove liveness with. Agent connectors never report it.
+ */
+export type ConnectorStatus = "pending" | "connected" | "configured" | "stale" | "disabled";
+
+/**
+ * What kind of peer a connector is.
+ *
+ * "agent"    — PolySIEM's own connector agent on a Linux host: token, SSH key,
+ *              pushed rules, and it makes the last hop itself.
+ * "opnsense" — an OPNsense box the operator configures by hand.
+ * "peer"     — any other WireGuard endpoint; identical to "opnsense" apart from
+ *              the wording of the instructions.
+ *
+ * The manual kinds NEVER receive an install token, an SSH key, or a ruleset.
+ */
+export type ConnectorKind = "agent" | "opnsense" | "peer";
 
 /** Sanitized connector row. Mirrors the API DTO exactly — never carries secrets. */
 export interface ConnectorDto {
   id: string;
   integrationId: string;
   name: string;
+  /** Absent on responses issued before connector kinds existed; read as "agent". */
+  kind?: ConnectorKind;
+  /** API convenience flag for "opnsense" | "peer". Derived locally when absent. */
+  isManual?: boolean;
   /** Stable public identifier (e.g. "cx_…"), shown to the operator and copyable. */
   connectorId: string;
   /** Allocated by PolySIEM at creation; read-only in every UI surface. */
@@ -700,14 +750,39 @@ export interface ConnectorDto {
   /** The connector's OWN WireGuard public key, posted at enroll. Safe to show. */
   publicKey: string | null;
   status: ConnectorStatus;
+  /** Operator toggle, distinct from the derived status. */
+  disabled?: boolean;
+  enrolled?: boolean;
   enrolledAt: string | null;
   lastSeenAt: string | null;
   lastHandshakeAt: string | null;
   osInfo: string | null;
+  hostname?: string | null;
   agentVersion: string | null;
   notes: string | null;
+  /** Routes currently pinned to this connector, enabled or not. */
+  ruleCount?: number;
   createdAt: string;
   updatedAt: string;
+
+  // --- SSH management (phase 2). PolySIEM owns this keypair; only the public
+  // half and the authorized_keys line are ever exposed. -----------------------
+  /** Where PolySIEM reaches the connector inbound. Null until an operator sets it. */
+  sshHost: string | null;
+  sshPort: number;
+  /** Service account the installer creates; defaults to `polysiem-connector`. */
+  sshUsername: string;
+  /** PolySIEM's ed25519 public key for THIS connector. Safe to show and copy. */
+  sshPublicKey: string | null;
+  /** The exact `restrict,command="sudo -n …"` line the installer writes. */
+  sshAuthorizedKey: string | null;
+  /** Pinned host key. Null until the operator enrolls a scanned fingerprint. */
+  sshHostKeyFingerprint: string | null;
+  sshProvisionedAt: string | null;
+  /** True when the encrypted private half exists server-side. Never the key itself. */
+  hasSshCredentials: boolean;
+  /** API convenience: every precondition for an SSH push is satisfied. */
+  sshReady?: boolean;
 }
 
 /** One-time reveal. Returned by create and rotate-token; shown once, never stored. */
@@ -716,20 +791,49 @@ export interface ConnectorInstallReveal {
   installCommand: string;
 }
 
-/** POST /api/network/connectors response payload. */
-export interface CreateConnectorResult extends ConnectorInstallReveal {
+/**
+ * POST /api/network/connectors response payload.
+ *
+ * The install fields exist for the `agent` kind ONLY. A manual connector is
+ * configured entirely from `peerConfig`, so every install field comes back null
+ * and the UI must never show a token or a command for one.
+ */
+export interface CreateConnectorResult {
   connector: ConnectorDto;
+  installToken?: string | null;
+  installCommand?: string | null;
+  installCommandInsecure?: string | null;
+  installUrl?: string | null;
+  /** Paste-ready far-side block. Optional here so an older API still renders. */
+  peerConfig?: ConnectorPeerConfigDto | null;
+}
+
+/** Reads the one-time reveal out of a create result, or null for manual kinds. */
+export function connectorInstallReveal(result: CreateConnectorResult): ConnectorInstallReveal | null {
+  const installToken = result.installToken?.trim();
+  const installCommand = result.installCommand?.trim();
+  return installToken && installCommand ? { installToken, installCommand } : null;
 }
 
 export interface CreateConnectorInput {
   name: string;
   notes?: string;
+  /** Always sent. "agent" reproduces the original install flow exactly. */
+  kind: ConnectorKind;
+  /** Manual kinds only, and only when the operator already has the far-side key. */
+  publicKey?: string;
 }
 
 export interface UpdateConnectorInput {
   name?: string;
   notes?: string | null;
   disabled?: boolean;
+  /** SSH endpoint edits. Sent alone by the SSH management form. */
+  sshHost?: string | null;
+  sshPort?: number;
+  sshUsername?: string;
+  /** The far side's WireGuard public key, pasted back for a manual connector. */
+  publicKey?: string;
 }
 
 export const CONNECTORS_QUERY_KEY = "edge-connectors" as const;
@@ -751,12 +855,120 @@ export function connectorRotateTokenUrl(id: string): string {
   return `${connectorUrl(id)}/rotate-token`;
 }
 
+/** GET scans the presented host keys; POST `{ fingerprint }` pins one. */
+export function connectorHostKeyUrl(id: string): string {
+  return `${connectorUrl(id)}/host-key`;
+}
+
+/** POST — pushes the desired ruleset over SSH right now. */
+export function connectorApplyUrl(id: string): string {
+  return `${connectorUrl(id)}/apply`;
+}
+
+/** GET — live STATUS read over SSH. Each call opens a real session. */
+export function connectorStatusUrl(id: string): string {
+  return `${connectorUrl(id)}/status`;
+}
+
+/**
+ * GET — the paste-ready far-side block for one connector. Optional by design:
+ * when the endpoint is unavailable the UI derives the same values locally from
+ * the edge server it is already showing (see `resolveConnectorPeerBlock`).
+ */
+export function connectorPeerConfigUrl(id: string): string {
+  return `${connectorUrl(id)}/peer-config`;
+}
+
+export function connectorPeerConfigQueryKey(id: string) {
+  return [CONNECTORS_QUERY_KEY, "peer-config", id] as const;
+}
+
+export function connectorStatusQueryKey(id: string) {
+  return [CONNECTORS_QUERY_KEY, "status", id] as const;
+}
+
+export function connectorHostKeyQueryKey(id: string) {
+  return [CONNECTORS_QUERY_KEY, "host-key", id] as const;
+}
+
 /** Mirrors the name rule in `createConnectorSchema` for inline form feedback. */
 export const CONNECTOR_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.-]*$/;
 
 export function isValidConnectorName(value: string): boolean {
   const trimmed = value.trim();
   return trimmed.length > 0 && trimmed.length <= 64 && CONNECTOR_NAME_PATTERN.test(trimmed);
+}
+
+// ---------------------------------------------------------------------------
+// Connector kinds. OPNsense is not a separate concept any more: it is one of the
+// kinds you pick when adding a connector. Everything is a connector.
+// ---------------------------------------------------------------------------
+
+/** The add-connector picker, in display order. `agent` stays the default. */
+export const CONNECTOR_KIND_CHOICES: ReadonlyArray<{ value: ConnectorKind; title: string; detail: string }> = [
+  {
+    value: "agent",
+    title: "PolySIEM agent (Linux host)",
+    detail: "PolySIEM installs its agent, holds the keys, and programs the last hop for you.",
+  },
+  {
+    value: "opnsense",
+    title: "OPNsense",
+    detail: "Your OPNsense box dials in as a WireGuard peer; you paste the tunnel settings there yourself.",
+  },
+  {
+    value: "peer",
+    title: "Other WireGuard peer",
+    detail: "Any other WireGuard endpoint — a router, a firewall, another server — configured by hand.",
+  },
+];
+
+/**
+ * Reads a connector's kind. A row with no `kind` predates connector kinds and is
+ * an agent; an unrecognized value degrades to the least-privileged manual kind
+ * rather than being treated as a managed agent.
+ */
+export function connectorKindOf(connector: Pick<ConnectorDto, "kind">): ConnectorKind {
+  const kind = connector.kind;
+  if (kind === undefined || kind === null) return "agent";
+  return kind === "agent" || kind === "opnsense" || kind === "peer" ? kind : "peer";
+}
+
+/** True for the hand-configured kinds: no token, no SSH key, no pushed ruleset. */
+export function isManualConnector(connector: Pick<ConnectorDto, "kind" | "isManual">): boolean {
+  if (typeof connector.isManual === "boolean") return connector.isManual;
+  return connectorKindOf(connector) !== "agent";
+}
+
+export interface ConnectorKindPresentation {
+  kind: ConnectorKind;
+  /** Short badge text, e.g. "OPNsense". */
+  label: string;
+  /** Full title used by the picker, e.g. "PolySIEM agent (Linux host)". */
+  title: string;
+  detail: string;
+  /** False when PolySIEM cannot program the far side. */
+  managed: boolean;
+  /** How the far side is named in prose, e.g. "your OPNsense box". */
+  farSide: string;
+}
+
+export function connectorKindPresentation(kind: ConnectorKind): ConnectorKindPresentation {
+  const choice = CONNECTOR_KIND_CHOICES.find((entry) => entry.value === kind) ?? CONNECTOR_KIND_CHOICES[0];
+  switch (kind) {
+    case "opnsense":
+      return { kind, label: "OPNsense", title: choice.title, detail: choice.detail, managed: false, farSide: "your OPNsense box" };
+    case "peer":
+      return { kind, label: "WireGuard peer", title: choice.title, detail: choice.detail, managed: false, farSide: "the far side" };
+    case "agent":
+    default:
+      return { kind: "agent", label: "PolySIEM agent", title: choice.title, detail: choice.detail, managed: true, farSide: "the connector host" };
+  }
+}
+
+/** Badge text for a connector row / picker option, e.g. "OPNsense". */
+export function connectorKindLabel(connector: Pick<ConnectorDto, "kind">): string {
+  return connectorKindPresentation(connectorKindOf(connector)).label;
 }
 
 export interface ConnectorStatusPresentation {
@@ -768,32 +980,60 @@ export interface ConnectorStatusPresentation {
 }
 
 export function connectorStatusPresentation(
-  connector: Pick<ConnectorDto, "status">,
+  connector: Pick<ConnectorDto, "status"> & Partial<Pick<ConnectorDto, "kind" | "isManual">>,
 ): ConnectorStatusPresentation {
+  const manual = isManualConnector({ kind: connector.kind, isManual: connector.isManual });
   switch (connector.status) {
     case "connected":
       return { label: "Connected", tone: "success", variant: "secondary", hint: "The tunnel is up and the agent is checking in." };
+    case "configured":
+      return {
+        label: "Configured",
+        tone: "success",
+        variant: "secondary",
+        hint: "Its public key is registered — the edge accepts the tunnel once you apply changes.",
+      };
     case "stale":
       return { label: "Not checking in", tone: "warning", variant: "outline", hint: "Enrolled, but PolySIEM has not heard from the agent recently." };
     case "disabled":
       return { label: "Disabled", tone: "muted", variant: "outline", hint: "Kept for reference; its tunnel peer is dropped on the next apply." };
     case "pending":
     default:
-      return { label: "Awaiting install", tone: "muted", variant: "outline", hint: "Created, but the install command has not been run on the machine yet." };
+      return manual
+        ? {
+          label: "Awaiting key",
+          tone: "muted",
+          variant: "outline",
+          hint: "Created, but the far side's public key has not been pasted back yet.",
+        }
+        : {
+          label: "Awaiting install",
+          tone: "muted",
+          variant: "outline",
+          hint: "Created, but the install command has not been run on the machine yet.",
+        };
   }
 }
 
-/** True once the agent has posted its public key and taken ownership of the tunnel. */
+/**
+ * True once the connector can actually be a tunnel peer.
+ *
+ * An agent connector proves this by enrolling; a manual one has nothing to
+ * enroll, so its public key IS the enrollment.
+ */
 export function isConnectorEnrolled(
-  connector: Pick<ConnectorDto, "status" | "enrolledAt" | "publicKey">,
+  connector: Pick<ConnectorDto, "status" | "enrolledAt" | "publicKey"> & Partial<Pick<ConnectorDto, "kind" | "isManual">>,
 ): boolean {
+  if (isManualConnector({ kind: connector.kind, isManual: connector.isManual })) {
+    return Boolean(connector.publicKey);
+  }
   if (connector.status === "connected" || connector.status === "stale") return true;
   return Boolean(connector.enrolledAt) && Boolean(connector.publicKey);
 }
 
-/** Only enrolled, non-disabled connectors may carry a route. */
+/** Only non-disabled connectors that can carry a tunnel may carry a route. */
 export function isConnectorSelectable(
-  connector: Pick<ConnectorDto, "status" | "enrolledAt" | "publicKey">,
+  connector: Pick<ConnectorDto, "status" | "enrolledAt" | "publicKey"> & Partial<Pick<ConnectorDto, "kind" | "isManual">>,
 ): boolean {
   return connector.status !== "disabled" && isConnectorEnrolled(connector);
 }
@@ -811,9 +1051,13 @@ export function connectorLastContactAt(
 }
 
 /** Shown in place of a relative timestamp when the connector has never reported. */
-export function connectorContactFallback(connector: Pick<ConnectorDto, "status">): string {
-  if (connector.status === "pending") return "Not installed yet";
+export function connectorContactFallback(
+  connector: Pick<ConnectorDto, "status"> & Partial<Pick<ConnectorDto, "kind" | "isManual">>,
+): string {
+  const manual = isManualConnector({ kind: connector.kind, isManual: connector.isManual });
+  if (connector.status === "pending") return manual ? "Waiting for its public key" : "Not installed yet";
   if (connector.status === "disabled") return "Disabled";
+  if (connector.status === "configured") return "No handshake reported";
   return "No handshake yet";
 }
 
@@ -830,12 +1074,18 @@ export function connectorAgentSummary(
 
 export function connectorSummary(connectors: readonly ConnectorDto[]) {
   const count = (status: ConnectorStatus) => connectors.filter((connector) => connector.status === status).length;
+  const connected = count("connected");
+  const configured = count("configured");
   return {
     total: connectors.length,
-    connected: count("connected"),
+    connected,
+    configured,
+    /** Connected agents plus configured manual peers — what the header badge counts. */
+    ready: connected + configured,
     pending: count("pending"),
     stale: count("stale"),
     disabled: count("disabled"),
+    manual: connectors.filter(isManualConnector).length,
     selectable: connectors.filter(isConnectorSelectable).length,
   };
 }
@@ -893,6 +1143,424 @@ export function connectorInstallProgress(input: {
     state: "waiting",
     label: "Waiting for the connector",
     detail: "Run the command on the machine — this panel updates by itself.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Manual connectors (OPNsense / other WireGuard peers)
+//
+// There is no agent to install and no token to mint. PolySIEM allocates the
+// tunnel address, shows the paste-ready block for the far side, and waits for
+// the operator to paste that side's public key back. The far side ALWAYS
+// initiates — the edge only listens.
+// ---------------------------------------------------------------------------
+
+export type ConnectorPeerState = "pending" | "configured" | "disabled";
+
+export interface ConnectorPeerProgress {
+  state: ConnectorPeerState;
+  label: string;
+  detail: string;
+}
+
+/** Live progress for the manual flow: key pasted back yet, and is it enabled. */
+export function connectorPeerProgress(
+  connector: Pick<ConnectorDto, "status" | "publicKey"> & Partial<Pick<ConnectorDto, "kind" | "isManual">>,
+): ConnectorPeerProgress {
+  const farSide = connectorKindPresentation(connectorKindOf(connector)).farSide;
+  if (connector.status === "disabled") {
+    return {
+      state: "disabled",
+      label: "Disabled",
+      detail: "Re-enable this connector before configuring the far side; the edge drops its peer while it is off.",
+    };
+  }
+  if (connector.publicKey) {
+    return {
+      state: "configured",
+      label: "Public key registered",
+      detail: `The edge trusts ${farSide} as a peer. Use Apply on this server to push it, then the tunnel comes up when ${farSide} dials in.`,
+    };
+  }
+  return {
+    state: "pending",
+    label: "Waiting for the far side's public key",
+    detail: `Generate the tunnel keypair on ${farSide}, then paste its PUBLIC key below. PolySIEM never asks for a private key.`,
+  };
+}
+
+/** Keepalive PolySIEM recommends everywhere a peer dials in. */
+export const CONNECTOR_PEER_KEEPALIVE = 25;
+
+/**
+ * The far-side block, as served by the API for one connector. Every field is
+ * optional on purpose: the UI can derive the same values from the edge server it
+ * is already rendering, so a missing endpoint never blocks the flow.
+ */
+export interface ConnectorPeerConfigDto {
+  kind?: ConnectorKind;
+  connectorId?: string;
+  name?: string;
+  /** "23.94.251.183:51820" — what the far side dials. */
+  edgeEndpoint?: string | null;
+  edgePublicKey?: string | null;
+  /** The edge's own tunnel address in CIDR form, e.g. "10.9.9.1/24". */
+  edgeAddress?: string | null;
+  /** AllowedIPs the FAR side sets for the edge peer — the edge tunnel /32. */
+  allowedIps?: string[] | null;
+  tunnelAddress?: string | null;
+  /** The allocated address with the tunnel prefix, e.g. "10.9.9.4/24". */
+  tunnelAddressCidr?: string | null;
+  tunnelCidr?: string | null;
+  interfaceName?: string | null;
+  persistentKeepalive?: number | null;
+  publicKey?: string | null;
+}
+
+/** Fully resolved values for the paste-ready block. Nothing here is secret. */
+export interface ConnectorPeerBlock {
+  edgeEndpoint: string;
+  edgePublicKey: string | null;
+  edgeAddress: string;
+  allowedIps: string[];
+  tunnelAddress: string;
+  tunnelAddressCidr: string;
+  interfaceName: string;
+  persistentKeepalive: number;
+}
+
+/** Host part of the edge's SSH base URL, used when no public IP was observed. */
+function edgeHostFallback(baseUrl: string): string {
+  return sshEndpoint(baseUrl).replace(/:\d+$/, "");
+}
+
+/** Where the far side dials: the observed public IP, else the SSH host. */
+function edgeTunnelHost(server: EdgeNatServer): string {
+  const settings = server.settings ?? {};
+  return settings.syncedSnapshot?.publicIp ?? settings.publicIp ?? edgeHostFallback(server.baseUrl);
+}
+
+/** Splits the edge's own tunnel address into its host half and its prefix. */
+function edgeTunnelAddressParts(tunnel: WireguardTunnelDto | undefined): {
+  address: string;
+  host: string;
+  prefix: string;
+} {
+  const address = tunnel?.address || WIREGUARD_DEFAULTS.address;
+  const [host, prefix = "24"] = address.split("/");
+  return { address, host, prefix };
+}
+
+/**
+ * Derive the far-side block from data the desktop already has: the edge's
+ * WireGuard settings and the connector's allocated tunnel address. This is the
+ * graceful fallback when the API has not supplied a block.
+ */
+export function deriveConnectorPeerBlock(input: {
+  server: EdgeNatServer;
+  connector: Pick<ConnectorDto, "tunnelAddress">;
+}): ConnectorPeerBlock {
+  const tunnel = input.server.settings?.wireguard;
+  const { address, host: edgeHost, prefix } = edgeTunnelAddressParts(tunnel);
+  const port = tunnel?.listenPort ?? WIREGUARD_DEFAULTS.listenPort;
+  return {
+    edgeEndpoint: `${edgeTunnelHost(input.server)}:${port}`,
+    edgePublicKey: tunnel?.publicKey ?? null,
+    edgeAddress: address,
+    allowedIps: [`${edgeHost}/32`],
+    tunnelAddress: input.connector.tunnelAddress,
+    tunnelAddressCidr: `${input.connector.tunnelAddress}/${prefix}`,
+    interfaceName: tunnel?.interfaceName || WIREGUARD_DEFAULTS.interfaceName,
+    persistentKeepalive: tunnel?.peer?.persistentKeepalive ?? CONNECTOR_PEER_KEEPALIVE,
+  };
+}
+
+/** A trimmed server-supplied string, or the locally derived value. */
+function preferRemoteText(remote: string | null | undefined, derived: string): string {
+  return remote?.trim() || derived;
+}
+
+/** Non-empty entries only; an omitted or all-blank list falls back to derived. */
+function preferRemoteAllowedIps(remote: string[] | null | undefined, derived: string[]): string[] {
+  const entries = remote?.filter((entry) => typeof entry === "string" && entry.length > 0) ?? [];
+  return entries.length > 0 ? entries : derived;
+}
+
+/** Server-supplied values win; anything it omits is filled in locally. */
+export function resolveConnectorPeerBlock(input: {
+  server: EdgeNatServer;
+  connector: Pick<ConnectorDto, "tunnelAddress">;
+  peerConfig?: ConnectorPeerConfigDto | null;
+}): ConnectorPeerBlock {
+  const derived = deriveConnectorPeerBlock(input);
+  const remote = input.peerConfig;
+  if (!remote) return derived;
+  return {
+    edgeEndpoint: preferRemoteText(remote.edgeEndpoint, derived.edgeEndpoint),
+    edgePublicKey: remote.edgePublicKey?.trim() || derived.edgePublicKey,
+    edgeAddress: preferRemoteText(remote.edgeAddress, derived.edgeAddress),
+    allowedIps: preferRemoteAllowedIps(remote.allowedIps, derived.allowedIps),
+    tunnelAddress: preferRemoteText(remote.tunnelAddress, derived.tunnelAddress),
+    tunnelAddressCidr: preferRemoteText(remote.tunnelAddressCidr, derived.tunnelAddressCidr),
+    interfaceName: preferRemoteText(remote.interfaceName, derived.interfaceName),
+    persistentKeepalive: typeof remote.persistentKeepalive === "number"
+      ? remote.persistentKeepalive
+      : derived.persistentKeepalive,
+  };
+}
+
+/**
+ * Copy-all snippet for the far side. The private key is a placeholder because
+ * that side generates and keeps its own — PolySIEM never sees it.
+ */
+export function buildConnectorPeerSnippet(
+  block: ConnectorPeerBlock,
+  options: { kind?: ConnectorKind; name?: string } = {},
+): string {
+  const kind = options.kind ?? "peer";
+  const heading = kind === "opnsense"
+    ? "# OPNsense: VPN → WireGuard → Instances (local) and Peers (the edge)."
+    : "# The far side of the tunnel. It dials the edge; the edge only listens.";
+  return [
+    "[Interface]",
+    heading,
+    options.name ? `# PolySIEM connector: ${options.name}` : null,
+    `Address = ${block.tunnelAddressCidr}`,
+    "PrivateKey = <generated on this device — it never leaves it>",
+    "",
+    "[Peer]",
+    "# PolySIEM edge (listener)",
+    `PublicKey = ${block.edgePublicKey ?? "<generate the edge key first>"}`,
+    `Endpoint = ${block.edgeEndpoint}`,
+    `AllowedIPs = ${block.allowedIps.join(", ")}`,
+    `PersistentKeepalive = ${block.persistentKeepalive}`,
+  ].filter((line): line is string => line !== null).join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// SSH management — PolySIEM manages BOTH ends the same way. The edge already
+// has a `polysiem-edge` account whose key can only run the edge agent; a
+// connector gets the identical treatment through `polysiem-connector`.
+//
+// Key custody, stated once so every surface can repeat it:
+//   · PolySIEM generates the SSH keypair, one per connector. The private half
+//     never leaves the server; the UI only ever sees the public half.
+//   · The installed key is a FORCED COMMAND — it can run the connector agent
+//     and nothing else. It is not a shell.
+//   · The connector's WireGuard private key is generated ON that machine and
+//     never travels anywhere. PolySIEM only reads its public half.
+// ---------------------------------------------------------------------------
+
+export const CONNECTOR_SSH_DEFAULT_USERNAME = "polysiem-connector";
+export const CONNECTOR_SSH_DEFAULT_PORT = 22;
+
+/** Short, quotable trust facts. Rendered on desktop; safe to reuse anywhere. */
+export const CONNECTOR_SSH_TRUST_FACTS: ReadonlyArray<{ title: string; detail: string }> = [
+  {
+    title: "The key can only run the connector agent",
+    detail: "It is installed as a forced command, so it cannot open a shell, copy files, or reach anything else on the machine.",
+  },
+  {
+    title: "The WireGuard private key never leaves the connector",
+    detail: "The agent generates it on that machine and reports only the public half. PolySIEM never sends or stores a tunnel private key.",
+  },
+];
+
+export interface ObservedConnectorHostKey {
+  /** The edge scanner names this `algorithm`; `type` is accepted as a synonym. */
+  algorithm?: string;
+  type?: string;
+  fingerprint: string;
+}
+
+/** GET /api/network/connectors/:id/host-key — mirrors the edge scan response. */
+export interface ConnectorHostKeyScan {
+  host: string;
+  port: number;
+  keys: ObservedConnectorHostKey[];
+  enrolledFingerprint: string | null;
+  warning?: string;
+}
+
+/** POST /api/network/connectors/:id/host-key response. */
+export interface ConnectorHostKeyEnrollResult {
+  enrolled?: boolean;
+  fingerprint?: string;
+  detail?: string;
+}
+
+/** GET /api/network/connectors/:id/status — parsed STATUS from the agent. */
+export interface ConnectorSshStatus {
+  hostname: string | null;
+  kernel: string | null;
+  agentVersion: string | null;
+  /** The connector's OWN WireGuard public key, read back from the machine. */
+  wgPublicKey: string | null;
+  wgState: string | null;
+  wgAddress: string | null;
+  /** ISO string (or epoch seconds, tolerated) of the freshest handshake. */
+  latestHandshakeAt: string | number | null;
+  peers: number | null;
+  ipForward: boolean | null;
+  appliedRevision: number | string | null;
+  appliedHash: string | null;
+  /** True when the live iptables state no longer matches what PolySIEM applied. */
+  drift: boolean;
+  routeCount: number | null;
+  addresses: string[];
+}
+
+/** POST /api/network/connectors/:id/apply response. */
+export interface ConnectorApplyResult {
+  applied?: boolean;
+  revision?: number | string | null;
+  rulesetHash?: string | null;
+  routeCount?: number | null;
+  detail?: string;
+}
+
+export function hostKeyAlgorithmLabel(key: ObservedConnectorHostKey): string {
+  return (key.algorithm ?? key.type ?? "host key").toUpperCase();
+}
+
+/** "10.0.3.12:22", or null while no SSH host has been set. */
+export function connectorSshEndpoint(
+  connector: Pick<ConnectorDto, "sshHost" | "sshPort">,
+): string | null {
+  const host = connector.sshHost?.trim();
+  if (!host) return null;
+  const port = connector.sshPort || CONNECTOR_SSH_DEFAULT_PORT;
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]:${port}` : `${host}:${port}`;
+}
+
+export function connectorSshUsername(connector: Pick<ConnectorDto, "sshUsername">): string {
+  return connector.sshUsername?.trim() || CONNECTOR_SSH_DEFAULT_USERNAME;
+}
+
+/**
+ * How far the SSH transport has been set up:
+ * "unconfigured" — no address yet, so only the token poll can reach it;
+ * "untrusted"    — an address, but no pinned host key, so PolySIEM refuses to connect;
+ * "ready"        — PolySIEM can push config and read STATUS on demand.
+ */
+export type ConnectorSshReadiness = "unconfigured" | "untrusted" | "ready";
+
+export interface ConnectorSshPresentation {
+  readiness: ConnectorSshReadiness;
+  endpoint: string | null;
+  username: string;
+  label: string;
+  detail: string;
+  tone: "success" | "warning" | "muted";
+  /** True once a push or a STATUS read can actually be attempted. */
+  canManage: boolean;
+}
+
+export function connectorSshPresentation(
+  connector: Pick<ConnectorDto, "sshHost" | "sshPort" | "sshUsername" | "sshHostKeyFingerprint" | "hasSshCredentials">,
+): ConnectorSshPresentation {
+  const endpoint = connectorSshEndpoint(connector);
+  const username = connectorSshUsername(connector);
+  if (!endpoint) {
+    return {
+      readiness: "unconfigured", endpoint, username, tone: "muted", canManage: false,
+      label: "Not set up",
+      detail: "Add the connector's address to let PolySIEM push config and read status directly. Until then it self-heals on its poll.",
+    };
+  }
+  if (connector.hasSshCredentials === false) {
+    return {
+      readiness: "unconfigured", endpoint, username, tone: "warning", canManage: false,
+      label: "No key issued",
+      detail: "PolySIEM holds no SSH key for this connector. Recreate it so a fresh key can be issued and installed.",
+    };
+  }
+  if (!connector.sshHostKeyFingerprint) {
+    return {
+      readiness: "untrusted", endpoint, username, tone: "warning", canManage: false,
+      label: "Host key not trusted",
+      detail: "Scan the connector and confirm its fingerprint. PolySIEM never accepts an unpinned host key.",
+    };
+  }
+  return {
+    readiness: "ready", endpoint, username, tone: "success", canManage: true,
+    label: "Managed over SSH",
+    detail: "PolySIEM pushes config immediately and reads live status from the agent.",
+  };
+}
+
+/** WireGuard interface state as reported by the agent's STATUS block. */
+export function connectorWgStatePresentation(state: string | null | undefined): {
+  label: string;
+  tone: "success" | "warning" | "muted";
+} {
+  switch ((state ?? "").toLowerCase()) {
+    case "up": return { label: "Up", tone: "success" };
+    case "down": return { label: "Down", tone: "warning" };
+    case "absent": return { label: "Not created", tone: "warning" };
+    default: return { label: "Unknown", tone: "muted" };
+  }
+}
+
+/**
+ * Normalizes the handshake stamp: the agent reports epoch seconds, the API may
+ * already have turned it into an ISO string, and 0 / null both mean "never".
+ */
+export function connectorHandshakeAt(status: Pick<ConnectorSshStatus, "latestHandshakeAt">): string | null {
+  const value = status.latestHandshakeAt;
+  if (value === null || value === undefined || value === 0 || value === "0") return null;
+  if (typeof value === "number") return new Date(value * 1000).toISOString();
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? value : null;
+}
+
+/** Hostname, IPv4/IPv6 literal, or bracketed IPv6 — deliberately permissive. */
+export function isValidSshHost(value: string): boolean {
+  const host = value.trim();
+  if (host.length === 0 || host.length > 253) return false;
+  if (/\s|\/|@/.test(host)) return false;
+  return /^\[[0-9A-Fa-f:.]+\]$/.test(host) || /^[A-Za-z0-9._:-]+$/.test(host);
+}
+
+export function isValidSshPort(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 65_535;
+}
+
+/**
+ * Step ① of the two-ended install: what still has to happen on the EDGE box.
+ * The edge integration already generates its own restricted key and enrollment
+ * flow, so this only reports the state — it never mints anything new.
+ */
+export interface EdgeInstallStep {
+  /** True once the edge's host key is pinned, i.e. PolySIEM manages that end. */
+  satisfied: boolean;
+  /** True when the last SSH check actually succeeded. */
+  verified: boolean;
+  publicKey: string | null;
+  keyFingerprint: string | null;
+  hostKeyFingerprint: string | null;
+  title: string;
+  detail: string;
+}
+
+export function edgeInstallStep(server: EdgeNatServer): EdgeInstallStep {
+  const settings = server.settings ?? {};
+  const satisfied = server.hostKeyEnrolled === true || settings.hostKeyVerified === true;
+  const verified = satisfied && edgeServerState(server) === "online";
+  return {
+    satisfied,
+    verified,
+    publicKey: settings.publicKey ?? null,
+    keyFingerprint: settings.publicKeyFingerprint ?? null,
+    hostKeyFingerprint: settings.hostKeyFingerprint ?? null,
+    title: satisfied
+      ? verified ? `PolySIEM already manages ${server.name}` : `${server.name} is enrolled`
+      : `Authorize PolySIEM on ${server.name}`,
+    detail: satisfied
+      ? verified
+        ? "Its restricted key is installed and the host key is pinned — nothing to do on this end."
+        : "The host key is pinned. Run Verify SSH on the server card if you want to confirm the agent answers."
+      : "This edge server has not been enrolled yet. Install its restricted key and pin its host key first — the connector needs the edge side working.",
   };
 }
 
@@ -968,4 +1636,181 @@ export function edgeTunnelEndpoint(server: EdgeNatServer): { host: string | null
   const host = settings.syncedSnapshot?.publicIp ?? settings.publicIp ?? null;
   const port = settings.wireguard?.listenPort ?? WIREGUARD_DEFAULTS.listenPort;
   return { host, port, label: host ? `${host}:${port}/udp` : `the edge public IP on UDP ${port}` };
+}
+
+/**
+ * A connector-mode rule may target a MANUAL connector, but PolySIEM stops at the
+ * tunnel: it DNATs the public port to that peer's tunnel address and cannot
+ * program the far side. Returns null for agent connectors, which PolySIEM does
+ * program end to end.
+ */
+export function connectorRouteWarning(
+  connector: Pick<ConnectorDto, "name" | "tunnelAddress"> & Partial<Pick<ConnectorDto, "kind" | "isManual">>,
+  rule?: { publicPort?: number | string | null },
+): { title: string; detail: string } | null {
+  if (!isManualConnector({ kind: connector.kind, isManual: connector.isManual })) return null;
+  const kind = connectorKindPresentation(connectorKindOf(connector));
+  const port = rule?.publicPort ? String(rule.publicPort) : "the same port";
+  return {
+    title: `PolySIEM cannot program ${kind.farSide}`,
+    detail: kind.kind === "opnsense"
+      ? `The edge forwards this port to ${connector.tunnelAddress} over the tunnel. Finish the path with a port forward on ${connector.name} from its WireGuard interface on ${port} to the service you are publishing.`
+      : `The edge forwards this port to ${connector.tunnelAddress} over the tunnel. ${connector.name} must forward ${port} onward to the service itself — PolySIEM only manages the edge end.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Config dropdowns
+//
+// Every field with knowable options is a select with a "Custom…" escape hatch,
+// and a stored value that is not in the list is still shown as the selection —
+// no configuration ever becomes unreachable through the UI.
+// ---------------------------------------------------------------------------
+
+export interface ConfigChoice {
+  value: string;
+  label: string;
+  /** Short right-aligned annotation, e.g. "default" or "recommended". */
+  hint?: string;
+}
+
+/**
+ * Guarantees the stored value is selectable. An unknown value (someone's older
+ * config, or a field PolySIEM has never suggested) is appended and marked, so
+ * opening a picker can never silently rewrite it.
+ */
+export function withCurrentChoice(
+  choices: readonly ConfigChoice[],
+  value: string | null | undefined,
+): ConfigChoice[] {
+  const current = (value ?? "").trim();
+  if (!current || choices.some((choice) => choice.value === current)) return [...choices];
+  return [...choices, { value: current, label: current, hint: "current" }];
+}
+
+export const WIREGUARD_INTERFACE_CHOICES: readonly ConfigChoice[] = [
+  { value: "wg0", label: "wg0", hint: "default" },
+  { value: "wg1", label: "wg1" },
+  { value: "wg2", label: "wg2" },
+];
+
+export const WIREGUARD_LISTEN_PORT_CHOICES: readonly ConfigChoice[] = [
+  { value: "51820", label: "51820", hint: "default" },
+  { value: "51821", label: "51821" },
+  { value: "51822", label: "51822" },
+];
+
+export const WIREGUARD_ADDRESS_CHOICES: readonly ConfigChoice[] = [
+  { value: "10.9.9.1/24", label: "10.9.9.1/24", hint: "default" },
+  { value: "10.10.10.1/24", label: "10.10.10.1/24" },
+  { value: "172.16.9.1/24", label: "172.16.9.1/24" },
+  { value: "192.168.9.1/24", label: "192.168.9.1/24" },
+];
+
+export const WIREGUARD_KEEPALIVE_CHOICES: readonly ConfigChoice[] = [
+  { value: "0", label: "Off (0)" },
+  { value: "15", label: "15 seconds" },
+  { value: "25", label: "25 seconds", hint: "recommended" },
+  { value: "60", label: "60 seconds" },
+];
+
+export const CONNECTOR_SSH_PORT_CHOICES: readonly ConfigChoice[] = [
+  { value: String(CONNECTOR_SSH_DEFAULT_PORT), label: String(CONNECTOR_SSH_DEFAULT_PORT), hint: "default" },
+  { value: "2222", label: "2222" },
+];
+
+export const CONNECTOR_SSH_USERNAME_CHOICES: readonly ConfigChoice[] = [
+  { value: CONNECTOR_SSH_DEFAULT_USERNAME, label: CONNECTOR_SSH_DEFAULT_USERNAME, hint: "default" },
+];
+
+/** Mirrors `edgeInterfaceSchema` server-side, for inline form feedback. */
+export function isValidEdgeInterfaceName(value: string): boolean {
+  return /^[A-Za-z0-9_.:-]{1,15}$/.test(value.trim());
+}
+
+/** Mirrors the connector SSH service-account rule server-side. */
+export function isValidConnectorSshUsername(value: string): boolean {
+  return /^[a-z_][a-z0-9_-]{0,31}$/.test(value.trim());
+}
+
+/** One real interface observed on the edge host. */
+export interface EdgeInterfaceOption {
+  name: string;
+  /** First address seen on it; "" when the snapshot reported none. */
+  ip: string;
+}
+
+// "2: eth0    inet 23.94.251.183/26 brd … scope global eth0" — the `ip -o -4 addr`
+// shape the edge agent captures. The leading index and the prefix are optional so
+// a trimmed or hand-written line still parses.
+const IP_ADDR_LINE = /^\s*(?:\d+:\s*)?([A-Za-z0-9_.:@-]+)\s+inet6?\s+([0-9A-Fa-f.:]+)(?:\/\d+)?/;
+
+/**
+ * Parse a synced snapshot's `addresses` into interface options.
+ *
+ * Deduped by interface name (the first address wins), loopback excluded — an
+ * interface you cannot publish traffic on has no business in the picker.
+ * Pure and dependency-free so both the desktop and mobile pickers share it.
+ */
+export function parseEdgeInterfaceOptions(
+  addresses: readonly string[] | null | undefined,
+): EdgeInterfaceOption[] {
+  const seen = new Set<string>();
+  const options: EdgeInterfaceOption[] = [];
+  for (const line of addresses ?? []) {
+    if (typeof line !== "string") continue;
+    const match = IP_ADDR_LINE.exec(line);
+    if (!match) continue;
+    // A veth peer shows as "eth0@if12"; the usable name is the half before "@".
+    const name = match[1].split("@")[0];
+    const ip = match[2];
+    if (!name || name === "lo" || ip.startsWith("127.") || ip === "::1") continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    options.push({ name, ip });
+  }
+  return options;
+}
+
+/** Snapshot interfaces plus the configured WireGuard interface, if it is missing. */
+export function edgeInterfaceOptions(server: Pick<EdgeNatServer, "settings">): EdgeInterfaceOption[] {
+  const settings = server.settings ?? {};
+  const options = parseEdgeInterfaceOptions(settings.syncedSnapshot?.addresses);
+  const tunnel = settings.wireguard;
+  const tunnelName = tunnel?.interfaceName?.trim();
+  if (tunnelName && !options.some((option) => option.name === tunnelName)) {
+    options.push({ name: tunnelName, ip: (tunnel?.address ?? "").split("/")[0] ?? "" });
+  }
+  return options;
+}
+
+/** "eth0 — 23.94.251.183", or just the name when no address is known. */
+export function edgeInterfaceOptionLabel(option: EdgeInterfaceOption): string {
+  return option.ip ? `${option.name} — ${option.ip}` : option.name;
+}
+
+/** Ready-to-render choices for the publicInterface / outboundInterface pickers. */
+export function edgeInterfaceChoices(server: Pick<EdgeNatServer, "settings">): ConfigChoice[] {
+  return edgeInterfaceOptions(server).map((option) => ({
+    value: option.name,
+    label: edgeInterfaceOptionLabel(option),
+  }));
+}
+
+/** Edit state for the two interface fields on an edge server. */
+export interface EdgeInterfaceFormState {
+  publicInterface: string;
+  outboundInterface: string;
+}
+
+export function seedEdgeInterfaceForm(server: Pick<EdgeNatServer, "settings">): EdgeInterfaceFormState {
+  const settings = server.settings ?? {};
+  return {
+    publicInterface: settings.publicInterface ?? "",
+    outboundInterface: settings.outboundInterface ?? "",
+  };
+}
+
+export function isEdgeInterfaceFormValid(form: EdgeInterfaceFormState): boolean {
+  return isValidEdgeInterfaceName(form.publicInterface) && isValidEdgeInterfaceName(form.outboundInterface);
 }

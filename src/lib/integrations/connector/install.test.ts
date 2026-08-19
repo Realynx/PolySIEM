@@ -1,15 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { CONNECTOR_AGENT_SCRIPT, CONNECTOR_AGENT_VERSION } from "./agent";
+import {
+  CONNECTOR_AGENT_SCRIPT,
+  CONNECTOR_AGENT_VERSION,
+  CONNECTOR_SSH_USERNAME,
+  CONNECTOR_SUDOERS_PATH,
+  connectorRestrictedAuthorizedKey,
+} from "./agent";
 import {
   CONNECTOR_SERVICE_PATH,
   buildConnectorInstallCommand,
   buildConnectorInstallErrorScript,
   buildConnectorInstallScript,
   normalizeConnectorBaseUrl,
+  stripConnectorSshBlocks,
 } from "./install";
 
 const TOKEN = "pscx_0123456789abcdefghijklmnopqrstuvwxyzABCDEF";
 const BASE = "https://polysiem.lan:3000";
+const SSH_PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ8k1nSDwqTGkPZm5OaXvXwB3tX9k7hcnU9y3kCTuXNL polysiem-connector";
+const AUTHORIZED_KEY = connectorRestrictedAuthorizedKey(SSH_PUBKEY);
 
 function build(overrides: Partial<Parameters<typeof buildConnectorInstallScript>[0]> = {}) {
   return buildConnectorInstallScript({ baseUrl: BASE, token: TOKEN, ...overrides });
@@ -129,6 +138,107 @@ describe("buildConnectorInstallScript", () => {
     // The written config carries the flag; the agent turns it into curl's -k.
     expect(script).toContain("POLYSIEM_INSECURE=$INSECURE");
     expect(script).toContain('[ "$INSECURE" = 0 ] || CURL_INSECURE="-k"');
+  });
+});
+
+describe("buildConnectorInstallScript SSH management (phase 2)", () => {
+  const withKey = build({ connectorId: "cx_h0mel4b", authorizedKey: AUTHORIZED_KEY });
+  const withoutKey = build({ connectorId: "cx_h0mel4b" });
+
+  it("is purely additive: stripping the SSH blocks reproduces phase 1 byte for byte", () => {
+    expect(stripConnectorSshBlocks(withKey)).toBe(withoutKey);
+    expect(withKey.length).toBeGreaterThan(withoutKey.length);
+  });
+
+  it("does nothing SSH-related when no authorizedKey is supplied (no regression)", () => {
+    for (const absent of ["useradd", "authorized_keys", "sudoers", "visudo", "getent", "SSH_USER"]) {
+      expect(withoutKey).not.toContain(absent);
+    }
+    expect(withoutKey).not.toContain(`SSH_USER='${CONNECTOR_SSH_USERNAME}'`);
+    expect(withoutKey).not.toContain(SSH_PUBKEY);
+    expect(withoutKey).not.toContain("restrict,command=");
+    // Both the empty-string and undefined forms take the phase-1 path.
+    expect(build({ connectorId: "cx_h0mel4b", authorizedKey: "" })).toBe(withoutKey);
+  });
+
+  it("creates the polysiem-connector account with the edge installer's safety check", () => {
+    expect(withKey).toContain(`SSH_USER='${CONNECTOR_SSH_USERNAME}'`);
+    expect(withKey).toContain('if id "$SSH_USER" >/dev/null 2>&1; then');
+    expect(withKey).toContain('existing_home="$(getent passwd "$SSH_USER" | cut -d: -f6)"');
+    expect(withKey).toContain('[ "$existing_home" = "/home/$SSH_USER" ] ||');
+    expect(withKey).toContain("refusing to reuse it");
+    expect(withKey).toContain('useradd --create-home --user-group --shell /bin/sh "$SSH_USER"');
+    expect(withKey).toContain("for binary in useradd getent chown cut sudo visudo; do");
+    expect(build({ authorizedKey: AUTHORIZED_KEY, sshUsername: "psx-agent" })).toContain("SSH_USER='psx-agent'");
+  });
+
+  it("installs the forced-command authorized_keys line at 0600 in a 0700 .ssh", () => {
+    expect(withKey).toContain('install -d -m 0700 -o "$SSH_USER" -g "$SSH_USER" "/home/$SSH_USER/.ssh"');
+    expect(withKey).toContain("cat > \"/home/$SSH_USER/.ssh/authorized_keys.new\" <<'POLYSIEM_CONNECTOR_KEY'");
+    expect(withKey).toContain(`\n${AUTHORIZED_KEY}\nPOLYSIEM_CONNECTOR_KEY\n`);
+    expect(withKey).toContain('chown "$SSH_USER:$SSH_USER" "/home/$SSH_USER/.ssh/authorized_keys.new"');
+    expect(withKey).toContain('chmod 0600 "/home/$SSH_USER/.ssh/authorized_keys.new"');
+    expect(withKey).toContain(
+      'mv "/home/$SSH_USER/.ssh/authorized_keys.new" "/home/$SSH_USER/.ssh/authorized_keys"',
+    );
+    // The key is pinned to the agent and nothing else.
+    expect(AUTHORIZED_KEY).toBe(
+      `restrict,command="sudo -n /usr/local/libexec/polysiem-connector-agent" ${SSH_PUBKEY}`,
+    );
+    // A quoted heredoc, so the shell cannot expand anything inside the key line.
+    expect(withKey).not.toContain("<<POLYSIEM_CONNECTOR_KEY");
+  });
+
+  it("writes a visudo-validated sudoers drop-in scoped to the agent path only", () => {
+    expect(CONNECTOR_SUDOERS_PATH).toBe("/etc/sudoers.d/polysiem-connector");
+    expect(withKey).toContain(
+      `printf '%s ALL=(root) NOPASSWD: /usr/local/libexec/polysiem-connector-agent ""\\n' "$SSH_USER" > ${CONNECTOR_SUDOERS_PATH}.new`,
+    );
+    expect(withKey).toContain(`chmod 0440 ${CONNECTOR_SUDOERS_PATH}.new`);
+    expect(withKey).toContain(`visudo -cf ${CONNECTOR_SUDOERS_PATH}.new >/dev/null`);
+    expect(withKey).toContain(`mv ${CONNECTOR_SUDOERS_PATH}.new ${CONNECTOR_SUDOERS_PATH}`);
+    // Validation happens before the file becomes live, never after.
+    expect(withKey.indexOf(`visudo -cf ${CONNECTOR_SUDOERS_PATH}.new`)).toBeLessThan(
+      withKey.indexOf(`mv ${CONNECTOR_SUDOERS_PATH}.new ${CONNECTOR_SUDOERS_PATH}`),
+    );
+    expect(withKey).not.toContain("NOPASSWD: ALL");
+  });
+
+  it("still does everything phase 1 did, and provisions before the unit starts", () => {
+    expect(withKey).toContain(CONNECTOR_AGENT_SCRIPT);
+    expect(withKey).toContain('mv "$CONF_DIR/token.new" "$CONF_DIR/token"');
+    expect(withKey).toContain("Type=simple");
+    expect(withKey).toContain('systemctl enable "$SERVICE_NAME"');
+    expect(withKey.indexOf("useradd --create-home")).toBeGreaterThan(withKey.indexOf('mv "$AGENT_PATH.new"'));
+    expect(withKey.indexOf("useradd --create-home")).toBeLessThan(withKey.indexOf("systemctl daemon-reload"));
+  });
+
+  it("tells the operator what was provisioned and what it can do", () => {
+    expect(withKey).toContain("restricted key; it can only run the agent");
+    expect(withKey).toContain(`${CONNECTOR_SUDOERS_PATH} (NOPASSWD on the agent path only)`);
+    expect(withKey).toContain("PolySIEM connector installed.");
+  });
+
+  it("rejects an authorized_keys line or username that could escape the script", () => {
+    expect(() => build({ authorizedKey: "definitely not a key" })).toThrow(/authorized_keys/);
+    expect(() => build({ authorizedKey: `${AUTHORIZED_KEY}\nPOLYSIEM_CONNECTOR_KEY\nrm -rf /` })).toThrow(
+      /authorized_keys/,
+    );
+    expect(() => build({ authorizedKey: `${AUTHORIZED_KEY}\ncommand="sh" ssh-ed25519 AAAA` })).toThrow(
+      /authorized_keys/,
+    );
+    expect(() => build({ authorizedKey: AUTHORIZED_KEY, sshUsername: "root" })).toThrow(/SSH username/);
+    expect(() => build({ authorizedKey: AUTHORIZED_KEY, sshUsername: "bad name; reboot" })).toThrow(/SSH username/);
+    expect(() => build({ authorizedKey: AUTHORIZED_KEY, sshUsername: "Capital" })).toThrow(/SSH username/);
+  });
+
+  it("never embeds private key material", () => {
+    expect(withKey).not.toContain("PRIVATE KEY");
+    expect(withKey).not.toContain("BEGIN OPENSSH");
+    // Nothing in the installer carries a key value: the SSH half installs only a
+    // PUBLIC key, and the WireGuard key is generated by the agent on this host.
+    expect(withKey.match(/AAAAC3NzaC1lZDI1NTE5[A-Za-z0-9+/]+/g) ?? []).toHaveLength(1);
+    expect(withKey).toContain('( umask 077; wg genkey > "$KEY_FILE.new" )');
   });
 });
 

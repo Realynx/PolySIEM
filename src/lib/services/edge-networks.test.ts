@@ -5,7 +5,7 @@ import { canonicalEdgeRuleset, desiredEdgeRulesetHash } from "@/lib/integrations
 // test here touches it, but importing it must not construct a client.
 vi.mock("@/lib/db", () => ({ prisma: {} }));
 
-import { deriveConnectorPeers, deriveEdgeApplyRules } from "./edge-networks";
+import { deriveConnectorPeers, deriveEdgeApplyRules, deriveEdgeWireguardPeers } from "./edge-networks";
 
 const CONNECTOR_KEY = "K5rM2QdFvJ7t8YbN1oPxWzCqEaHiUjLmSnTvBcDgRfE=";
 const OTHER_KEY = "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=";
@@ -131,5 +131,44 @@ describe("deriveConnectorPeers (§1c)", () => {
       expect(peer.endpoint).toBeNull();
       expect(peer.persistentKeepalive).toBe(25);
     }
+  });
+});
+
+describe("deriveEdgeWireguardPeers — connectors + the legacy peer (phase 3)", () => {
+  const legacy = {
+    publicKey: OTHER_KEY, allowedIps: ["10.9.9.2/32"], endpoint: null, persistentKeepalive: 25,
+  };
+
+  it("emits the legacy peer first, exactly as before connectors existed", () => {
+    expect(deriveEdgeWireguardPeers(legacy, [])).toEqual([legacy]);
+  });
+
+  it("keeps a legacy peer alongside connectors that do not duplicate it", () => {
+    expect(deriveEdgeWireguardPeers(legacy, [{ publicKey: CONNECTOR_KEY, tunnelAddress: "10.9.9.3" }])).toEqual([
+      legacy,
+      { publicKey: CONNECTOR_KEY, allowedIps: ["10.9.9.3/32"], endpoint: null, persistentKeepalive: 25 },
+    ]);
+  });
+
+  it("drops the legacy peer once a connector claims the SAME key", () => {
+    // This is the OPNsense-becomes-a-connector case: registering the key twice
+    // would be a WireGuard configuration error, and the connector row wins.
+    expect(deriveEdgeWireguardPeers(legacy, [{ publicKey: OTHER_KEY, tunnelAddress: "10.9.9.2" }])).toEqual([
+      { publicKey: OTHER_KEY, allowedIps: ["10.9.9.2/32"], endpoint: null, persistentKeepalive: 25 },
+    ]);
+  });
+
+  it("is kind-agnostic: any connector with a key is a peer", () => {
+    // Manual (`opnsense`/`peer`) rows carry a pasted key and nothing else; the
+    // derivation only ever looks at publicKey + tunnelAddress.
+    expect(deriveEdgeWireguardPeers(null, [
+      { publicKey: CONNECTOR_KEY, tunnelAddress: "10.9.9.3" },
+      { publicKey: OTHER_KEY, tunnelAddress: "10.9.9.4" },
+    ])).toHaveLength(2);
+  });
+
+  it("has no peers at all when nothing is configured", () => {
+    expect(deriveEdgeWireguardPeers(null, [])).toEqual([]);
+    expect(deriveEdgeWireguardPeers(undefined, [{ publicKey: null, tunnelAddress: "10.9.9.5" }])).toEqual([]);
   });
 });
