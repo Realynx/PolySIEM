@@ -2,7 +2,7 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, Pencil, PlugZap, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { ArrowRight, Check, Link2, Loader2, Pencil, PlugZap, Plus, Trash2, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
@@ -24,14 +24,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
-  connectorDisplayName,
   connectorKindLabel,
   connectorRouteWarning,
-  connectorStatusPresentation,
+  connectorTunnelAddressFor,
+  connectorUnavailableReason,
   EDGE_NETWORKS_QUERY_KEY,
-  isConnectorSelectable,
-  isManualConnector,
-  isRuleApplied,
+  isConnectorSelectableFor,
   natRuleRouting,
   natRuleTargetCopy,
   ROUTE_MODE_CHOICES,
@@ -43,6 +41,17 @@ import {
   type NatProtocol,
   type NatRuleInput,
 } from "./edge-networks-types";
+import {
+  edgeRoutePath,
+  edgeRouteRisk,
+  edgeRouteRowBadge,
+  edgeRouteRowState,
+  edgeRoutesBaselineState,
+  isUnrestrictedSource,
+  sensitivePortService,
+  type EdgeRoutePath,
+  type EdgeRouteRowState,
+} from "./edge-sync-presentation";
 import { isValidNetworkPort } from "./edge-network-utils";
 
 /**
@@ -66,19 +75,8 @@ export function EdgeNatRulesTab({
   onDelete: (rule: EdgeNatRule) => void;
 }) {
   const canEdit = isAdmin && server.enabled;
-  return (
-    <div className="space-y-3">
-      {server.rules.length === 0 ? (
-        <NatRulesEmptyState canEdit={canEdit} onAdd={onAdd} />
-      ) : (
-        <NatRulesTable server={server} connectors={connectors} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} />
-      )}
-      <p className="text-xs text-muted-foreground">
-        Only rules marked Applied are confirmed in the last successful remote ruleset. The forwarding rule publishes the
-        edge address instead of directly publishing the home router&apos;s WAN address.
-      </p>
-    </div>
-  );
+  if (server.rules.length === 0) return <NatRulesEmptyState canEdit={canEdit} onAdd={onAdd} />;
+  return <NatRulesTable server={server} connectors={connectors} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} />;
 }
 
 function NatRulesEmptyState({ canEdit, onAdd }: { canEdit: boolean; onAdd: () => void }) {
@@ -111,16 +109,18 @@ function NatRulesTable({
   onDelete: (rule: EdgeNatRule) => void;
 }) {
   const lastAppliedAt = server.settings?.lastAppliedAt;
+  // The state the card header already reports. A row only earns a badge when it
+  // differs from this, so a column of identical values can never appear.
+  const baseline = edgeRoutesBaselineState(server.rules, lastAppliedAt);
   return (
-    <div className="overflow-hidden rounded-lg border">
+    <div className="overflow-x-auto rounded-lg border">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Rule</TableHead>
-            <TableHead>Edge listener</TableHead>
-            <TableHead>Private target</TableHead>
-            <TableHead className="hidden md:table-cell">Allowed source</TableHead>
-            <TableHead>Status</TableHead>
+            <TableHead className="w-[11rem]">Published</TableHead>
+            <TableHead className="w-[20rem]">How it gets there</TableHead>
+            <TableHead>Lands on</TableHead>
+            <TableHead className="w-[16rem]">Allowed source</TableHead>
             {canEdit && <TableHead className="w-20"><span className="sr-only">Actions</span></TableHead>}
           </TableRow>
         </TableHeader>
@@ -129,8 +129,9 @@ function NatRulesTable({
             <NatRuleRow
               key={rule.id}
               rule={rule}
-              applied={isRuleApplied(rule, lastAppliedAt)}
-              connectors={connectors}
+              state={edgeRouteRowState(rule, lastAppliedAt)}
+              baseline={baseline}
+              path={edgeRoutePath(rule, connectors, server.id)}
               canEdit={canEdit}
               onEdit={() => onEdit(rule)}
               onDelete={() => onDelete(rule)}
@@ -142,37 +143,42 @@ function NatRulesTable({
   );
 }
 
+/** One route, read left to right: what is published → how it gets there → where it lands. */
 function NatRuleRow({
   rule,
-  applied,
-  connectors,
+  state,
+  baseline,
+  path,
   canEdit,
   onEdit,
   onDelete,
 }: {
   rule: EdgeNatRule;
-  applied: boolean;
-  connectors: ConnectorDto[];
+  state: EdgeRouteRowState;
+  baseline: EdgeRouteRowState;
+  path: EdgeRoutePath;
   canEdit: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const badge = edgeRouteRowBadge(state, baseline);
   return (
-    <TableRow>
-      <TableCell className="font-medium">{rule.name}</TableCell>
-      <TableCell className="font-mono text-xs"><span className="uppercase">{rule.protocol}</span> :{rule.publicPort}</TableCell>
-      <TableCell className="font-mono text-xs">
-        {rule.targetAddress}:{rule.targetPort}
-        {ruleRouteMode(rule) === "connector" && <NatRuleConnectorHint rule={rule} connectors={connectors} />}
+    <TableRow className={cn(state === "disabled" && "text-muted-foreground")}>
+      <TableCell className="align-top">
+        <div className="font-mono text-sm font-medium tabular-nums">
+          :{rule.publicPort}
+          <span className="ml-1.5 font-sans text-[0.6875rem] font-normal uppercase text-muted-foreground">{rule.protocol}</span>
+        </div>
+        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">{rule.name}</span>
+          {badge && <Badge variant={badge.variant} className="font-normal">{badge.label}</Badge>}
+        </div>
       </TableCell>
-      <TableCell className="hidden font-mono text-xs md:table-cell">
-        {rule.sourceCidr || <span className="font-sans text-warning">Any source</span>}
-      </TableCell>
-      <TableCell>
-        <Badge variant={applied ? "secondary" : "outline"}>{natRuleStatusLabel(rule, applied)}</Badge>
-      </TableCell>
+      <TableCell className="align-top"><NatRulePathCell path={path} /></TableCell>
+      <TableCell className="align-top font-mono text-xs">{rule.targetAddress}:{rule.targetPort}</TableCell>
+      <TableCell className="align-top"><NatRuleSourceCell rule={rule} /></TableCell>
       {canEdit && (
-        <TableCell>
+        <TableCell className="align-top">
           <div className="flex justify-end gap-1">
             <Button variant="ghost" size="icon-sm" aria-label={`Edit ${rule.name}`} onClick={onEdit}><Pencil /></Button>
             <Button
@@ -191,28 +197,55 @@ function NatRuleRow({
   );
 }
 
-function natRuleStatusLabel(rule: EdgeNatRule, applied: boolean): string {
-  if (!rule.enabled) return "Disabled";
-  return applied ? "Applied" : "Pending apply";
+/**
+ * The middle column. A connector hop is ordinary configuration, so it is styled
+ * as information — the address is the one this connector holds ON THIS EDGE, and
+ * the same connector holds a different one on every other edge box it serves.
+ */
+function NatRulePathCell({ path }: { path: EdgeRoutePath }) {
+  if (path.kind === "direct") {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
+        {path.label}
+      </span>
+    );
+  }
+  return (
+    <div className="min-w-0" title={path.noteDetail ?? undefined}>
+      <span className="flex items-center gap-1.5 text-xs">
+        <PlugZap className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className="truncate">{path.label}</span>
+      </span>
+      {(path.address || path.note) && (
+        <p className="mt-0.5 truncate text-[0.6875rem] text-muted-foreground">
+          {path.address && <span className="font-mono">{path.address}</span>}
+          {path.address && path.note ? " · " : ""}
+          {path.note}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /**
- * The "via <connector>" line under a connector-routed target. A manual peer is
- * called out in warning tone because PolySIEM's reach ends at the tunnel there.
+ * An open source range is the common case and is styled as such. Amber is spent
+ * only where it buys something: an admin port nothing is limiting, named.
  */
-function NatRuleConnectorHint({ rule, connectors }: { rule: EdgeNatRule; connectors: ConnectorDto[] }) {
-  const target = connectors.find((connector) => connector.id === rule.connectorId || connector.connectorId === rule.connectorId);
-  const manual = target ? isManualConnector(target) : false;
+function NatRuleSourceCell({ rule }: { rule: EdgeNatRule }) {
+  const risk = edgeRouteRisk(rule);
   return (
-    <span
-      className={cn("mt-0.5 flex items-center gap-1 font-sans text-[0.6875rem]", manual ? "text-warning" : "text-muted-foreground")}
-      title={manual && target ? connectorRouteWarning(target, rule)?.detail : undefined}
-    >
-      {manual ? <TriangleAlert className="size-3" aria-hidden="true" /> : <PlugZap className="size-3" aria-hidden="true" />}
-      via {connectorDisplayName(connectors, rule.connectorId) ?? "connector"}
-      {target ? ` · ${connectorKindLabel(target)}` : ""}
-      {manual ? " · forwards onward there" : ""}
-    </span>
+    <div className="min-w-0">
+      {isUnrestrictedSource(rule)
+        ? <span className="text-xs text-muted-foreground">Any source</span>
+        : <span className="font-mono text-xs">{rule.sourceCidr}</span>}
+      {risk && (
+        <p className="mt-0.5 flex items-start gap-1 text-[0.6875rem] text-warning" title={risk.detail}>
+          <TriangleAlert className="mt-px size-3 shrink-0" aria-hidden="true" />
+          <span>{risk.label}</span>
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -264,18 +297,22 @@ export function NatRuleDialog({
   connectors,
   open,
   onOpenChange,
+  onLinkConnector,
 }: {
   server: EdgeNatServer;
   rule: EdgeNatRule | null;
+  /** Connectors LINKED to this edge — the only ones it can route through. */
   connectors: ConnectorDto[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Sends the operator to this edge's connector link picker instead of a dead end. */
+  onLinkConnector?: () => void;
 }) {
   const queryClient = useQueryClient();
   const initial = useMemo(() => ruleToForm(rule), [rule]);
   const [form, setForm] = useState<NatRuleForm>(initial);
   const currentForm = open && form.ruleId !== initial.ruleId ? initial : form;
-  const selectableConnectors = connectors.filter(isConnectorSelectable);
+  const selectableConnectors = connectors.filter((connector) => isConnectorSelectableFor(connector, server.id));
   const targetCopy = natRuleTargetCopy(currentForm.mode);
   const connectorMissing = currentForm.mode === "connector" && !currentForm.connectorId;
   const mutation = useMutation({
@@ -323,9 +360,11 @@ export function NatRuleDialog({
 
             <NatRuleConnectorField
               form={currentForm}
+              server={server}
               connectors={connectors}
               selectable={selectableConnectors}
               onSelect={(connectorId) => update({ connectorId })}
+              onLinkConnector={onLinkConnector ? () => { onOpenChange(false); onLinkConnector(); } : undefined}
             />
 
             <div className="grid gap-3 sm:grid-cols-[0.7fr_1fr]">
@@ -337,7 +376,11 @@ export function NatRuleDialog({
               <div className="grid gap-1.5"><Label htmlFor="target-port">Target port</Label><Input id="target-port" inputMode="numeric" value={currentForm.targetPort} onChange={(event) => update({ targetPort: event.target.value })} placeholder="32400" /></div>
             </div>
             {targetCopy.help && <p className="-mt-2 text-xs text-muted-foreground">{targetCopy.help}</p>}
-            <NatSourceCidrField value={currentForm.sourceCidr} onChange={(sourceCidr) => update({ sourceCidr })} />
+            <NatSourceCidrField
+              value={currentForm.sourceCidr}
+              publicPort={currentForm.publicPort}
+              onChange={(sourceCidr) => update({ sourceCidr })}
+            />
             <div className="flex items-center justify-between gap-4 rounded-lg border p-3"><div><Label htmlFor="nat-enabled">Rule enabled</Label><p className="text-xs text-muted-foreground">Disabled rules remain saved but are not installed.</p></div><Switch id="nat-enabled" checked={currentForm.enabled} onCheckedChange={(enabled) => update({ enabled })} /></div>
           </div>
           <DialogFooter><DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose><Button type="submit" disabled={mutation.isPending || connectorMissing}>{mutation.isPending && <Loader2 className="animate-spin" />}{rule ? "Save rule" : "Add rule"}</Button></DialogFooter>
@@ -384,32 +427,34 @@ function NatRouteModePicker({
   );
 }
 
-/** Only rendered for connector mode: the picker, or why there is nothing to pick. */
+/**
+ * Only rendered for connector mode: the picker over the connectors LINKED to
+ * this edge box, or a way to link one when nothing is.
+ */
 function NatRuleConnectorField({
   form,
+  server,
   connectors,
   selectable,
   onSelect,
+  onLinkConnector,
 }: {
   form: NatRuleForm;
+  server: EdgeNatServer;
   connectors: ConnectorDto[];
   selectable: ConnectorDto[];
   onSelect: (connectorId: string) => void;
+  onLinkConnector?: () => void;
 }) {
   if (form.mode !== "connector") return null;
   if (selectable.length === 0) {
-    return (
-      <Alert>
-        <PlugZap />
-        <AlertTitle>No connector is ready yet</AlertTitle>
-        <AlertDescription>Add a connector in the Connectors tab on this server and run its install command. Once it reports connected it can carry routes.</AlertDescription>
-      </Alert>
-    );
+    return <NatRuleNoConnectors serverName={server.name} onLinkConnector={onLinkConnector} />;
   }
   // A manual connector (OPNsense, or any hand-configured peer) ends PolySIEM's
   // reach at the tunnel: it cannot program that side's forwarding.
   const selected = connectors.find((connector) => connector.id === form.connectorId);
-  const warning = selected ? connectorRouteWarning(selected, { publicPort: form.publicPort }) : null;
+  const warning = selected ? connectorRouteWarning(selected, { publicPort: form.publicPort }, server.id) : null;
+  const address = selected ? connectorTunnelAddressFor(selected, server.id) : null;
   return (
     <div className="grid gap-1.5">
       <Label htmlFor="nat-connector">Connector</Label>
@@ -417,17 +462,16 @@ function NatRuleConnectorField({
         <SelectTrigger id="nat-connector" className="w-full"><SelectValue placeholder="Choose a connector" /></SelectTrigger>
         <SelectContent>
           {connectors.map((connector) => (
-            <SelectItem key={connector.id} value={connector.id} disabled={!isConnectorSelectable(connector)}>
-              <span>{connector.name}</span>
-              <span className="text-xs text-muted-foreground">
-                {connectorKindLabel(connector)}
-                {isConnectorSelectable(connector) ? "" : ` · ${connectorStatusPresentation(connector).label.toLowerCase()}`}
-              </span>
-            </SelectItem>
+            <NatRuleConnectorOption key={connector.id} connector={connector} integrationId={server.id} />
           ))}
         </SelectContent>
       </Select>
-      <p className="text-xs text-muted-foreground">Traffic lands on the edge port below, crosses the tunnel, and this connector delivers it. Its tunnel IP is assigned automatically — you never enter it.</p>
+      <p className="text-xs text-muted-foreground">
+        Only connectors linked to {server.name} are listed. Traffic lands on the edge port below, crosses the tunnel to{" "}
+        {address ? <code className="font-mono">{address}</code> : "its address on this edge"}, and the connector
+        delivers it — that address is assigned automatically, and the same connector holds a different one on every
+        other edge box it serves.
+      </p>
       {warning && (
         <Alert variant="destructive">
           <TriangleAlert />
@@ -439,13 +483,71 @@ function NatRuleConnectorField({
   );
 }
 
-function NatSourceCidrField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function NatRuleConnectorOption({ connector, integrationId }: { connector: ConnectorDto; integrationId: string }) {
+  const reason = connectorUnavailableReason(connector, integrationId);
+  return (
+    <SelectItem value={connector.id} disabled={reason !== null}>
+      <span>{connector.name}</span>
+      <span className="text-xs text-muted-foreground">
+        {connectorKindLabel(connector)}
+        {reason ? ` · ${reason}` : ""}
+      </span>
+    </SelectItem>
+  );
+}
+
+/** Never a dead end: linking an existing connector is one click from here. */
+function NatRuleNoConnectors({
+  serverName,
+  onLinkConnector,
+}: {
+  serverName: string;
+  onLinkConnector?: () => void;
+}) {
+  return (
+    <Alert>
+      <PlugZap />
+      <AlertTitle>No connector is ready on {serverName}</AlertTitle>
+      <AlertDescription className="grid gap-2">
+        <span>
+          A connector is installed once and can serve several edge boxes. Link one you already run to {serverName}, or
+          add a new one from the Connectors tab and run its install command.
+        </span>
+        {onLinkConnector && (
+          <Button type="button" variant="outline" size="sm" className="justify-self-start" onClick={onLinkConnector}>
+            <Link2 /> Link a connector
+          </Button>
+        )}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/**
+ * Leaving this blank is ordinary for a published web service, so the hint stays
+ * neutral. It turns amber only when the port being published is an admin
+ * service, and then it names the service rather than just colouring red.
+ */
+function NatSourceCidrField({
+  value,
+  publicPort,
+  onChange,
+}: {
+  value: string;
+  publicPort: string;
+  onChange: (value: string) => void;
+}) {
+  const service = value.trim() ? null : sensitivePortService(publicPort);
   return (
     <div className="grid gap-1.5">
       <Label htmlFor="source-cidr">Allowed source CIDR <span className="font-normal text-muted-foreground">(recommended)</span></Label>
       <Input id="source-cidr" value={value} onChange={(event) => onChange(event.target.value)} placeholder="203.0.113.0/24" />
-      <p className={cn("text-xs", value ? "text-muted-foreground" : "text-warning")}>
-        {value ? "Only this source range can enter the rule." : "Blank allows traffic from any internet address."}
+      <p className={cn("text-xs", service ? "text-warning" : "text-muted-foreground")}>
+        {value.trim()
+          ? "Only this source range can enter the rule."
+          : service
+            ? `Port ${publicPort} is a ${service} admin port. Left blank, any address on the internet can reach it.`
+            : "Blank allows traffic from any internet address."}
       </p>
     </div>
   );

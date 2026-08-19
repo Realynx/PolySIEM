@@ -161,16 +161,42 @@ export const updateConnectorSchema = updateConnectorBaseSchema
   .refine((value) => Object.keys(value).length > 0, "Provide at least one field");
 export type UpdateConnectorInput = z.infer<typeof updateConnectorSchema>;
 
-/** POST /api/network/connectors body: the operator fields plus their edge server. */
+/**
+ * POST /api/network/connectors body.
+ *
+ * A connector is standalone — it is NOT owned by an edge server. `integrationId`
+ * is optional and only a convenience: when present the connector is linked to
+ * that edge in the same call (the common "add and use it here" flow).
+ */
 export const createConnectorRequestSchema = createConnectorSchema.extend({
-  integrationId: z.string().trim().min(1).max(128),
+  integrationId: z.string().trim().min(1).max(128).optional(),
 });
 export type CreateConnectorRequestInput = z.infer<typeof createConnectorRequestSchema>;
 
-/** GET /api/network/connectors query: optionally scope the list to one edge server. */
+/**
+ * GET /api/network/connectors query. With `integrationId` the list is FILTERED to
+ * connectors linked to that edge; without it every connector is returned, because
+ * connectors exist independently of any one edge server.
+ */
 export const listConnectorsQuerySchema = z.object({
   integrationId: z.string().trim().min(1).max(128).optional(),
 });
+
+/**
+ * Link an existing connector to an edge server. PolySIEM allocates the tunnel
+ * address from THAT edge's subnet — a connector holds a different tunnel IP on
+ * each edge it serves, so the address is never supplied by the operator.
+ */
+export const linkConnectorSchema = z.object({
+  integrationId: z.string().trim().min(1).max(128),
+});
+export type LinkConnectorInput = z.infer<typeof linkConnectorSchema>;
+
+/** Enable/disable one link without deleting it (keeps the allocated address). */
+export const updateConnectorLinkSchema = z.object({
+  enabled: z.boolean(),
+});
+export type UpdateConnectorLinkInput = z.infer<typeof updateConnectorLinkSchema>;
 
 /** Opaque install token handed to the connector installer. */
 export const connectorInstallTokenSchema = z

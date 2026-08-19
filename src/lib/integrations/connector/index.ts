@@ -7,6 +7,12 @@
  * exactly the same code the on-host agent uses to verify what it parsed — and the
  * SSH transport (`./ssh.ts`) hashes its APPLY payload with the very same function,
  * so `configHash` means one thing on both transports.
+ *
+ * A connector is standalone and can serve MANY edge servers: a
+ * {@link ConnectorRuleset} names the one interface it owns, one
+ * {@link ConnectorTunnel} per linked edge (one WireGuard peer and one address
+ * each), and every {@link ConnectorRoute} across all of those edges, each tagged
+ * with the tunnel address of the edge that published it.
  */
 
 export {
@@ -24,6 +30,7 @@ export {
   CONNECTOR_PUBLIC_KEY_FILE,
   CONNECTOR_TUNNEL_FILE,
   CONNECTOR_STATE_FILE,
+  CONNECTOR_RULESET_FILE,
   CONNECTOR_SERVICE_NAME,
   CONNECTOR_DNAT_CHAIN,
   CONNECTOR_SNAT_CHAIN,
@@ -36,7 +43,13 @@ export {
   connectorRestrictedAuthorizedKey,
 } from "./agent";
 
-export type { ConnectorRoute, ConnectorEdgeParams, ConnectorConfigPayload } from "./agent";
+export type {
+  ConnectorRoute,
+  ConnectorTunnel,
+  ConnectorRuleset,
+  ConnectorEdgeParams,
+  ConnectorConfigPayload,
+} from "./agent";
 
 export {
   CONNECTOR_SERVICE_PATH,

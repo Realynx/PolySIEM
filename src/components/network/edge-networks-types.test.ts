@@ -11,15 +11,31 @@ import {
   connectorLastContactAt,
   connectorHandshakeAt,
   connectorPeerProgress,
+  connectorInterfaceName,
+  connectorLinkEdgeName,
+  connectorLinkFor,
+  connectorLinkSummary,
+  connectorLinks,
+  connectorLinksUrl,
+  connectorLinkUrl,
+  connectorPeerBlockFor,
   connectorRouteWarning,
   connectorSshEndpoint,
   connectorSshPresentation,
   connectorSshUsername,
   connectorStatusPresentation,
   connectorSummary,
+  connectorTunnelAddressFor,
+  connectorUnavailableReason,
   connectorWgStatePresentation,
+  connectorsAllUrl,
+  connectorsAvailableToLink,
+  connectorsLinkedTo,
+  connectorsQueryKey,
   deriveConnectorPeerBlock,
   edgeInstallStep,
+  edgeServerForLink,
+  edgesAvailableForConnector,
   edgeInterfaceChoices,
   edgeInterfaceOptionLabel,
   edgeInterfaceOptions,
@@ -30,7 +46,10 @@ import {
   edgeTunnelEndpoint,
   hostKeyAlgorithmLabel,
   infrastructureEdgeDetails,
+  isConnectorLinkEnabled,
+  isConnectorLinkedTo,
   isConnectorSelectable,
+  isConnectorSelectableFor,
   isEdgeInterfaceFormValid,
   isManualConnector,
   isValidConnectorName,
@@ -54,6 +73,7 @@ import {
   CONNECTOR_SSH_PORT_CHOICES,
   WIREGUARD_INTERFACE_CHOICES,
   type ConnectorDto,
+  type ConnectorLinkDto,
   type EdgeNatServer,
   type WireguardFormState,
   type WireguardTunnelDto,
@@ -209,12 +229,22 @@ describe("edge network presentation helpers", () => {
   });
 });
 
+const link = (overrides: Partial<ConnectorLinkDto> = {}): ConnectorLinkDto => ({
+  id: "link-1",
+  integrationId: "edge-1",
+  edgeName: "Edge one",
+  tunnelAddress: "10.9.9.3",
+  enabled: true,
+  lastHandshakeAt: "2026-08-18T10:06:00.000Z",
+  ...overrides,
+});
+
 const connector = (overrides: Partial<ConnectorDto> = {}): ConnectorDto => ({
   id: "row-1",
-  integrationId: "edge-1",
   name: "EdgeNetworkVm",
   connectorId: "cx_lab01",
-  tunnelAddress: "10.9.9.3",
+  links: [link()],
+  interfaceName: "wg0",
   publicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=",
   status: "connected",
   enrolledAt: "2026-08-18T10:00:00.000Z",
@@ -461,12 +491,24 @@ describe("connector kinds", () => {
   });
 
   it("warns that PolySIEM cannot program the far side of a manual connector", () => {
-    expect(connectorRouteWarning(connector({ kind: "agent" }))).toBeNull();
-    const warning = connectorRouteWarning(connector({ kind: "opnsense", name: "Home OPNsense" }), { publicPort: 8211 });
+    expect(connectorRouteWarning(connector({ kind: "agent" }), undefined, "edge-1")).toBeNull();
+    const manual = connector({ kind: "opnsense", name: "Home OPNsense" });
+    const warning = connectorRouteWarning(manual, { publicPort: 8211 }, "edge-1");
     expect(warning?.title).toContain("cannot program");
+    // The address it names is the one held on THAT edge, not some global one.
     expect(warning?.detail).toContain("10.9.9.3");
     expect(warning?.detail).toContain("8211");
-    expect(connectorRouteWarning(connector({ kind: "peer" }))?.detail).toContain("forward");
+    expect(connectorRouteWarning(connector({ kind: "peer" }), undefined, "edge-1")?.detail).toContain("forward");
+  });
+
+  it("names the address per edge, and stays honest when the edge is unknown", () => {
+    const shared = connector({
+      kind: "opnsense",
+      links: [link(), link({ id: "link-2", integrationId: "edge-2", tunnelAddress: "10.9.10.5" })],
+    });
+    expect(connectorRouteWarning(shared, { publicPort: 443 }, "edge-2")?.detail).toContain("10.9.10.5");
+    expect(connectorRouteWarning(shared, { publicPort: 443 }, "edge-9")?.detail)
+      .toContain("its tunnel address on this edge");
   });
 
   it("reads the one-time reveal only when the API actually minted one", () => {
@@ -544,6 +586,109 @@ describe("manual connector peer block", () => {
     expect(snippet).toContain("PersistentKeepalive = 25");
     expect(snippet).toContain("OPNsense");
     expect(snippet).toContain("PrivateKey = <generated on this device");
+  });
+
+  it("resolves the block per edge and refuses to invent one for an unlinked edge", () => {
+    const linked = connector({ links: [link({ integrationId: edge.id, tunnelAddress: "10.9.9.4" })] });
+    expect(connectorPeerBlockFor({ server: edge, connector: linked })).toMatchObject({
+      tunnelAddress: "10.9.9.4",
+      tunnelAddressCidr: "10.9.9.4/24",
+      edgeEndpoint: "23.94.251.183:51820",
+    });
+    expect(connectorPeerBlockFor({ server: edge, connector: connector({ links: [] }) })).toBeNull();
+  });
+});
+
+describe("connector ↔ edge links", () => {
+  const edgeA = server({ id: "edge-1", name: "Edge one" });
+  const edgeB = server({ id: "edge-2", name: "Edge two" });
+  const shared = connector({
+    links: [
+      link({ id: "l1", integrationId: "edge-1", tunnelAddress: "10.9.9.3" }),
+      link({ id: "l2", integrationId: "edge-2", tunnelAddress: "10.9.10.7" }),
+    ],
+  });
+
+  it("gives one connector a different tunnel address on every edge it serves", () => {
+    expect(connectorTunnelAddressFor(shared, "edge-1")).toBe("10.9.9.3");
+    expect(connectorTunnelAddressFor(shared, "edge-2")).toBe("10.9.10.7");
+    expect(connectorTunnelAddressFor(shared, "edge-3")).toBeNull();
+    expect(isConnectorLinkedTo(shared, "edge-2")).toBe(true);
+    expect(isConnectorLinkedTo(shared, "edge-3")).toBe(false);
+    expect(connectorLinkFor(shared, null)).toBeNull();
+  });
+
+  it("reads a pre-links response as the single implied link to its old owner", () => {
+    const legacy = { ...connector(), links: undefined, integrationId: "edge-9", tunnelAddress: "10.9.9.8" };
+    expect(connectorLinks(legacy)).toHaveLength(1);
+    expect(connectorTunnelAddressFor(legacy, "edge-9")).toBe("10.9.9.8");
+    expect(isConnectorLinkedTo(legacy, "edge-9")).toBe(true);
+    expect(connectorLinks({ ...connector(), links: undefined, integrationId: undefined, tunnelAddress: undefined }))
+      .toEqual([]);
+  });
+
+  it("splits connectors into the ones an edge already uses and the ones it could", () => {
+    const local = connector({ id: "row-2", links: [link({ id: "l3", integrationId: "edge-1" })] });
+    const pool = [shared, local, connector({ id: "row-3", links: [] })];
+    expect(connectorsLinkedTo(pool, "edge-2").map((entry) => entry.id)).toEqual(["row-1"]);
+    expect(connectorsAvailableToLink(pool, "edge-2").map((entry) => entry.id)).toEqual(["row-2", "row-3"]);
+    expect(edgesAvailableForConnector(local, [edgeA, edgeB]).map((entry) => entry.id)).toEqual(["edge-2"]);
+    expect(edgesAvailableForConnector(shared, [edgeA, edgeB])).toEqual([]);
+  });
+
+  it("counts the edges a connector serves and says so in words", () => {
+    expect(connectorLinkSummary(shared)).toMatchObject({ total: 2, enabled: 2, shared: true, label: "Serving 2 edge boxes" });
+    expect(connectorLinkSummary(connector({ links: [link()] }))).toMatchObject({ shared: false, label: "Serving 1 edge box" });
+    expect(connectorLinkSummary(connector({ links: [] })).label).toBe("Not linked to an edge box yet");
+    expect(connectorLinkSummary(connector({ links: [link(), link({ id: "l2", integrationId: "edge-2", enabled: false })] })))
+      .toMatchObject({ total: 2, enabled: 1 });
+  });
+
+  it("only lets an edge route through a connector with a live link to it", () => {
+    expect(isConnectorSelectableFor(shared, "edge-1")).toBe(true);
+    expect(isConnectorSelectableFor(shared, "edge-3")).toBe(false);
+    const suspended = connector({ links: [link({ enabled: false })] });
+    expect(isConnectorSelectableFor(suspended, "edge-1")).toBe(false);
+    expect(isConnectorSelectableFor(connector({ status: "disabled" }), "edge-1")).toBe(false);
+  });
+
+  it("explains why a listed connector cannot carry a route here", () => {
+    expect(connectorUnavailableReason(shared, "edge-1")).toBeNull();
+    expect(connectorUnavailableReason(shared, "edge-3")).toBe("not linked to this edge box");
+    expect(connectorUnavailableReason(connector({ links: [link({ enabled: false })] }), "edge-1"))
+      .toBe("link suspended on this edge box");
+    expect(connectorUnavailableReason(connector({ status: "disabled" }), "edge-1")).toBe("disabled");
+  });
+
+  it("names an edge from the loaded server first, then the link's own copy", () => {
+    expect(connectorLinkEdgeName(link({ integrationId: "edge-1", edgeName: "stale name" }), [edgeA])).toBe("Edge one");
+    expect(connectorLinkEdgeName(link({ integrationId: "edge-9", edgeName: "Remote edge" }), [edgeA])).toBe("Remote edge");
+    expect(connectorLinkEdgeName(link({ integrationId: "edge-9", edgeName: null }), [])).toBe("Edge box");
+    expect(edgeServerForLink([edgeA, edgeB], link({ integrationId: "edge-2" }))?.name).toBe("Edge two");
+  });
+
+  it("treats a link as live unless it was explicitly suspended", () => {
+    expect(isConnectorLinkEnabled(link({ enabled: undefined }))).toBe(true);
+    expect(isConnectorLinkEnabled(link({ enabled: false }))).toBe(false);
+  });
+
+  it("counts shared and unlinked connectors for the page summary", () => {
+    expect(connectorSummary([shared, connector({ id: "row-2", links: [] })]))
+      .toMatchObject({ total: 2, shared: 1, unlinked: 1 });
+  });
+
+  it("defaults the connector interface to the one the agent owns", () => {
+    expect(connectorInterfaceName({ interfaceName: "wg1" })).toBe("wg1");
+    expect(connectorInterfaceName({ interfaceName: null })).toBe("wg0");
+    expect(connectorInterfaceName({ interfaceName: "  " })).toBe("wg0");
+  });
+
+  it("builds the link endpoints without ever guessing an address", () => {
+    expect(connectorsAllUrl()).toBe("/api/network/connectors");
+    expect(connectorLinksUrl("row-1")).toBe("/api/network/connectors/row-1/links");
+    expect(connectorLinkUrl("row-1", "l2")).toBe("/api/network/connectors/row-1/links/l2");
+    expect(connectorsQueryKey()).toEqual(["edge-connectors", "all"]);
+    expect(connectorsQueryKey("edge-1")).toEqual(["edge-connectors", "edge-1"]);
   });
 });
 

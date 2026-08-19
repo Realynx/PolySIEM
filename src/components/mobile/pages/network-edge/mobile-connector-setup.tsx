@@ -19,32 +19,36 @@ import {
   buildConnectorPeerSnippet,
   connectorInstallProgress,
   connectorKindOf,
+  connectorPeerBlockFor,
   connectorPeerConfigQueryKey,
   connectorPeerConfigUrl,
   connectorPeerProgress,
+  connectorTunnelAddressFor,
   connectorUrl,
-  connectorsQueryKey,
   edgeInstallStep,
   edgeTunnelEndpoint,
   isWireguardPublicKey,
   resolveConnectorPeerBlock,
+  CONNECTORS_QUERY_PREFIX,
   EDGE_NETWORKS_QUERY_KEY,
   type ConnectorDto,
   type ConnectorInstallReason,
   type ConnectorInstallReveal,
+  type ConnectorLinkDto,
   type ConnectorPeerBlock,
   type ConnectorPeerConfigDto,
   type EdgeNatServer,
 } from "@/components/network/edge-networks-types";
 import {
   CommandBlock,
-  ConnectorCopyRow,
   ConnectorKindBadge,
   ConnectorStatusBadge,
   InstallEnd,
   InstallStep,
+  MobileCopyRow,
   elide,
 } from "./mobile-connector-atoms";
+import { ConnectorLinkKeyRows } from "./mobile-connector-links";
 
 /** The one-time reveal plus the context the install sheet needs to track progress. */
 export interface InstallReveal extends ConnectorInstallReveal {
@@ -52,11 +56,24 @@ export interface InstallReveal extends ConnectorInstallReveal {
   reason: ConnectorInstallReason;
   /** `lastSeenAt` when the sheet opened, so a rotate only claims success on a re-check-in. */
   baselineLastSeenAt: string | null;
+  /**
+   * The edge whose setup step is worth showing. One install serves every linked
+   * edge, so this is context, not ownership — null when the connector is not
+   * linked to any edge yet.
+   */
+  server: EdgeNatServer | null;
 }
 
-/** Manual-kind setup: no token, no command — the peer block and a key to paste back. */
+/**
+ * Manual-kind setup for ONE edge: no token, no command — the peer block and a
+ * key to paste back. The block is per-link because the tunnel address is: the
+ * far side holds a different address on each edge it peers with.
+ */
 export interface ManualSetup {
   connector: ConnectorDto;
+  server: EdgeNatServer;
+  /** The link that carries this edge's tunnel address; null until it is linked. */
+  link: ConnectorLinkDto | null;
   /** The paste-ready peer config the create response carried, when it had one. */
   apiPeerConfig?: ConnectorPeerConfigDto | null;
 }
@@ -171,24 +188,24 @@ function ConnectorInstallEnd({
  * list polls behind the sheet until the connector checks in.
  */
 export function ConnectorInstallSheet({
-  server,
   reveal,
+  edges,
   live,
   onOpenChange,
 }: {
-  server: EdgeNatServer;
   reveal: InstallReveal;
+  edges: readonly EdgeNatServer[];
   live: ConnectorDto | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
   const connector = live ?? reveal.connector;
+  const server = reveal.server;
   const progress = connectorInstallProgress({
     connector,
     reason: reveal.reason,
     baselineLastSeenAt: reveal.baselineLastSeenAt,
   });
   const connected = progress.state === "connected";
-  const tunnel = edgeTunnelEndpoint(server);
 
   return (
     <BottomSheet
@@ -204,15 +221,15 @@ export function ConnectorInstallSheet({
           rotate the token for a new command.
         </p>
 
-        <EdgeInstallEnd server={server} />
+        {server && <EdgeInstallEnd server={server} />}
         <ConnectorInstallEnd
           name={reveal.connector.name}
-          serverName={server.name}
+          serverName={server?.name ?? "the edge"}
           command={reveal.installCommand}
           connected={connected}
         />
 
-        <ConnectorCopyRow label="Connector ID" value={reveal.connector.connectorId} />
+        <MobileCopyRow label="Connector ID" value={reveal.connector.connectorId} />
 
         <MobileList>
           <MobileKeyRow label="Status">
@@ -221,12 +238,12 @@ export function ConnectorInstallSheet({
               {progress.label}
             </Badge>
           </MobileKeyRow>
-          <MobileKeyRow label="Tunnel address" mono>
-            {connector.tunnelAddress}
-          </MobileKeyRow>
-          <MobileKeyRow label="Dials out to" mono>
-            {tunnel.label}
-          </MobileKeyRow>
+          <ConnectorLinkKeyRows connector={connector} edges={edges} />
+          {server && (
+            <MobileKeyRow label="Dials out to" mono>
+              {edgeTunnelEndpoint(server).label}
+            </MobileKeyRow>
+          )}
         </MobileList>
 
         <p
@@ -240,7 +257,7 @@ export function ConnectorInstallSheet({
         </p>
         <p className="px-0.5 text-[11px] text-muted-foreground">
           Once it is up, set its SSH host in the connector details so PolySIEM can push changes immediately as well as
-          through the poll.
+          through the poll. You only install it once — link it to another edge box and it serves that one too.
         </p>
 
         <Button variant="outline" className="w-full" onClick={() => onOpenChange(false)}>
@@ -255,17 +272,17 @@ export function ConnectorInstallSheet({
 function PeerConfigRows({ block, opnsense }: { block: ConnectorPeerBlock; opnsense: boolean }) {
   return (
     <div className="flex flex-col gap-2">
-      <ConnectorCopyRow label={opnsense ? "Endpoint (edge)" : "Edge endpoint"} value={block.edgeEndpoint} />
-      <ConnectorCopyRow label="Edge public key" value={block.edgePublicKey ?? "Generate the edge key first"} />
-      <ConnectorCopyRow
+      <MobileCopyRow label={opnsense ? "Endpoint (edge)" : "Edge endpoint"} value={block.edgeEndpoint} />
+      <MobileCopyRow label="Edge public key" value={block.edgePublicKey ?? "Generate the edge key first"} />
+      <MobileCopyRow
         label={opnsense ? "Allowed IPs (on the edge peer)" : "AllowedIPs for the edge peer"}
         value={block.allowedIps.join(", ") || "Set the edge tunnel address first"}
       />
-      <ConnectorCopyRow
+      <MobileCopyRow
         label={opnsense ? "Tunnel address for OPNsense" : "Tunnel address for this peer"}
         value={block.tunnelAddressCidr}
       />
-      <ConnectorCopyRow label="Persistent keepalive" value={String(block.persistentKeepalive)} />
+      <MobileCopyRow label="Persistent keepalive" value={String(block.persistentKeepalive)} />
     </div>
   );
 }
@@ -305,15 +322,7 @@ function PeerInstructions({ opnsense, keepalive }: { opnsense: boolean; keepaliv
 }
 
 /** Takes the far side's PUBLIC key back — the only key material that ever travels. */
-function PeerKeyForm({
-  server,
-  connector,
-  opnsense,
-}: {
-  server: EdgeNatServer;
-  connector: ConnectorDto;
-  opnsense: boolean;
-}) {
+function PeerKeyForm({ connector, opnsense }: { connector: ConnectorDto; opnsense: boolean }) {
   const queryClient = useQueryClient();
   const [publicKey, setPublicKey] = useState(connector.publicKey ?? "");
   const keyValid = isWireguardPublicKey(publicKey);
@@ -325,8 +334,10 @@ function PeerKeyForm({
         body: JSON.stringify({ publicKey: value }),
       }),
     onSuccess: () => {
-      toast.success("Peer key saved. Apply the edge to register it.");
-      void queryClient.invalidateQueries({ queryKey: connectorsQueryKey(server.id) });
+      // One key identifies this peer on every edge it is linked to, so each of
+      // those edges needs an apply to register it.
+      toast.success("Peer key saved. Apply each linked edge to register it.");
+      void queryClient.invalidateQueries({ queryKey: CONNECTORS_QUERY_PREFIX });
       void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
     onError: (error: Error) => toast.error(`Could not save the peer key: ${error.message}`),
@@ -376,20 +387,22 @@ function PeerKeyForm({
  * side's public key back.
  */
 export function ConnectorPeerSetupSheet({
-  server,
   setup,
   live,
   onOpenChange,
 }: {
-  server: EdgeNatServer;
   setup: ManualSetup;
   live: ConnectorDto | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
   const connector = live ?? setup.connector;
+  const server = setup.server;
   const kind = connectorKindOf(connector);
   const opnsense = kind === "opnsense";
   const progress = connectorPeerProgress(connector);
+  // The address belongs to the LINK, so it is re-read from the live connector:
+  // this same far end holds a different address on every other edge it serves.
+  const tunnelAddress = connectorTunnelAddressFor(connector, server.id) ?? setup.link?.tunnelAddress ?? "";
 
   // The API may serve a ready-made block per connector; when that endpoint is
   // absent or fails, the shared resolver derives the same values from the edge
@@ -402,11 +415,13 @@ export function ConnectorPeerSetupSheet({
     retry: false,
     staleTime: 30_000,
   });
-  const block = resolveConnectorPeerBlock({
-    server,
-    connector,
-    peerConfig: peerConfigQuery.data ?? setup.apiPeerConfig ?? null,
-  });
+  // The shared resolver answers "what does the far side need on THIS edge",
+  // reading the address from that edge's link; the explicit fallback covers a
+  // link created a moment ago and not yet in the cached connector.
+  const peerConfig = peerConfigQuery.data ?? setup.apiPeerConfig ?? null;
+  const block =
+    connectorPeerBlockFor({ server, connector, peerConfig }) ??
+    resolveConnectorPeerBlock({ server, connector: { tunnelAddress }, peerConfig });
   const snippet = buildConnectorPeerSnippet(block, { kind, name: connector.name });
 
   const copyAll = async () => {
@@ -422,7 +437,7 @@ export function ConnectorPeerSetupSheet({
     <BottomSheet
       open
       onOpenChange={onOpenChange}
-      title={`Set up ${connector.name}`}
+      title={`Set up ${connector.name} on ${server.name}`}
       description={
         opnsense
           ? "Paste these into OPNsense, then bring its public key back here."
@@ -436,6 +451,13 @@ export function ConnectorPeerSetupSheet({
         </p>
 
         {peerConfigQuery.isLoading && <Skeleton className="h-16 rounded-xl" />}
+        {!tunnelAddress && (
+          <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+            This connector is not linked to {server.name} yet, so it holds no address on that edge. Link it first — the
+            address is allocated by the link.
+          </p>
+        )}
         {!block.edgePublicKey && (
           <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
             <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
@@ -451,7 +473,7 @@ export function ConnectorPeerSetupSheet({
 
         <PeerInstructions opnsense={opnsense} keepalive={block.persistentKeepalive} />
 
-        <PeerKeyForm server={server} connector={connector} opnsense={opnsense} />
+        <PeerKeyForm connector={connector} opnsense={opnsense} />
 
         <MobileList>
           <MobileKeyRow label="Kind">
@@ -462,6 +484,9 @@ export function ConnectorPeerSetupSheet({
           </MobileKeyRow>
           <MobileKeyRow label="Connector ID" mono>
             {connector.connectorId}
+          </MobileKeyRow>
+          <MobileKeyRow label={`Address on ${server.name}`} mono>
+            {tunnelAddress || "Not linked"}
           </MobileKeyRow>
         </MobileList>
 
@@ -476,8 +501,9 @@ export function ConnectorPeerSetupSheet({
           {progress.detail}
         </p>
         <p className="px-0.5 text-[11px] text-muted-foreground">
-          Routes published through this peer stop at its tunnel address — the far side forwards them onward to the
-          service itself.
+          Routes published through this peer stop at its tunnel address on this edge — the far side forwards them
+          onward to the service itself. Linking the same far end to another edge gives it a second address there, on
+          the same WireGuard interface.
         </p>
 
         <Button variant="outline" className="w-full" onClick={() => onOpenChange(false)}>

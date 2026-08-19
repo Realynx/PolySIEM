@@ -19,10 +19,10 @@ import {
 } from "@/components/network/edge-networks-types";
 
 /**
- * Small shared pieces of the phone connector surface — badges, the tap-to-copy
- * row, and the numbered install cards. They are used by the list, the detail
- * sheet and both setup flows, so they live here instead of in whichever file
- * happened to need them first.
+ * Small shared pieces of the phone edge-network surface — connector badges, the
+ * tap-to-copy row, and the numbered install cards. They are used by the lists,
+ * the detail sheets, both setup flows and the edge card's sync details, so they
+ * live here instead of in whichever file happened to need them first.
  */
 
 /**
@@ -78,7 +78,17 @@ export function sshEndpointLabel(connector: ConnectorDto): string {
 }
 
 /** Full-width tap-to-copy value row — phones have no hover affordance. */
-export function ConnectorCopyRow({ label, value }: { label: string; value: string }) {
+export function MobileCopyRow({
+  label,
+  value,
+  display,
+}: {
+  label: string;
+  /** What lands on the clipboard — always the full value. */
+  value: string;
+  /** Shortened stand-in for a value too long to read on a phone, e.g. a hash. */
+  display?: string;
+}) {
   const copy = async () => {
     try {
       await copyText(value);
@@ -95,7 +105,7 @@ export function ConnectorCopyRow({ label, value }: { label: string; value: strin
     >
       <span className="min-w-0 flex-1">
         <span className="block text-[10px] tracking-wide text-muted-foreground uppercase">{label}</span>
-        <span className="block truncate font-mono text-xs">{value}</span>
+        <span className="block truncate font-mono text-xs">{display ?? value}</span>
       </span>
       <span className="shrink-0 text-[11px] text-muted-foreground">Tap to copy</span>
     </button>

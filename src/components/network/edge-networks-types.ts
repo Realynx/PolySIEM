@@ -176,7 +176,12 @@ export interface EdgeNetworksOverview {
   otherNetworks: OtherEdgeNetwork[];
 }
 
-export type EdgeNetworkTab = "edge" | "tailscale" | "cloudflare";
+/**
+ * Page-level tabs. `connectors` is a PEER of `edge`, not a child of it: a
+ * connector is installed once and can serve several edge boxes, so it needs a
+ * home that is not inside any one server's card.
+ */
+export type EdgeNetworkTab = "edge" | "connectors" | "tailscale" | "cloudflare";
 
 export const EDGE_NETWORKS_QUERY_KEY = ["edge-networks"] as const;
 
@@ -692,17 +697,24 @@ export function toWireguardConfigInput(
 
 // ---------------------------------------------------------------------------
 // Connectors — Cloudflare-Tunnel-style reverse-tunnel agents. Consumed from
-//   GET              /api/network/connectors?integrationId=<id>
+//   GET              /api/network/connectors                  (every connector)
+//   GET              /api/network/connectors?integrationId=<id> (linked to one edge)
 //   POST             /api/network/connectors
 //   GET/PATCH/DELETE /api/network/connectors/:id
+//   POST             /api/network/connectors/:id/links
+//   PATCH/DELETE     /api/network/connectors/:id/links/:linkId
 //   POST             /api/network/connectors/:id/rotate-token
 //   GET/POST         /api/network/connectors/:id/host-key
 //   POST             /api/network/connectors/:id/apply
 //   GET              /api/network/connectors/:id/status
 //
 // A connector DIALS OUT from inside the private network and holds the tunnel
-// open, so nothing at home needs a public IP or an inbound port. Its tunnel
-// address is allocated by PolySIEM and is never typed by an operator.
+// open, so nothing at home needs a public IP or an inbound port.
+//
+// A connector is a STANDALONE thing, not part of one edge box: install it once,
+// link it to as many edge boxes as you like, and any of them can route through
+// it. Each link carries the tunnel address allocated from that edge's own
+// subnet — allocated by PolySIEM, never typed by an operator.
 //
 // Two management transports converge on the same state: SSH push (immediate,
 // and the STATUS source) and the token poll (self-healing fallback).
@@ -734,19 +746,60 @@ export type ConnectorStatus = "pending" | "connected" | "configured" | "stale" |
  */
 export type ConnectorKind = "agent" | "opnsense" | "peer";
 
+/**
+ * One connector peered with one edge box.
+ *
+ * This is what makes connectors independent: a connector is installed ONCE and
+ * links to as many edge boxes as you like, and any edge box routes through any
+ * connector linked to it. The tunnel address lives here rather than on the
+ * connector because every edge has its own tunnel subnet — a connector serving
+ * two edges holds a different address on each. PolySIEM allocates it; the
+ * operator never types one.
+ */
+export interface ConnectorLinkDto {
+  id: string;
+  /** `EdgeNatServer.id` — the edge integration this link peers with. */
+  integrationId: string;
+  /** Display name of that edge box, so a row reads without a second lookup. */
+  edgeName?: string | null;
+  /** Allocated from THAT edge's tunnel subnet, e.g. "10.9.9.3". Read-only. */
+  tunnelAddress: string;
+  /** False keeps the link (and its address) on record with the peer torn down. */
+  enabled?: boolean;
+  lastHandshakeAt?: string | null;
+}
+
 /** Sanitized connector row. Mirrors the API DTO exactly — never carries secrets. */
 export interface ConnectorDto {
   id: string;
-  integrationId: string;
   name: string;
+  /**
+   * Every edge box this connector serves, with that edge's tunnel address.
+   * Optional only so an in-flight or older API response still renders; read it
+   * through `connectorLinks` rather than directly.
+   */
+  links?: ConnectorLinkDto[];
+  /**
+   * The single WireGuard interface the agent owns. One interface carries a peer
+   * per linked edge — PolySIEM never asks for one netdev per edge.
+   */
+  interfaceName?: string | null;
+  /**
+   * @deprecated Connectors are no longer owned by an edge. Present only on
+   * responses issued before links existed; read `links` instead.
+   */
+  integrationId?: string;
+  /**
+   * @deprecated Moved to `ConnectorLinkDto.tunnelAddress` (one per edge). Kept
+   * as a fallback so a pre-links response still shows an address.
+   */
+  tunnelAddress?: string;
   /** Absent on responses issued before connector kinds existed; read as "agent". */
   kind?: ConnectorKind;
   /** API convenience flag for "opnsense" | "peer". Derived locally when absent. */
   isManual?: boolean;
   /** Stable public identifier (e.g. "cx_…"), shown to the operator and copyable. */
   connectorId: string;
-  /** Allocated by PolySIEM at creation; read-only in every UI surface. */
-  tunnelAddress: string;
   /** The connector's OWN WireGuard public key, posted at enroll. Safe to show. */
   publicKey: string | null;
   status: ConnectorStatus;
@@ -822,6 +875,17 @@ export interface CreateConnectorInput {
   kind: ConnectorKind;
   /** Manual kinds only, and only when the operator already has the far-side key. */
   publicKey?: string;
+  /**
+   * Optional convenience: link the new connector to this edge box in the same
+   * call. Omitted when the operator adds a connector before deciding which edge
+   * boxes it should serve.
+   */
+  integrationId?: string;
+}
+
+/** POST /api/network/connectors/:id/links — the edge box to start serving. */
+export interface LinkConnectorInput {
+  integrationId: string;
 }
 
 export interface UpdateConnectorInput {
@@ -839,12 +903,40 @@ export interface UpdateConnectorInput {
 export const CONNECTORS_QUERY_KEY = "edge-connectors" as const;
 export const CONNECTORS_ENDPOINT = "/api/network/connectors";
 
-export function connectorsQueryKey(integrationId: string) {
-  return [CONNECTORS_QUERY_KEY, integrationId] as const;
+/**
+ * Cache key for a connector list. With no argument it keys the INSTANCE-WIDE
+ * list; with an edge id it keys that edge's linked connectors. Both share the
+ * `CONNECTORS_QUERY_KEY` prefix, so one invalidation refreshes every surface.
+ */
+export function connectorsQueryKey(integrationId?: string | null) {
+  return [CONNECTORS_QUERY_KEY, integrationId ?? "all"] as const;
 }
 
+/**
+ * Prefix that covers every connector list. One connector now shows up in the
+ * instance-wide list AND in each linked edge's list, so mutations invalidate the
+ * prefix rather than guessing which lists a change touched.
+ */
+export const CONNECTORS_QUERY_PREFIX = [CONNECTORS_QUERY_KEY] as const;
+
+/** Every connector on the instance, each with the edges it is linked to. */
+export function connectorsAllUrl(): string {
+  return CONNECTORS_ENDPOINT;
+}
+
+/** Filtered to the connectors LINKED to one edge box. */
 export function connectorsListUrl(integrationId: string): string {
   return `${CONNECTORS_ENDPOINT}?integrationId=${encodeURIComponent(integrationId)}`;
+}
+
+/** POST — start serving one more edge box (allocates that edge's address). */
+export function connectorLinksUrl(id: string): string {
+  return `${connectorUrl(id)}/links`;
+}
+
+/** DELETE unlinks; PATCH `{ enabled }` suspends the peer without losing it. */
+export function connectorLinkUrl(id: string, linkId: string): string {
+  return `${connectorLinksUrl(id)}/${encodeURIComponent(linkId)}`;
 }
 
 export function connectorUrl(id: string): string {
@@ -897,6 +989,132 @@ export const CONNECTOR_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.-]*$/;
 export function isValidConnectorName(value: string): boolean {
   const trimmed = value.trim();
   return trimmed.length > 0 && trimmed.length <= 64 && CONNECTOR_NAME_PATTERN.test(trimmed);
+}
+
+// ---------------------------------------------------------------------------
+// Links — connectors and edge boxes are two separate things.
+//
+// One installed connector serves several edge boxes, and any edge box can route
+// through any connector linked to it. Each link carries the tunnel address
+// allocated from that edge's own subnet, so "the connector's address" is always
+// a question about a specific edge.
+// ---------------------------------------------------------------------------
+
+/** Default name of the single WireGuard interface a connector agent owns. */
+export const CONNECTOR_INTERFACE_DEFAULT = "wg0";
+
+/** The one sentence every connector surface should make obvious. */
+export const CONNECTOR_INDEPENDENCE_COPY =
+  "A connector is installed once and can serve several edge boxes — link it to as many as you like, and any of them can route through it.";
+
+export function connectorInterfaceName(connector: Pick<ConnectorDto, "interfaceName">): string {
+  return connector.interfaceName?.trim() || CONNECTOR_INTERFACE_DEFAULT;
+}
+
+/**
+ * Every link on a connector, tolerating an API that has not sent `links` yet:
+ * a pre-links response is read as the single implied link to its old owning
+ * edge, so nothing disappears from the UI mid-rollout.
+ */
+export function connectorLinks(connector: ConnectorDto): ConnectorLinkDto[] {
+  if (Array.isArray(connector.links)) return connector.links;
+  if (connector.integrationId && connector.tunnelAddress) {
+    return [{
+      id: `${connector.id}:${connector.integrationId}`,
+      integrationId: connector.integrationId,
+      tunnelAddress: connector.tunnelAddress,
+      enabled: true,
+      lastHandshakeAt: connector.lastHandshakeAt,
+    }];
+  }
+  return [];
+}
+
+/** The link to one edge box, or null when this connector does not serve it. */
+export function connectorLinkFor(connector: ConnectorDto, integrationId: string | null | undefined): ConnectorLinkDto | null {
+  if (!integrationId) return null;
+  return connectorLinks(connector).find((link) => link.integrationId === integrationId) ?? null;
+}
+
+/** A link counts as live unless it was explicitly suspended. */
+export function isConnectorLinkEnabled(link: ConnectorLinkDto): boolean {
+  return link.enabled !== false;
+}
+
+export function isConnectorLinkedTo(connector: ConnectorDto, integrationId: string | null | undefined): boolean {
+  return connectorLinkFor(connector, integrationId) !== null;
+}
+
+/**
+ * This connector's tunnel address ON ONE EDGE. Null when it does not serve that
+ * edge — which is the honest answer, not an address it does not hold.
+ */
+export function connectorTunnelAddressFor(
+  connector: ConnectorDto,
+  integrationId: string | null | undefined,
+): string | null {
+  const link = connectorLinkFor(connector, integrationId);
+  if (link?.tunnelAddress) return link.tunnelAddress;
+  return connector.tunnelAddress ?? null;
+}
+
+/** Connectors this edge box can route through, in the order the API returned. */
+export function connectorsLinkedTo(connectors: readonly ConnectorDto[], integrationId: string): ConnectorDto[] {
+  return connectors.filter((connector) => isConnectorLinkedTo(connector, integrationId));
+}
+
+/** Already-installed connectors this edge box could start using. */
+export function connectorsAvailableToLink(connectors: readonly ConnectorDto[], integrationId: string): ConnectorDto[] {
+  return connectors.filter((connector) => !isConnectorLinkedTo(connector, integrationId));
+}
+
+/** Edge boxes a connector does not serve yet — the "Link to an edge" options. */
+export function edgesAvailableForConnector(
+  connector: ConnectorDto,
+  servers: readonly EdgeNatServer[],
+): EdgeNatServer[] {
+  return servers.filter((server) => !isConnectorLinkedTo(connector, server.id));
+}
+
+export interface ConnectorLinkSummary {
+  total: number;
+  enabled: number;
+  /** True when this connector already proves the point: it serves several edges. */
+  shared: boolean;
+  label: string;
+}
+
+/** Row-level summary of how many edge boxes one connector serves. */
+export function connectorLinkSummary(connector: ConnectorDto): ConnectorLinkSummary {
+  const links = connectorLinks(connector);
+  const enabled = links.filter(isConnectorLinkEnabled).length;
+  const total = links.length;
+  return {
+    total,
+    enabled,
+    shared: total > 1,
+    label: total === 0
+      ? "Not linked to an edge box yet"
+      : total === 1
+        ? "Serving 1 edge box"
+        : `Serving ${total} edge boxes`,
+  };
+}
+
+/** Resolves a link to the edge server row it points at, when it is loaded. */
+export function edgeServerForLink(
+  servers: readonly EdgeNatServer[],
+  link: ConnectorLinkDto,
+): EdgeNatServer | null {
+  return servers.find((server) => server.id === link.integrationId) ?? null;
+}
+
+/** The edge's own name, preferring the loaded server over the link's copy. */
+export function connectorLinkEdgeName(
+  link: ConnectorLinkDto,
+  servers: readonly EdgeNatServer[] = [],
+): string {
+  return edgeServerForLink(servers, link)?.name ?? link.edgeName?.trim() ?? "Edge box";
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,6 +1256,24 @@ export function isConnectorSelectable(
   return connector.status !== "disabled" && isConnectorEnrolled(connector);
 }
 
+/**
+ * Whether ONE edge box may publish a route through this connector: it has to be
+ * usable at all, and it has to actually serve that edge with a live link.
+ */
+export function isConnectorSelectableFor(connector: ConnectorDto, integrationId: string): boolean {
+  const link = connectorLinkFor(connector, integrationId);
+  return link !== null && isConnectorLinkEnabled(link) && isConnectorSelectable(connector);
+}
+
+/** Why a linked connector cannot carry a route on this edge — null when it can. */
+export function connectorUnavailableReason(connector: ConnectorDto, integrationId: string): string | null {
+  const link = connectorLinkFor(connector, integrationId);
+  if (!link) return "not linked to this edge box";
+  if (!isConnectorLinkEnabled(link)) return "link suspended on this edge box";
+  if (!isConnectorSelectable(connector)) return connectorStatusPresentation(connector).label.toLowerCase();
+  return null;
+}
+
 /** Freshest proof of life: the WireGuard handshake first, then the agent heartbeat. */
 export function connectorLastContactAt(
   connector: Pick<ConnectorDto, "lastHandshakeAt" | "lastSeenAt">,
@@ -1087,6 +1323,10 @@ export function connectorSummary(connectors: readonly ConnectorDto[]) {
     disabled: count("disabled"),
     manual: connectors.filter(isManualConnector).length,
     selectable: connectors.filter(isConnectorSelectable).length,
+    /** Connectors already serving more than one edge box. */
+    shared: connectors.filter((connector) => connectorLinks(connector).length > 1).length,
+    /** Installed but not yet serving any edge box. */
+    unlinked: connectors.filter((connector) => connectorLinks(connector).length === 0).length,
   };
 }
 
@@ -1252,27 +1492,48 @@ function edgeTunnelAddressParts(tunnel: WireguardTunnelDto | undefined): {
 }
 
 /**
- * Derive the far-side block from data the desktop already has: the edge's
- * WireGuard settings and the connector's allocated tunnel address. This is the
- * graceful fallback when the API has not supplied a block.
+ * Derive the far-side block from data the desktop already has: one edge's
+ * WireGuard settings and the address allocated to this connector ON THAT EDGE.
+ * A connector serving several edges has one block per edge, which is why the
+ * server is an argument rather than an assumption.
  */
 export function deriveConnectorPeerBlock(input: {
   server: EdgeNatServer;
-  connector: Pick<ConnectorDto, "tunnelAddress">;
+  connector: { tunnelAddress?: string | null };
 }): ConnectorPeerBlock {
   const tunnel = input.server.settings?.wireguard;
   const { address, host: edgeHost, prefix } = edgeTunnelAddressParts(tunnel);
   const port = tunnel?.listenPort ?? WIREGUARD_DEFAULTS.listenPort;
+  const tunnelAddress = input.connector.tunnelAddress ?? "";
   return {
     edgeEndpoint: `${edgeTunnelHost(input.server)}:${port}`,
     edgePublicKey: tunnel?.publicKey ?? null,
     edgeAddress: address,
     allowedIps: [`${edgeHost}/32`],
-    tunnelAddress: input.connector.tunnelAddress,
-    tunnelAddressCidr: `${input.connector.tunnelAddress}/${prefix}`,
+    tunnelAddress,
+    tunnelAddressCidr: tunnelAddress ? `${tunnelAddress}/${prefix}` : "",
     interfaceName: tunnel?.interfaceName || WIREGUARD_DEFAULTS.interfaceName,
     persistentKeepalive: tunnel?.peer?.persistentKeepalive ?? CONNECTOR_PEER_KEEPALIVE,
   };
+}
+
+/**
+ * The far-side block for one connector on one edge box, resolving the tunnel
+ * address through that edge's link. Returns null when the connector does not
+ * serve that edge — there is no address to show until it is linked.
+ */
+export function connectorPeerBlockFor(input: {
+  server: EdgeNatServer;
+  connector: ConnectorDto;
+  peerConfig?: ConnectorPeerConfigDto | null;
+}): ConnectorPeerBlock | null {
+  const tunnelAddress = connectorTunnelAddressFor(input.connector, input.server.id);
+  if (!tunnelAddress) return null;
+  return resolveConnectorPeerBlock({
+    server: input.server,
+    connector: { tunnelAddress },
+    peerConfig: input.peerConfig,
+  });
 }
 
 /** A trimmed server-supplied string, or the locally derived value. */
@@ -1289,7 +1550,7 @@ function preferRemoteAllowedIps(remote: string[] | null | undefined, derived: st
 /** Server-supplied values win; anything it omits is filled in locally. */
 export function resolveConnectorPeerBlock(input: {
   server: EdgeNatServer;
-  connector: Pick<ConnectorDto, "tunnelAddress">;
+  connector: { tunnelAddress?: string | null };
   peerConfig?: ConnectorPeerConfigDto | null;
 }): ConnectorPeerBlock {
   const derived = deriveConnectorPeerBlock(input);
@@ -1645,17 +1906,20 @@ export function edgeTunnelEndpoint(server: EdgeNatServer): { host: string | null
  * program end to end.
  */
 export function connectorRouteWarning(
-  connector: Pick<ConnectorDto, "name" | "tunnelAddress"> & Partial<Pick<ConnectorDto, "kind" | "isManual">>,
+  connector: ConnectorDto,
   rule?: { publicPort?: number | string | null },
+  /** The edge publishing the rule; its link supplies the tunnel address. */
+  integrationId?: string | null,
 ): { title: string; detail: string } | null {
   if (!isManualConnector({ kind: connector.kind, isManual: connector.isManual })) return null;
   const kind = connectorKindPresentation(connectorKindOf(connector));
   const port = rule?.publicPort ? String(rule.publicPort) : "the same port";
+  const address = connectorTunnelAddressFor(connector, integrationId) ?? "its tunnel address on this edge";
   return {
     title: `PolySIEM cannot program ${kind.farSide}`,
     detail: kind.kind === "opnsense"
-      ? `The edge forwards this port to ${connector.tunnelAddress} over the tunnel. Finish the path with a port forward on ${connector.name} from its WireGuard interface on ${port} to the service you are publishing.`
-      : `The edge forwards this port to ${connector.tunnelAddress} over the tunnel. ${connector.name} must forward ${port} onward to the service itself — PolySIEM only manages the edge end.`,
+      ? `The edge forwards this port to ${address} over the tunnel. Finish the path with a port forward on ${connector.name} from its WireGuard interface on ${port} to the service you are publishing.`
+      : `The edge forwards this port to ${address} over the tunnel. ${connector.name} must forward ${port} onward to the service itself — PolySIEM only manages the edge end.`,
   };
 }
 

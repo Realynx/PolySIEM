@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 
 process.env.APP_SECRET = "unit-test-secret-0123456789abcdef0123456789abcdef";
@@ -12,11 +13,20 @@ const mocks = vi.hoisted(() => {
     update: vi.fn(),
     deleteMany: vi.fn(),
   };
+  const connectorEdgeLink = {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    updateMany: vi.fn(),
+    deleteMany: vi.fn(),
+  };
   const edgeNatRule = { findMany: vi.fn() };
   const integrationConfig = { findUnique: vi.fn() };
-  const tx = { connector, edgeNatRule, integrationConfig, $queryRaw: vi.fn() };
+  const tx = { connector, connectorEdgeLink, edgeNatRule, integrationConfig, $queryRaw: vi.fn() };
   return {
     connector,
+    connectorEdgeLink,
     edgeNatRule,
     integrationConfig,
     tx,
@@ -31,6 +41,7 @@ const mocks = vi.hoisted(() => {
 vi.mock("@/lib/db", () => ({
   prisma: {
     connector: mocks.connector,
+    connectorEdgeLink: mocks.connectorEdgeLink,
     edgeNatRule: mocks.edgeNatRule,
     integrationConfig: mocks.integrationConfig,
     $transaction: async (work: (tx: unknown) => Promise<unknown>) => work(mocks.tx),
@@ -75,8 +86,12 @@ import {
   connectorMachineRateLimited,
   connectorTokenMatches,
   createConnector,
+  deleteConnector,
   deriveConnectorStatus,
   enrollConnector,
+  linkConnector,
+  setConnectorLinkEnabled,
+  unlinkConnector,
   generateConnectorPublicId,
   generateConnectorSshKey,
   generateConnectorToken,
@@ -105,6 +120,7 @@ const AGENT_PUBLIC_KEY = "K5rM2QdFvJ7t8YbN1oPxWzCqEaHiUjLmSnTvBcDgRfE=";
 function edgeIntegrationRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "edge-1",
+    name: "Edge A",
     type: "EDGE_NAT_SERVER",
     baseUrl: "ssh://23.94.251.183:22",
     settings: {
@@ -122,14 +138,39 @@ function edgeIntegrationRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * One connector ↔ edge link, as the DTO projection sees it. Phase 4: the tunnel
+ * address belongs to the LINK, because a connector serving two edges holds a
+ * different address on each.
+ */
+function linkRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "cx-link-1",
+    connectorId: "cx-row-1",
+    integrationId: "edge-1",
+    tunnelAddress: "10.9.9.3",
+    enabled: true,
+    lastHandshakeAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    integration: { name: "Edge A" },
+    ...overrides,
+  };
+}
+
+/** The same link, hydrated with the full edge integration (what tunnel plans read). */
+function linkWithEdge(overrides: Record<string, unknown> = {}) {
+  return linkRow({ integration: edgeIntegrationRow(), ...overrides });
+}
+
 function connectorRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "cx-row-1",
-    integrationId: "edge-1",
     name: "EdgeNetworkVm",
     kind: "agent",
     connectorId: "cx_abcdefghijklmnop",
-    tunnelAddress: "10.9.9.3",
+    interfaceName: "wg0",
+    links: [linkRow()],
     publicKey: null,
     installTokenHash: null,
     installTokenIssuedAt: null,
@@ -170,6 +211,24 @@ function sshManagedRow(overrides: Record<string, unknown> = {}) {
   });
 }
 
+/**
+ * The single edge peer the default fixture connector holds, in the generator's
+ * frozen `TUNNEL` shape. `edgeKey` is the edge integration id.
+ */
+const EDGE_TUNNEL = {
+  edgeKey: "edge-1",
+  address: "10.9.9.3/24",
+  endpoint: "23.94.251.183:51820",
+  publicKey: EDGE_PUBLIC_KEY,
+  allowedIps: ["10.9.9.0/24"],
+  persistentKeepalive: 25,
+};
+
+/** What PolySIEM wants applied, hashed by the SAME code the agent mirrors. */
+function desiredRuleset(routes: Array<Record<string, unknown>> = [], tunnels = [EDGE_TUNNEL]) {
+  return { interfaceName: "wg0", tunnels, routes };
+}
+
 function statusResponse(lines: string[] = []) {
   return {
     stdout: [
@@ -185,7 +244,7 @@ function statusResponse(lines: string[] = []) {
       "WG_PEERS\t1",
       "IP_FORWARD\t1",
       "APPLIED_REVISION\t3",
-      `APPLIED_HASH\t${realConnectorRulesetHash([])}`,
+      `APPLIED_HASH\t${realConnectorRulesetHash(desiredRuleset() as never)}`,
       "RULESET_DRIFT\t0",
       "ROUTE_COUNT\t0",
       ...lines,
@@ -201,6 +260,9 @@ beforeEach(() => {
   resetConnectorRateLimit();
   mocks.connectorRulesetHash.mockReturnValue("b".repeat(64));
   mocks.integrationConfig.findUnique.mockResolvedValue(edgeIntegrationRow());
+  // The default fixture connector serves exactly one edge server. (`mocks.tx.*`
+  // deliberately aliases `mocks.*`: the transaction client is the same surface.)
+  mocks.connectorEdgeLink.findMany.mockResolvedValue([linkWithEdge()]);
 });
 
 // ---------------------------------------------------------------------------
@@ -341,12 +403,20 @@ describe("toConnectorDto", () => {
 
     expect(dto).toEqual({
       id: "cx-row-1",
-      integrationId: "edge-1",
       name: "EdgeNetworkVm",
+      // The address lives on the LINK now: one per edge this connector serves.
+      links: [{
+        id: "cx-link-1",
+        integrationId: "edge-1",
+        edgeName: "Edge A",
+        tunnelAddress: "10.9.9.3",
+        enabled: true,
+        lastHandshakeAt: null,
+      }],
+      interfaceName: "wg0",
       kind: "agent",
       isManual: false,
       connectorId: "cx_abcdefghijklmnop",
-      tunnelAddress: "10.9.9.3",
       publicKey: AGENT_PUBLIC_KEY,
       status: "connected",
       disabled: false,
@@ -404,6 +474,34 @@ describe("toConnectorDto", () => {
   it("survives metadata that is not an object", () => {
     expect(toConnectorDto(connectorRow({ metadata: "nope" }) as never, NOW).hostname).toBeNull();
     expect(toConnectorDto(connectorRow({ metadata: ["a"] }) as never, NOW).hostname).toBeNull();
+  });
+
+  it("lists one link per edge, each with that edge's own address", () => {
+    const dto = toConnectorDto(connectorRow({
+      links: [
+        linkRow(),
+        linkRow({
+          id: "cx-link-2", integrationId: "edge-2", tunnelAddress: "10.9.10.7",
+          enabled: false, lastHandshakeAt: NOW, integration: { name: "Edge B" },
+        }),
+      ],
+    }) as never, NOW);
+    expect(dto.links).toEqual([
+      { id: "cx-link-1", integrationId: "edge-1", edgeName: "Edge A", tunnelAddress: "10.9.9.3", enabled: true, lastHandshakeAt: null },
+      { id: "cx-link-2", integrationId: "edge-2", edgeName: "Edge B", tunnelAddress: "10.9.10.7", enabled: false, lastHandshakeAt: NOW.toISOString() },
+    ]);
+  });
+
+  it("renders a standalone connector with no links at all", () => {
+    const dto = toConnectorDto(connectorRow({ links: [] }) as never, NOW);
+    expect(dto.links).toEqual([]);
+    expect(dto.interfaceName).toBe("wg0");
+  });
+
+  it("no longer carries a top-level owning edge or address", () => {
+    const dto = toConnectorDto(connectorRow() as never, NOW);
+    expect(Object.keys(dto)).not.toContain("integrationId");
+    expect(Object.keys(dto)).not.toContain("tunnelAddress");
   });
 });
 
@@ -513,10 +611,13 @@ describe("machine rate limit", () => {
 // ---------------------------------------------------------------------------
 
 describe("listConnectors", () => {
-  it("returns sanitized DTOs", async () => {
+  it("returns sanitized DTOs, FILTERED to the connectors linked to that edge", async () => {
     mocks.connector.findMany.mockResolvedValue([connectorRow({ installTokenHash: "a".repeat(64) })]);
     const [dto] = await listConnectors("edge-1");
-    expect(mocks.connector.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { integrationId: "edge-1" } }));
+    // A filter, not a scope: connectors are standalone and merely LINK to edges.
+    expect(mocks.connector.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { links: { some: { integrationId: "edge-1" } } },
+    }));
     expect(JSON.stringify(dto)).not.toContain("a".repeat(64));
     expect(dto.status).toBe("pending");
   });
@@ -528,23 +629,63 @@ describe("listConnectors", () => {
   });
 });
 
+/** Materialize a `connector.create` payload the way Prisma's nested write would. */
+function createdConnector(data: Record<string, unknown>) {
+  const nested = data.links as { create?: { integrationId: string; tunnelAddress: string } } | undefined;
+  const columns = { ...data };
+  delete columns.links;
+  return connectorRow({
+    ...columns,
+    links: nested?.create ? [linkRow(nested.create)] : [],
+  });
+}
+
+/** The address the nested link write allocated, or undefined for a standalone create. */
+function createdLinkAddress(): string | undefined {
+  const create = mocks.tx.connector.create.mock.calls[0]?.[0]?.data?.links?.create;
+  return create?.tunnelAddress;
+}
+
 describe("createConnector", () => {
-  it("allocates the next free tunnel address and returns a one-time token", async () => {
-    mocks.tx.connector.findMany.mockResolvedValue([{ tunnelAddress: "10.9.9.3" }]);
-    mocks.tx.connector.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
-      connectorRow({ ...data, id: "cx-row-2" }));
+  beforeEach(() => {
+    // A brand-new edge with nothing linked to it yet.
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([]);
+    mocks.connector.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      createdConnector(data));
+  });
+
+  it("allocates the next free tunnel address on that edge and returns a one-time token", async () => {
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([{ tunnelAddress: "10.9.9.3" }]);
 
     const result = await createConnector(ACTOR, "edge-1", { name: "EdgeNetworkVm", notes: null, kind: "agent" }, {
       baseUrl: "https://polysiem.example",
     });
 
     const created = mocks.tx.connector.create.mock.calls[0][0].data;
-    expect(created.tunnelAddress).toBe("10.9.9.2");
+    expect(createdLinkAddress()).toBe("10.9.9.2");
+    expect(created.links.create.integrationId).toBe("edge-1");
     expect(created.status).toBe("pending");
     expect(created.installTokenHash).toBe(hashConnectorToken(result.installToken!));
     expect(result.installToken).toMatch(/^pscx_/);
     expect(result.installCommand).toContain(result.installToken!);
     expect(JSON.stringify(result.connector)).not.toContain(result.installToken!);
+    expect(result.connector.links).toEqual([expect.objectContaining({ integrationId: "edge-1", tunnelAddress: "10.9.9.2" })]);
+  });
+
+  it("creates a STANDALONE connector when no edge is named, taking no edge lock", async () => {
+    // The whole point of phase 4: install a connector once, decide which edge
+    // boxes it serves later.
+    const result = await createConnector(ACTOR, undefined, { name: "roaming", notes: null, kind: "agent" }, {
+      baseUrl: "https://polysiem.example",
+    });
+    // No edge means no edge advisory lock and no edge lookup at all.
+    expect(mocks.tx.$queryRaw).not.toHaveBeenCalled();
+    expect(mocks.connector.create.mock.calls[0][0].data).not.toHaveProperty("links");
+    expect(mocks.integrationConfig.findUnique).not.toHaveBeenCalled();
+    expect(result.connector.links).toEqual([]);
+    // No edge means no far-side block to render yet.
+    expect(result.peerConfig).toBeNull();
+    expect(result.installToken).toMatch(/^pscx_/);
   });
 
   it("treats the manual peer's AllowedIPs as reserved", async () => {
@@ -557,12 +698,9 @@ describe("createConnector", () => {
         },
       },
     }));
-    mocks.tx.connector.findMany.mockResolvedValue([]);
-    mocks.tx.connector.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
-      connectorRow({ ...data }));
 
     await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, { baseUrl: "https://x.test" });
-    expect(mocks.tx.connector.create.mock.calls[0][0].data.tunnelAddress).toBe("10.9.9.3");
+    expect(createdLinkAddress()).toBe("10.9.9.3");
   });
 
   it("refuses when the edge tunnel is not configured", async () => {
@@ -586,16 +724,23 @@ describe("createConnector", () => {
         },
       },
     }));
-    mocks.tx.connector.findMany.mockResolvedValue([{ tunnelAddress: "10.0.0.6" }]);
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([{ tunnelAddress: "10.0.0.6" }]);
     await expect(createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" })).rejects.toMatchObject({
       status: 409, code: "tunnel_exhausted",
     });
   });
 
+  it("reports a globally duplicate name as a 409", async () => {
+    // Names are unique instance-wide now, not per edge.
+    mocks.connector.create.mockRejectedValue(
+      Object.assign(new Prisma.PrismaClientKnownRequestError("dup", { code: "P2002", clientVersion: "6" }), {}),
+    );
+    await expect(createConnector(ACTOR, undefined, { name: "taken", notes: null, kind: "agent" })).rejects.toMatchObject({
+      status: 409, code: "connector_exists",
+    });
+  });
+
   it("audits without recording the token", async () => {
-    mocks.tx.connector.findMany.mockResolvedValue([]);
-    mocks.tx.connector.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
-      connectorRow({ ...data }));
     const result = await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, { baseUrl: "https://x.test" });
     expect(JSON.stringify(mocks.audit.mock.calls)).not.toContain(result.installToken!);
     expect(mocks.audit).toHaveBeenCalledWith(ACTOR, "edge_nat.connector.create", expect.anything(), expect.anything());
@@ -619,6 +764,7 @@ describe("enrollConnector", () => {
 
     expect(result).toMatchObject({
       connectorId: "cx_abcdefghijklmnop",
+      // Phase-1 shaped fields still answer, taken from the primary link.
       tunnelAddress: "10.9.9.3",
       tunnelCidr: "10.9.9.0/24",
       interfaceName: "wg0",
@@ -630,6 +776,20 @@ describe("enrollConnector", () => {
         persistentKeepalive: 25,
       },
     });
+    // …and the v2 list carries one entry per enabled link.
+    expect(result.tunnels).toEqual([{
+      edgeKey: "edge-1",
+      edgeName: "Edge A",
+      tunnelAddress: "10.9.9.3",
+      tunnelAddressCidr: "10.9.9.3/24",
+      tunnelCidr: "10.9.9.0/24",
+      edge: {
+        endpoint: "23.94.251.183:51820",
+        publicKey: EDGE_PUBLIC_KEY,
+        allowedIps: ["10.9.9.0/24"],
+        persistentKeepalive: 25,
+      },
+    }]);
     expect(result.agentToken).toMatch(/^pscx_/);
     expect(result.agentToken).not.toBe(token);
 
@@ -701,19 +861,41 @@ describe("enrollConnector", () => {
     expect(mocks.markEdgeRulesPending).toHaveBeenCalled();
   });
 
-  it("refuses to enroll before the edge tunnel has a key", async () => {
-    mocks.integrationConfig.findUnique.mockResolvedValue(edgeIntegrationRow({
+  it("skips an edge whose tunnel has no key yet instead of failing the enrolment", async () => {
+    // A connector may serve several edges; one of them being half configured must
+    // not stop the agent from enrolling and bringing up the others.
+    const unconfigured = edgeIntegrationRow({
       settings: {
         wireguard: {
           enabled: true, interfaceName: "wg0", address: "10.9.9.1/24", listenPort: 51820,
           publicKey: null, hasPrivateKey: false, peer: null,
         },
       },
-    }));
-    mocks.connector.findFirst.mockResolvedValue(connectorRow({ installTokenHash: hashConnectorToken(token) }));
-    await expect(enrollConnector({ token, publicKey: AGENT_PUBLIC_KEY })).rejects.toMatchObject({
-      status: 409, code: "wireguard_not_configured",
     });
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([linkRow({ integration: unconfigured })]);
+    const row = connectorRow({ installTokenHash: hashConnectorToken(token) });
+    mocks.connector.findFirst.mockResolvedValue(row);
+    mocks.tx.connector.update.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      connectorRow({ ...row, ...data }));
+
+    const result = await enrollConnector({ token, publicKey: AGENT_PUBLIC_KEY });
+    expect(result.tunnels).toEqual([]);
+    expect(result.tunnelAddress).toBeNull();
+    expect(result.edge).toBeNull();
+    expect(result.agentToken).toMatch(/^pscx_/);
+  });
+
+  it("enrolls a connector that is not linked to anything yet", async () => {
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([]);
+    const row = connectorRow({ links: [], installTokenHash: hashConnectorToken(token) });
+    mocks.connector.findFirst.mockResolvedValue(row);
+    mocks.tx.connector.update.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      connectorRow({ ...row, ...data }));
+
+    const result = await enrollConnector({ token, publicKey: AGENT_PUBLIC_KEY });
+    expect(result.tunnels).toEqual([]);
+    expect(result.tunnelCidr).toBeNull();
+    expect(mocks.markEdgeRulesPending).not.toHaveBeenCalled();
   });
 });
 
@@ -732,30 +914,74 @@ describe("connectorConfig", () => {
     });
   }
 
-  it("returns only this connector's enabled connector-mode routes", async () => {
+  it("returns this connector's enabled connector-mode routes across EVERY linked edge", async () => {
     mocks.connector.findUnique.mockResolvedValue(enrolledRow());
     mocks.edgeNatRule.findMany.mockResolvedValue([
-      { protocol: "udp", publicPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
-      { protocol: "tcp", publicPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
+      { integrationId: "edge-1", protocol: "udp", publicPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
+      { integrationId: "edge-1", protocol: "tcp", publicPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
     ]);
 
     const result = await connectorConfig({ connectorId: "cx_abcdefghijklmnop", token });
 
     expect(mocks.edgeNatRule.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { integrationId: "edge-1", connectorId: "cx-row-1", mode: "connector", enabled: true },
+      where: {
+        connectorId: "cx-row-1", mode: "connector", enabled: true,
+        integrationId: { in: ["edge-1"] },
+      },
     }));
+    // Every route is scoped by the connector's address on the edge that published it.
     expect(result.routes).toEqual([
-      { protocol: "udp", listenPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
-      { protocol: "tcp", listenPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
+      { localAddress: "10.9.9.3", protocol: "udp", listenPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
+      { localAddress: "10.9.9.3", protocol: "tcp", listenPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
     ]);
     expect(result.configHash).toBe("b".repeat(64));
-    expect(mocks.connectorRulesetHash).toHaveBeenCalledWith(result.routes);
+    // The hash covers the interface and the peers, not just the routes.
+    expect(mocks.connectorRulesetHash).toHaveBeenCalledWith({
+      interfaceName: "wg0", tunnels: [EDGE_TUNNEL], routes: result.routes,
+    });
     expect(result).toMatchObject({
       interfaceName: "wg0",
       tunnelAddress: "10.9.9.3",
       pollIntervalSeconds: 30,
       edge: { endpoint: "23.94.251.183:51820", publicKey: EDGE_PUBLIC_KEY, allowedIps: ["10.9.9.0/24"], persistentKeepalive: 25 },
     });
+    expect(result.tunnels).toHaveLength(1);
+  });
+
+  it("scopes the same public port from two edges by distinct local addresses", async () => {
+    const edgeB = edgeIntegrationRow({
+      id: "edge-2", name: "Edge B", baseUrl: "ssh://198.51.100.7:22",
+      settings: {
+        wireguard: {
+          enabled: true, interfaceName: "wg0", address: "10.9.10.1/24", listenPort: 51820,
+          publicKey: AGENT_PUBLIC_KEY, hasPrivateKey: true, peer: null,
+        },
+      },
+    });
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([
+      linkWithEdge(),
+      linkRow({ id: "cx-link-2", integrationId: "edge-2", tunnelAddress: "10.9.10.5", integration: edgeB }),
+    ]);
+    mocks.connector.findUnique.mockResolvedValue(enrolledRow());
+    mocks.edgeNatRule.findMany.mockResolvedValue([
+      { integrationId: "edge-1", protocol: "udp", publicPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
+      { integrationId: "edge-2", protocol: "udp", publicPort: 8211, targetAddress: "10.0.3.99", targetPort: 8211 },
+    ]);
+
+    const result = await connectorConfig({ connectorId: "cx_abcdefghijklmnop", token });
+    expect(result.routes).toEqual([
+      { localAddress: "10.9.9.3", protocol: "udp", listenPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
+      { localAddress: "10.9.10.5", protocol: "udp", listenPort: 8211, targetAddress: "10.0.3.99", targetPort: 8211 },
+    ]);
+    expect(result.tunnels.map((tunnel) => tunnel.tunnelAddressCidr)).toEqual(["10.9.9.3/24", "10.9.10.5/24"]);
+  });
+
+  it("ignores a route on an edge the connector is no longer linked to", async () => {
+    mocks.connector.findUnique.mockResolvedValue(enrolledRow());
+    mocks.edgeNatRule.findMany.mockResolvedValue([
+      { integrationId: "edge-gone", protocol: "tcp", publicPort: 443, targetAddress: "10.0.3.7", targetPort: 8443 },
+    ]);
+    expect((await connectorConfig({ connectorId: "cx_abcdefghijklmnop", token })).routes).toEqual([]);
   });
 
   it("records the heartbeat and derives the handshake timestamp", async () => {
@@ -841,9 +1067,9 @@ describe("generateConnectorSshKey", () => {
 
 describe("createConnector (SSH key custody)", () => {
   it("stores the restricted key at creation and never returns the private half", async () => {
-    mocks.tx.connector.findMany.mockResolvedValue([]);
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([]);
     mocks.tx.connector.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
-      connectorRow({ ...data }));
+      createdConnector(data));
 
     const result = await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, { baseUrl: "https://x.test" });
     const created = mocks.tx.connector.create.mock.calls[0][0].data;
@@ -1029,13 +1255,14 @@ describe("enrollConnectorHostKey", () => {
 
 describe("applyConnectorOverSsh", () => {
   const ROUTE_ROWS = [
-    { protocol: "udp", publicPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
-    { protocol: "tcp", publicPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
+    { integrationId: "edge-1", protocol: "udp", publicPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
+    { integrationId: "edge-1", protocol: "tcp", publicPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
   ];
   const ROUTES = [
-    { protocol: "udp" as const, listenPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
-    { protocol: "tcp" as const, listenPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
+    { localAddress: "10.9.9.3", protocol: "udp" as const, listenPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
+    { localAddress: "10.9.9.3", protocol: "tcp" as const, listenPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
   ];
+  const RULESET = desiredRuleset(ROUTES);
 
   beforeEach(() => {
     // Use the real canonical hash here: the service and the payload builder must
@@ -1046,9 +1273,9 @@ describe("applyConnectorOverSsh", () => {
       connectorRow({ ...sshManagedRow(), ...data }));
   });
 
-  it("emits the frozen wire payload with no private key on it", async () => {
+  it("emits the frozen v2 wire payload with no private key on it", async () => {
     mocks.connector.findUnique.mockResolvedValue(sshManagedRow());
-    const hash = realConnectorRulesetHash(ROUTES);
+    const hash = realConnectorRulesetHash(RULESET as never);
     mocks.runConnectorSsh.mockResolvedValue({ stdout: `APPLIED\t2\t1\t${hash}\n`, stderr: "", code: 0 });
 
     const result = await applyConnectorOverSsh(ACTOR, "cx-row-1");
@@ -1058,18 +1285,74 @@ describe("applyConnectorOverSsh", () => {
     expect(payload).toBe([
       "APPLY",
       `META\t1\t${hash}`,
-      "TUNNEL\twg0\t10.9.9.3/24\t23.94.251.183:51820\td8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=\t10.9.9.0/24\t25",
-      "ROUTE\ttcp\t25565\t10.0.3.50\t25565",
-      "ROUTE\tudp\t8211\t10.0.3.42\t8211",
+      "IFACE\twg0",
+      "TUNNEL\tedge-1\t10.9.9.3/24\t23.94.251.183:51820\td8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=\t10.9.9.0/24\t25",
+      "ROUTE\t10.9.9.3\ttcp\t25565\t10.0.3.50\t25565",
+      "ROUTE\t10.9.9.3\tudp\t8211\t10.0.3.42\t8211",
       "END",
     ].join("\n") + "\n");
     expect(payload).not.toContain("PRIVATE KEY");
-    expect(result).toMatchObject({ applied: true, routeCount: 2, revision: 1, hash });
+    expect(result).toMatchObject({ applied: true, routeCount: 2, revision: 1, hash, tunnelCount: 1 });
+  });
+
+  it("pushes EVERY enabled link as a TUNNEL line, with each edge's routes", async () => {
+    const edgeB = edgeIntegrationRow({
+      id: "edge-2", name: "Edge B", baseUrl: "ssh://198.51.100.7:22",
+      settings: {
+        wireguard: {
+          enabled: true, interfaceName: "wg0", address: "10.9.10.1/24", listenPort: 51820,
+          publicKey: AGENT_PUBLIC_KEY, hasPrivateKey: true, peer: null,
+        },
+      },
+    });
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([
+      linkWithEdge(),
+      linkRow({ id: "cx-link-2", integrationId: "edge-2", tunnelAddress: "10.9.10.5", integration: edgeB }),
+    ]);
+    // Both edges publish UDP/8211; only the destination scope keeps them apart.
+    mocks.edgeNatRule.findMany.mockResolvedValue([
+      { integrationId: "edge-1", protocol: "udp", publicPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
+      { integrationId: "edge-2", protocol: "udp", publicPort: 8211, targetAddress: "10.0.3.99", targetPort: 8211 },
+    ]);
+    mocks.connector.findUnique.mockResolvedValue(sshManagedRow());
+    const hash = realConnectorRulesetHash(desiredRuleset(
+      [
+        { localAddress: "10.9.9.3", protocol: "udp", listenPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
+        { localAddress: "10.9.10.5", protocol: "udp", listenPort: 8211, targetAddress: "10.0.3.99", targetPort: 8211 },
+      ],
+      [EDGE_TUNNEL, {
+        edgeKey: "edge-2", address: "10.9.10.5/24", endpoint: "198.51.100.7:51820",
+        publicKey: AGENT_PUBLIC_KEY, allowedIps: ["10.9.10.0/24"], persistentKeepalive: 25,
+      }],
+    ) as never);
+    mocks.runConnectorSsh.mockResolvedValue({ stdout: `APPLIED\t2\t1\t${hash}\n`, stderr: "", code: 0 });
+
+    const result = await applyConnectorOverSsh(ACTOR, "cx-row-1");
+    const payload = mocks.runConnectorSsh.mock.calls[0][2] as string;
+    expect(payload.split("\n").filter((line) => line.startsWith("TUNNEL\t"))).toEqual([
+      "TUNNEL\tedge-1\t10.9.9.3/24\t23.94.251.183:51820\td8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=\t10.9.9.0/24\t25",
+      "TUNNEL\tedge-2\t10.9.10.5/24\t198.51.100.7:51820\tK5rM2QdFvJ7t8YbN1oPxWzCqEaHiUjLmSnTvBcDgRfE=\t10.9.10.0/24\t25",
+    ]);
+    expect(payload.split("\n").filter((line) => line.startsWith("ROUTE\t"))).toEqual([
+      "ROUTE\t10.9.10.5\tudp\t8211\t10.0.3.99\t8211",
+      "ROUTE\t10.9.9.3\tudp\t8211\t10.0.3.42\t8211",
+    ]);
+    expect(payload.split("\n").filter((line) => line.startsWith("IFACE\t"))).toHaveLength(1);
+    expect(result.tunnelCount).toBe(2);
+  });
+
+  it("refuses to push a connector with no linked edge", async () => {
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([]);
+    mocks.connector.findUnique.mockResolvedValue(sshManagedRow({ links: [] }));
+    await expect(applyConnectorOverSsh(ACTOR, "cx-row-1")).rejects.toMatchObject({
+      status: 409, code: "connector_not_linked",
+    });
+    expect(mocks.runConnectorSsh).not.toHaveBeenCalled();
   });
 
   it("persists the applied revision and hash", async () => {
     mocks.connector.findUnique.mockResolvedValue(sshManagedRow());
-    const hash = realConnectorRulesetHash(ROUTES);
+    const hash = realConnectorRulesetHash(RULESET as never);
     mocks.runConnectorSsh.mockResolvedValue({ stdout: `APPLIED\t2\t1\t${hash}\n`, stderr: "", code: 0 });
 
     await applyConnectorOverSsh(ACTOR, "cx-row-1");
@@ -1081,11 +1364,11 @@ describe("applyConnectorOverSsh", () => {
     expect(written.sshProvisionedAt).toBeInstanceOf(Date);
   });
 
-  it("advances the revision monotonically", async () => {
+  it("advances the revision monotonically per connector, not per edge", async () => {
     mocks.connector.findUnique.mockResolvedValue(sshManagedRow({
       metadata: { sshRevision: 4, sshAppliedRevision: 9 },
     }));
-    const hash = realConnectorRulesetHash(ROUTES);
+    const hash = realConnectorRulesetHash(RULESET as never);
     mocks.runConnectorSsh.mockResolvedValue({ stdout: `APPLIED\t2\t10\t${hash}\n`, stderr: "", code: 0 });
 
     const result = await applyConnectorOverSsh(ACTOR, "cx-row-1");
@@ -1123,7 +1406,7 @@ describe("applyConnectorOverSsh", () => {
 
   it("audits without leaking key material", async () => {
     mocks.connector.findUnique.mockResolvedValue(sshManagedRow());
-    const hash = realConnectorRulesetHash(ROUTES);
+    const hash = realConnectorRulesetHash(RULESET as never);
     mocks.runConnectorSsh.mockResolvedValue({ stdout: `APPLIED\t2\t1\t${hash}\n`, stderr: "", code: 0 });
     await applyConnectorOverSsh(ACTOR, "cx-row-1");
     expect(mocks.audit).toHaveBeenCalledWith(
@@ -1187,13 +1470,34 @@ describe("fetchConnectorSshStatus", () => {
   it("flags pending changes when the applied hash is not the desired one", async () => {
     mocks.connector.findUnique.mockResolvedValue(sshManagedRow({ publicKey: AGENT_PUBLIC_KEY, enrolledAt: NOW }));
     mocks.edgeNatRule.findMany.mockResolvedValue([
-      { protocol: "tcp", publicPort: 443, targetAddress: "10.0.3.7", targetPort: 8443 },
+      { integrationId: "edge-1", protocol: "tcp", publicPort: 443, targetAddress: "10.0.3.7", targetPort: 8443 },
     ]);
     mocks.runConnectorSsh.mockResolvedValue(statusResponse());
 
     const report = await fetchConnectorSshStatus("cx-row-1");
     expect(report.desiredRouteCount).toBe(1);
+    expect(report.desiredTunnelCount).toBe(1);
     expect(report.pendingChanges).toBe(true);
+  });
+
+  it("folds STATUS v2 per-peer handshakes back onto the matching link", async () => {
+    // The peers a CONNECTOR reports are the EDGES, so the peer public key is the
+    // edge's — that is what maps a handshake to one link.
+    mocks.connector.findUnique.mockResolvedValue(sshManagedRow({ publicKey: AGENT_PUBLIC_KEY, enrolledAt: NOW }));
+    mocks.runConnectorSsh.mockResolvedValue(statusResponse([`WG_PEER\t${EDGE_PUBLIC_KEY}\t1755518400\t128\t256`]));
+
+    await fetchConnectorSshStatus("cx-row-1");
+    expect(mocks.tx.connectorEdgeLink.updateMany).toHaveBeenCalledWith({
+      where: { connectorId: "cx-row-1", integrationId: "edge-1" },
+      data: { lastHandshakeAt: new Date(1755518400 * 1000) },
+    });
+  });
+
+  it("leaves links alone when the agent reports no per-peer lines (v1 agent)", async () => {
+    mocks.connector.findUnique.mockResolvedValue(sshManagedRow({ publicKey: AGENT_PUBLIC_KEY, enrolledAt: NOW }));
+    mocks.runConnectorSsh.mockResolvedValue(statusResponse());
+    await fetchConnectorSshStatus("cx-row-1");
+    expect(mocks.tx.connectorEdgeLink.updateMany).not.toHaveBeenCalled();
   });
 
   it("treats reported drift as pending even when the hash matches", async () => {
@@ -1243,7 +1547,7 @@ function manualRow(overrides: Record<string, unknown> = {}) {
     kind: "opnsense",
     name: "OPNsense",
     connectorId: "cx_opnsenseabcdefgh",
-    tunnelAddress: "10.9.9.4",
+    links: [linkRow({ id: "cx-link-9", connectorId: "cx-row-9", tunnelAddress: "10.9.9.4" })],
     ...overrides,
   });
 }
@@ -1331,9 +1635,9 @@ describe("toConnectorDto — kinds", () => {
 
 describe("createConnector — manual kinds", () => {
   beforeEach(() => {
-    mocks.tx.connector.findMany.mockResolvedValue([]);
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([]);
     mocks.tx.connector.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
-      connectorRow({ ...data }));
+      createdConnector(data));
   });
 
   it("mints NO install token and NO SSH keypair", async () => {
@@ -1359,11 +1663,13 @@ describe("createConnector — manual kinds", () => {
 
   it("still allocates the implicit tunnel address and returns the paste-ready block", async () => {
     const result = await createConnector(ACTOR, "edge-1", { name: "OPNsense", notes: null, kind: "opnsense" });
-    expect(mocks.tx.connector.create.mock.calls[0][0].data.tunnelAddress).toBe("10.9.9.2");
+    expect(createdLinkAddress()).toBe("10.9.9.2");
     expect(result.peerConfig).toEqual({
       kind: "opnsense",
       connectorId: expect.stringMatching(/^cx_/),
       name: "OPNsense",
+      integrationId: "edge-1",
+      edgeName: "Edge A",
       edgeEndpoint: "23.94.251.183:51820",
       edgePublicKey: EDGE_PUBLIC_KEY,
       edgeAddress: "10.9.9.1/24",
@@ -1386,7 +1692,7 @@ describe("createConnector — manual kinds", () => {
     expect(created.status).toBe("configured");
     expect(mocks.markEdgeRulesPending).toHaveBeenCalledWith(mocks.tx, "edge-1");
     expect(result.connector.status).toBe("configured");
-    expect(result.peerConfig.publicKey).toBe(OPNSENSE_PUBLIC_KEY);
+    expect(result.peerConfig?.publicKey).toBe(OPNSENSE_PUBLIC_KEY);
   });
 
   it("leaves the edge alone until a key exists", async () => {
@@ -1580,6 +1886,8 @@ describe("buildConnectorPeerConfig", () => {
     kind: "opnsense" as const,
     connectorId: "cx_opnsenseabcdefgh",
     name: "OPNsense",
+    integrationId: "edge-1",
+    edgeName: "Edge A",
     host: "23.94.251.183",
     listenPort: 51820,
     interfaceName: "wg0",
@@ -1594,6 +1902,8 @@ describe("buildConnectorPeerConfig", () => {
       kind: "opnsense",
       connectorId: "cx_opnsenseabcdefgh",
       name: "OPNsense",
+      integrationId: "edge-1",
+      edgeName: "Edge A",
       interfaceName: "wg0",
       edgeEndpoint: "23.94.251.183:51820",
       edgePublicKey: EDGE_PUBLIC_KEY,
@@ -1662,5 +1972,185 @@ describe("getConnectorPeerConfig", () => {
   it("404s an unknown connector", async () => {
     mocks.connector.findUnique.mockResolvedValue(null);
     await expect(getConnectorPeerConfig("nope")).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("renders the block for the edge you asked for, not just the first one", async () => {
+    mocks.connector.findUnique.mockResolvedValue(manualRow({
+      links: [
+        linkRow({ id: "cx-link-9", connectorId: "cx-row-9", tunnelAddress: "10.9.9.4" }),
+        linkRow({ id: "cx-link-10", connectorId: "cx-row-9", integrationId: "edge-2", tunnelAddress: "10.9.10.8" }),
+      ],
+    }));
+    mocks.integrationConfig.findUnique.mockResolvedValue(edgeIntegrationRow({
+      id: "edge-2", name: "Edge B",
+      settings: {
+        wireguard: {
+          enabled: true, interfaceName: "wg0", address: "10.9.10.1/24", listenPort: 51820,
+          publicKey: EDGE_PUBLIC_KEY, hasPrivateKey: true, peer: null,
+        },
+      },
+    }));
+    const config = await getConnectorPeerConfig("cx-row-9", "edge-2");
+    expect(mocks.integrationConfig.findUnique).toHaveBeenCalledWith({ where: { id: "edge-2" } });
+    expect(config).toMatchObject({ integrationId: "edge-2", tunnelAddress: "10.9.10.8", tunnelAddressCidr: "10.9.10.8/24" });
+  });
+
+  it("refuses when the connector does not serve that edge", async () => {
+    mocks.connector.findUnique.mockResolvedValue(manualRow());
+    await expect(getConnectorPeerConfig("cx-row-9", "edge-999")).rejects.toMatchObject({
+      status: 400, code: "connector_not_linked",
+    });
+  });
+
+  it("refuses for a standalone connector that serves nothing yet", async () => {
+    mocks.connector.findUnique.mockResolvedValue(manualRow({ links: [] }));
+    await expect(getConnectorPeerConfig("cx-row-9")).rejects.toMatchObject({
+      status: 400, code: "connector_not_linked",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4 — links. A connector is installed ONCE and linked to as many edge
+// servers as the operator likes; each link carries that edge's tunnel address.
+// ---------------------------------------------------------------------------
+
+describe("linkConnector", () => {
+  beforeEach(() => {
+    mocks.connector.findUnique.mockResolvedValue(connectorRow({ publicKey: AGENT_PUBLIC_KEY, status: "connected" }));
+    mocks.tx.connectorEdgeLink.findUnique.mockResolvedValue(null);
+    mocks.tx.connectorEdgeLink.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      linkRow({ id: "cx-link-new", ...data }));
+  });
+
+  it("allocates the address from THAT edge's subnet and marks the edge pending", async () => {
+    mocks.tx.connectorEdgeLink.findMany.mockResolvedValue([{ tunnelAddress: "10.9.9.2" }]);
+
+    const result = await linkConnector(ACTOR, "cx-row-1", "edge-1");
+
+    expect(mocks.tx.connectorEdgeLink.create.mock.calls[0][0].data).toMatchObject({
+      connectorId: "cx-row-1", integrationId: "edge-1", tunnelAddress: "10.9.9.3",
+    });
+    expect(result.link).toMatchObject({ integrationId: "edge-1", tunnelAddress: "10.9.9.3", enabled: true });
+    expect(result.peerConfig).toMatchObject({ integrationId: "edge-1", tunnelAddressCidr: "10.9.9.3/24" });
+    expect(mocks.markEdgeRulesPending).toHaveBeenCalledWith(mocks.tx, "edge-1");
+    expect(mocks.audit).toHaveBeenCalledWith(
+      ACTOR, "edge_nat.connector.link", { type: "connector", id: "cx-row-1" },
+      expect.objectContaining({ integrationId: "edge-1", tunnelAddress: "10.9.9.3" }),
+    );
+  });
+
+  it("does not touch the edge while the connector has no key to register", async () => {
+    mocks.connector.findUnique.mockResolvedValue(connectorRow({ publicKey: null }));
+    await linkConnector(ACTOR, "cx-row-1", "edge-1");
+    expect(mocks.markEdgeRulesPending).not.toHaveBeenCalled();
+  });
+
+  it("409s when the connector already serves that edge", async () => {
+    mocks.tx.connectorEdgeLink.findUnique.mockResolvedValue(linkRow());
+    await expect(linkConnector(ACTOR, "cx-row-1", "edge-1")).rejects.toMatchObject({
+      status: 409, code: "connector_already_linked",
+    });
+    expect(mocks.tx.connectorEdgeLink.create).not.toHaveBeenCalled();
+  });
+
+  it("404s an unknown connector before touching the edge", async () => {
+    mocks.connector.findUnique.mockResolvedValue(null);
+    await expect(linkConnector(ACTOR, "nope", "edge-1")).rejects.toMatchObject({ status: 404 });
+    expect(mocks.tx.connectorEdgeLink.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses an edge whose WireGuard tunnel is not configured", async () => {
+    mocks.integrationConfig.findUnique.mockResolvedValue(edgeIntegrationRow({ settings: {} }));
+    await expect(linkConnector(ACTOR, "cx-row-1", "edge-1")).rejects.toMatchObject({
+      status: 409, code: "wireguard_not_configured",
+    });
+  });
+});
+
+describe("unlinkConnector", () => {
+  beforeEach(() => {
+    mocks.connector.findUnique.mockResolvedValue(connectorRow());
+    mocks.connectorEdgeLink.findUnique.mockResolvedValue(linkRow());
+    mocks.tx.connectorEdgeLink.deleteMany.mockResolvedValue({ count: 1 });
+    mocks.tx.edgeNatRule.findMany.mockResolvedValue([]);
+  });
+
+  it("removes the link and re-pends that edge only", async () => {
+    const result = await unlinkConnector(ACTOR, "cx-row-1", "cx-link-1");
+    expect(mocks.tx.connectorEdgeLink.deleteMany).toHaveBeenCalledWith({
+      where: { id: "cx-link-1", connectorId: "cx-row-1" },
+    });
+    expect(mocks.markEdgeRulesPending).toHaveBeenCalledWith(mocks.tx, "edge-1");
+    expect(result.unlinked).toBe(true);
+  });
+
+  it("REFUSES while enabled routes on that edge still point at this connector, naming them", async () => {
+    mocks.tx.edgeNatRule.findMany.mockResolvedValue([{ name: "palworld" }, { name: "minecraft" }]);
+    await expect(unlinkConnector(ACTOR, "cx-row-1", "cx-link-1")).rejects.toMatchObject({
+      status: 409,
+      code: "connector_link_in_use",
+      message: expect.stringContaining("palworld, minecraft"),
+    });
+    expect(mocks.tx.connectorEdgeLink.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("only counts ENABLED connector-mode rules on THAT edge", async () => {
+    await unlinkConnector(ACTOR, "cx-row-1", "cx-link-1");
+    expect(mocks.tx.edgeNatRule.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { integrationId: "edge-1", connectorId: "cx-row-1", mode: "connector", enabled: true },
+    }));
+  });
+
+  it("404s a link that belongs to a different connector", async () => {
+    mocks.connectorEdgeLink.findUnique.mockResolvedValue(linkRow({ connectorId: "cx-other" }));
+    await expect(unlinkConnector(ACTOR, "cx-row-1", "cx-link-1")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("setConnectorLinkEnabled", () => {
+  beforeEach(() => {
+    mocks.connector.findUnique.mockResolvedValue(connectorRow());
+    mocks.connectorEdgeLink.findUnique.mockResolvedValue(linkRow());
+    mocks.tx.connectorEdgeLink.update.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      linkRow({ ...data }));
+  });
+
+  it("suspends a link without releasing its address", async () => {
+    const result = await setConnectorLinkEnabled(ACTOR, "cx-row-1", "cx-link-1", false);
+    expect(mocks.tx.connectorEdgeLink.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "cx-link-1" }, data: { enabled: false },
+    }));
+    expect(result.link.tunnelAddress).toBe("10.9.9.3");
+    expect(mocks.markEdgeRulesPending).toHaveBeenCalledWith(mocks.tx, "edge-1");
+  });
+
+  it("is a no-op for the edge when the flag does not actually change", async () => {
+    await setConnectorLinkEnabled(ACTOR, "cx-row-1", "cx-link-1", true);
+    expect(mocks.markEdgeRulesPending).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteConnector", () => {
+  it("re-pends every edge the connector served", async () => {
+    mocks.connector.findUnique.mockResolvedValue(connectorRow());
+    mocks.connectorEdgeLink.findMany.mockResolvedValue([
+      linkRow(), linkRow({ id: "cx-link-2", integrationId: "edge-2" }),
+    ]);
+    mocks.tx.connector.deleteMany.mockResolvedValue({ count: 1 });
+
+    await deleteConnector(ACTOR, "cx-row-1");
+    expect(mocks.markEdgeRulesPending).toHaveBeenCalledWith(mocks.tx, "edge-1");
+    expect(mocks.markEdgeRulesPending).toHaveBeenCalledWith(mocks.tx, "edge-2");
+    expect(mocks.audit).toHaveBeenCalledWith(
+      ACTOR, "edge_nat.connector.delete", { type: "connector", id: "cx-row-1" },
+      expect.objectContaining({ integrationIds: ["edge-1", "edge-2"] }),
+    );
+  });
+
+  it("404s a connector that vanished mid-flight", async () => {
+    mocks.connector.findUnique.mockResolvedValue(connectorRow());
+    mocks.tx.connector.deleteMany.mockResolvedValue({ count: 0 });
+    await expect(deleteConnector(ACTOR, "cx-row-1")).rejects.toMatchObject({ status: 404 });
   });
 });

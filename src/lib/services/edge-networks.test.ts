@@ -69,7 +69,13 @@ describe("deriveEdgeApplyRules — direct mode must never regress", () => {
 });
 
 describe("deriveEdgeApplyRules — connector mode (§1b)", () => {
-  const connector = { tunnelAddress: "10.9.9.3", publicKey: CONNECTOR_KEY, status: "connected" };
+  // Phase 4: the address comes from the LINK between THIS edge and the connector
+  // (Prisma filters `links` to this integration), not from the connector row.
+  const connector = {
+    publicKey: CONNECTOR_KEY,
+    status: "connected",
+    links: [{ tunnelAddress: "10.9.9.3", enabled: true }],
+  };
 
   it("DNATs to the connector tunnel address on the SAME public port", () => {
     expect(deriveEdgeApplyRules([
@@ -92,10 +98,23 @@ describe("deriveEdgeApplyRules — connector mode (§1b)", () => {
 
   it.each([
     ["a missing connector", null],
-    ["an unenrolled connector", { tunnelAddress: "10.9.9.3", publicKey: null, status: "pending" }],
-    ["a disabled connector", { tunnelAddress: "10.9.9.3", publicKey: CONNECTOR_KEY, status: "disabled" }],
+    ["an unenrolled connector", { ...connector, publicKey: null, status: "pending" }],
+    ["a disabled connector", { ...connector, status: "disabled" }],
+    // Phase 4: unlinked from THIS edge, so it holds no address here at all.
+    ["a connector no longer linked to this edge", { ...connector, links: [] }],
+    ["a connector whose link to this edge is suspended", { ...connector, links: [{ tunnelAddress: "10.9.9.3", enabled: false }] }],
   ])("drops a connector rule pointing at %s", (_label, value) => {
     expect(deriveEdgeApplyRules([directRow({ mode: "connector", connector: value })])).toEqual([]);
+  });
+
+  it("uses THIS edge's link address even when the connector serves several edges", () => {
+    // The query filters `links` to this integration, so exactly one candidate
+    // arrives — but a connector holding 10.9.10.x elsewhere must never leak here.
+    const rules = deriveEdgeApplyRules([directRow({
+      mode: "connector",
+      connector: { ...connector, links: [{ tunnelAddress: "10.9.10.5", enabled: true }] },
+    })]);
+    expect(rules[0].targetAddress).toBe("10.9.10.5");
   });
 
   it("emits direct and connector rules together in one ruleset", () => {

@@ -6,7 +6,13 @@ process.env.APP_SECRET = "unit-test-secret-0123456789abcdef0123456789abcdef";
 import { encryptSecret } from "@/lib/crypto";
 import { generateEd25519Keypair } from "@/lib/ssh/keys";
 import type { CommandRunner } from "@/lib/integrations/edge-nat/ssh";
-import { canonicalConnectorRuleset, connectorRulesetHash, type ConnectorRoute } from "./agent";
+import {
+  canonicalConnectorRuleset,
+  connectorRulesetHash,
+  type ConnectorRoute,
+  type ConnectorRuleset,
+  type ConnectorTunnel,
+} from "./agent";
 import {
   CONNECTOR_STATUS_HEADER,
   ConnectorSshError,
@@ -42,8 +48,15 @@ function row(overrides: Partial<ConnectorSshRow> = {}): ConnectorSshRow {
   };
 }
 
-const TUNNEL = {
-  interfaceName: "wg0",
+const EDGE_B_PUBLIC_KEY = "K5rM2QdFvJ7t8YbN1oPxWzCqEaHiUjLmSnTvBcDgRfE=";
+
+/**
+ * One connector serving TWO edge boxes — the whole point of phase 4. It holds one
+ * address per edge on a single interface, and edge B republishes UDP/8211, the
+ * same public port edge A already uses.
+ */
+const TUNNEL_A: ConnectorTunnel = {
+  edgeKey: "edge-a",
   address: "10.9.9.3/24",
   endpoint: "23.94.251.183:51820",
   publicKey: EDGE_PUBLIC_KEY,
@@ -51,10 +64,27 @@ const TUNNEL = {
   persistentKeepalive: 25,
 };
 
+const TUNNEL_B: ConnectorTunnel = {
+  edgeKey: "edge-b",
+  address: "10.9.10.5/24",
+  endpoint: "198.51.100.7:51820",
+  publicKey: EDGE_B_PUBLIC_KEY,
+  allowedIps: ["10.9.10.0/24"],
+  persistentKeepalive: 25,
+};
+
 const ROUTES: ConnectorRoute[] = [
-  { protocol: "udp", listenPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
-  { protocol: "tcp", listenPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
+  { localAddress: "10.9.9.3", protocol: "udp", listenPort: 8211, targetAddress: "10.0.3.42", targetPort: 8211 },
+  { localAddress: "10.9.9.3", protocol: "tcp", listenPort: 25565, targetAddress: "10.0.3.50", targetPort: 25565 },
+  // Same public port as the first route, published by the OTHER edge.
+  { localAddress: "10.9.10.5", protocol: "udp", listenPort: 8211, targetAddress: "10.0.3.99", targetPort: 8211 },
 ];
+
+const RULESET: ConnectorRuleset = { interfaceName: "wg0", tunnels: [TUNNEL_A, TUNNEL_B], routes: ROUTES };
+
+function ruleset(overrides: Partial<ConnectorRuleset> = {}): ConnectorRuleset {
+  return { ...RULESET, ...overrides };
+}
 
 // ---------------------------------------------------------------------------
 
@@ -137,12 +167,12 @@ describe("runConnectorSsh", () => {
   });
 
   it("passes the APPLY payload through on stdin unchanged", async () => {
-    const payload = buildConnectorApplyProtocol({ revision: 4, tunnel: TUNNEL, routes: ROUTES });
+    const payload = buildConnectorApplyProtocol({ revision: 4, ...RULESET });
     let received: string | undefined;
     await runConnectorSsh(row(), "APPLY", payload, async (command, _args, input) => {
       if (command === "ssh-keyscan") return { stdout: `${hostLine}\n`, stderr: "", code: 0 };
       received = input;
-      return { stdout: `APPLIED\t2\t4\t${connectorRulesetHash(ROUTES)}\n`, stderr: "", code: 0 };
+      return { stdout: `APPLIED\t3\t4\t${connectorRulesetHash(RULESET)}\n`, stderr: "", code: 0 };
     });
     expect(received).toBe(payload);
   });
@@ -172,83 +202,122 @@ describe("scanConnectorHostKeys", () => {
 
 // ---------------------------------------------------------------------------
 
-describe("buildConnectorApplyProtocol", () => {
-  it("emits the frozen §1c payload", () => {
-    const payload = buildConnectorApplyProtocol({ revision: 7, tunnel: TUNNEL, routes: ROUTES });
+describe("buildConnectorApplyProtocol (protocol v2, §2)", () => {
+  it("emits the frozen payload: one IFACE, one TUNNEL per link, ROUTEs scoped by localAddress", () => {
+    const payload = buildConnectorApplyProtocol({ revision: 7, ...RULESET });
     expect(payload).toBe([
       "APPLY",
-      `META\t7\t${connectorRulesetHash(ROUTES)}`,
-      "TUNNEL\twg0\t10.9.9.3/24\t23.94.251.183:51820\td8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=\t10.9.9.0/24\t25",
-      "ROUTE\ttcp\t25565\t10.0.3.50\t25565",
-      "ROUTE\tudp\t8211\t10.0.3.42\t8211",
+      `META\t7\t${connectorRulesetHash(RULESET)}`,
+      "IFACE\twg0",
+      "TUNNEL\tedge-a\t10.9.9.3/24\t23.94.251.183:51820\td8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=\t10.9.9.0/24\t25",
+      "TUNNEL\tedge-b\t10.9.10.5/24\t198.51.100.7:51820\tK5rM2QdFvJ7t8YbN1oPxWzCqEaHiUjLmSnTvBcDgRfE=\t10.9.10.0/24\t25",
+      // Byte-value order: "10.9.10.5" sorts before "10.9.9.3" ('1' < '9').
+      "ROUTE\t10.9.10.5\tudp\t8211\t10.0.3.99\t8211",
+      "ROUTE\t10.9.9.3\ttcp\t25565\t10.0.3.50\t25565",
+      "ROUTE\t10.9.9.3\tudp\t8211\t10.0.3.42\t8211",
       "END",
     ].join("\n") + "\n");
   });
 
-  it("puts the ROUTE lines on the wire in canonical order, byte-for-byte", () => {
-    const shuffled = [...ROUTES].reverse();
-    const payload = buildConnectorApplyProtocol({ revision: 1, tunnel: TUNNEL, routes: shuffled });
-    const canonicalLines = canonicalConnectorRuleset(ROUTES).split("\n").slice(1).filter(Boolean);
-    const wireLines = payload.split("\n").filter((line) => line.startsWith("ROUTE\t"));
-    expect(wireLines).toEqual(canonicalLines);
+  it("renders the SAME public port from two edges as two distinct routes", () => {
+    // Without the destination scope these would collide on `-i wg0 --dport 8211`
+    // and one of the two services would be unreachable (§1, load-bearing).
+    const wire = buildConnectorApplyProtocol({ revision: 1, ...RULESET })
+      .split("\n").filter((line) => line.includes("\t8211\t"));
+    expect(wire).toEqual([
+      "ROUTE\t10.9.10.5\tudp\t8211\t10.0.3.99\t8211",
+      "ROUTE\t10.9.9.3\tudp\t8211\t10.0.3.42\t8211",
+    ]);
+  });
+
+  it("puts the body on the wire in canonical order, byte-for-byte", () => {
+    const shuffled = ruleset({ tunnels: [TUNNEL_B, TUNNEL_A], routes: [...ROUTES].reverse() });
+    const payload = buildConnectorApplyProtocol({ revision: 1, ...shuffled });
+    const canonicalBody = canonicalConnectorRuleset(RULESET).split("\n").slice(1).filter(Boolean);
+    const wireBody = payload.split("\n").slice(2, -2);
+    expect(wireBody).toEqual(canonicalBody);
     // Ordering-independent by construction: input order never changes the bytes.
-    expect(payload).toBe(buildConnectorApplyProtocol({ revision: 1, tunnel: TUNNEL, routes: ROUTES }));
+    expect(payload).toBe(buildConnectorApplyProtocol({ revision: 1, ...RULESET }));
   });
 
   it("collapses duplicate routes exactly as the hash does", () => {
-    const payload = buildConnectorApplyProtocol({ revision: 1, tunnel: TUNNEL, routes: [ROUTES[0], ROUTES[0]] });
+    const single = ruleset({ routes: [ROUTES[0], ROUTES[0]] });
+    const payload = buildConnectorApplyProtocol({ revision: 1, ...single });
     expect(payload.split("\n").filter((line) => line.startsWith("ROUTE\t"))).toHaveLength(1);
-    expect(payload).toContain(`META\t1\t${connectorRulesetHash([ROUTES[0]])}`);
+    expect(payload).toContain(`META\t1\t${connectorRulesetHash(ruleset({ routes: [ROUTES[0]] }))}`);
   });
 
   it("emits a valid payload with no routes at all", () => {
-    const payload = buildConnectorApplyProtocol({ revision: 2, tunnel: TUNNEL, routes: [] });
-    expect(payload.split("\n").filter(Boolean)).toEqual([
+    const empty = ruleset({ tunnels: [TUNNEL_A], routes: [] });
+    expect(buildConnectorApplyProtocol({ revision: 2, ...empty }).split("\n").filter(Boolean)).toEqual([
       "APPLY",
-      `META\t2\t${connectorRulesetHash([])}`,
-      "TUNNEL\twg0\t10.9.9.3/24\t23.94.251.183:51820\td8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=\t10.9.9.0/24\t25",
+      `META\t2\t${connectorRulesetHash(empty)}`,
+      "IFACE\twg0",
+      "TUNNEL\tedge-a\t10.9.9.3/24\t23.94.251.183:51820\td8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=\t10.9.9.0/24\t25",
       "END",
     ]);
   });
 
   it("never carries private key material", () => {
-    const payload = buildConnectorApplyProtocol({ revision: 1, tunnel: TUNNEL, routes: ROUTES });
+    const payload = buildConnectorApplyProtocol({ revision: 1, ...RULESET });
     expect(payload).not.toContain("PRIVATE KEY");
     expect(payload).not.toContain(clientPair.privateKeyPem.split("\n")[1]);
     expect(payload.toLowerCase()).not.toContain("private");
   });
 
   it.each([
-    [{ interfaceName: "this-name-is-far-too-long" }, "interface name"],
-    [{ address: "10.9.9.3" }, "IPv4 CIDR"],
+    [{ edgeKey: "not a key" }, "edgeKey"],
+    [{ address: "10.9.9.3" }, "CIDR"],
     [{ endpoint: "23.94.251.183" }, "host:port"],
     [{ publicKey: "not-a-key" }, "public key"],
-    [{ allowedIps: [] }, "AllowedIP"],
-    [{ allowedIps: ["nonsense"] }, "AllowedIP"],
-    [{ persistentKeepalive: -1 }, "keepalive"],
+    [{ allowedIps: [] }, "allowedIps"],
+    [{ allowedIps: ["nonsense"] }, "allowedIps"],
+    [{ persistentKeepalive: -1 }, "persistentKeepalive"],
   ])("refuses malformed tunnel field %j rather than sending it", (patch, fragment) => {
     expect(() => buildConnectorApplyProtocol({
-      revision: 1, tunnel: { ...TUNNEL, ...patch }, routes: ROUTES,
+      revision: 1, ...ruleset({ tunnels: [{ ...TUNNEL_A, ...patch }], routes: [ROUTES[0]] }),
     })).toThrow(new RegExp(fragment));
   });
 
+  it("refuses an interface name the agent could not bring up", () => {
+    expect(() => buildConnectorApplyProtocol({
+      revision: 1, ...ruleset({ interfaceName: "this-name-is-far-too-long" }),
+    })).toThrow(/interfaceName/);
+  });
+
   it("refuses an out-of-range revision", () => {
-    expect(() => buildConnectorApplyProtocol({ revision: 0, tunnel: TUNNEL, routes: ROUTES })).toThrow(/revision/);
+    expect(() => buildConnectorApplyProtocol({ revision: 0, ...RULESET })).toThrow(/revision/);
+  });
+
+  it("refuses a connector with nothing linked to it", () => {
+    expect(() => buildConnectorApplyProtocol({ revision: 1, ...ruleset({ tunnels: [], routes: [] }) }))
+      .toThrow(/at least one enabled edge link/);
+  });
+
+  it("refuses a route scoped to an address this connector does not hold", () => {
+    // A stale route left over from an unlinked edge would render a DNAT the
+    // connector can never match; catching it here beats shipping dead rules.
+    expect(() => buildConnectorApplyProtocol({
+      revision: 1,
+      ...ruleset({ tunnels: [TUNNEL_A], routes: [ROUTES[2]] }),
+    })).toThrow(/10\.9\.10\.5 is not one of this connector's tunnel addresses/);
   });
 
   it("refuses a route the on-host agent would reject", () => {
     expect(() => buildConnectorApplyProtocol({
-      revision: 1, tunnel: TUNNEL,
-      routes: [{ protocol: "tcp", listenPort: 70000, targetAddress: "10.0.3.1", targetPort: 80 }],
+      revision: 1,
+      ...ruleset({
+        routes: [{ localAddress: "10.9.9.3", protocol: "tcp", listenPort: 70000, targetAddress: "10.0.3.1", targetPort: 80 }],
+      }),
     })).toThrow(/listenPort/);
   });
 });
 
 describe("parseConnectorApplyResponse", () => {
   it("reads the acknowledgement", () => {
-    const hash = connectorRulesetHash(ROUTES);
-    expect(parseConnectorApplyResponse(`noise\nAPPLIED\t2\t7\t${hash}\n`)).toEqual({
-      routeCount: 2, revision: 7, hash,
+    const hash = connectorRulesetHash(RULESET);
+    expect(parseConnectorApplyResponse(`noise\nAPPLIED\t3\t7\t${hash}\n`)).toEqual({
+      routeCount: 3, revision: 7, hash,
     });
   });
 
@@ -284,7 +353,11 @@ describe("parseConnectorSshStatus", () => {
     "WG_STATE\tup",
     "WG_ADDRESS\t10.9.9.3/24",
     "WG_LATEST_HANDSHAKE\t1755518400",
-    "WG_PEERS\t1",
+    "WG_PEERS\t2",
+    // STATUS v2: one line per peer, so a connector serving two edges can say
+    // WHICH edge is actually up rather than only "the newest handshake".
+    `WG_PEER\t${EDGE_PUBLIC_KEY}\t1755518400\t4096\t8192`,
+    `WG_PEER\t${EDGE_B_PUBLIC_KEY}\t0\t0\t0`,
     "IP_FORWARD\t1",
     "APPLIED_REVISION\t7",
     `APPLIED_HASH\t${"a".repeat(64)}`,
@@ -305,7 +378,16 @@ describe("parseConnectorSshStatus", () => {
       wgState: "up",
       wgAddress: "10.9.9.3/24",
       latestHandshakeAt: new Date(1755518400 * 1000).toISOString(),
-      peers: 1,
+      peers: 2,
+      peerDetails: [
+        {
+          publicKey: EDGE_PUBLIC_KEY,
+          latestHandshakeAt: new Date(1755518400 * 1000).toISOString(),
+          rxBytes: 4096,
+          txBytes: 8192,
+        },
+        { publicKey: EDGE_B_PUBLIC_KEY, latestHandshakeAt: null, rxBytes: 0, txBytes: 0 },
+      ],
       ipForward: true,
       appliedRevision: 7,
       appliedHash: "a".repeat(64),
@@ -339,9 +421,34 @@ describe("parseConnectorSshStatus", () => {
     ].join("\n"));
     expect(status).toMatchObject({
       hostname: "fresh-lxc", wgInterface: null, wgPublicKey: null, wgState: "absent",
-      wgAddress: null, latestHandshakeAt: null, peers: 0, ipForward: false,
+      wgAddress: null, latestHandshakeAt: null, peers: 0, peerDetails: [], ipForward: false,
       appliedRevision: 0, appliedHash: null, drift: false, routeCount: 0, addresses: [],
     });
+  });
+
+  it("still parses a v1 agent, which reports no WG_PEER lines at all", () => {
+    const status = parseConnectorSshStatus([
+      "POLYSIEM_CONNECTOR_STATUS_V1",
+      "HOSTNAME\tlegacy",
+      "WG_PEERS\t1",
+      "WG_LATEST_HANDSHAKE\t1755518400",
+      "",
+    ].join("\n"));
+    expect(status.peers).toBe(1);
+    expect(status.peerDetails).toEqual([]);
+    expect(status.latestHandshakeAt).toBe(new Date(1755518400 * 1000).toISOString());
+  });
+
+  it("drops a malformed WG_PEER line instead of aborting the parse", () => {
+    const status = parseConnectorSshStatus([
+      CONNECTOR_STATUS_HEADER,
+      "WG_PEER\tnot-a-key\t1755518400\t1\t2",
+      `WG_PEER\t${EDGE_PUBLIC_KEY}\tnonsense\tnonsense\t-5`,
+      "",
+    ].join("\n"));
+    expect(status.peerDetails).toEqual([
+      { publicKey: EDGE_PUBLIC_KEY, latestHandshakeAt: null, rxBytes: 0, txBytes: 0 },
+    ]);
   });
 
   it("flags drift", () => {

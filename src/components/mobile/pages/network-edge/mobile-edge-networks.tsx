@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cloud, ExternalLink, Loader2, Plus, RefreshCw, Route, Router, Server, Share2, Trash2, TriangleAlert } from "lucide-react";
+import { Cloud, ExternalLink, Loader2, Plus, RefreshCw, Router, Server, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
@@ -26,11 +26,11 @@ import { MobilePage, MobileSection } from "@/components/mobile/ui/mobile-page";
 import { MobilePageHeader } from "@/components/mobile/ui/mobile-page-header";
 import { MobileKeyRow, MobileList, MobileListRow } from "@/components/mobile/ui/mobile-list";
 import { MobileSegmented } from "@/components/mobile/ui/mobile-segmented";
-import { MobileStat, MobileStatStrip } from "@/components/mobile/ui/mobile-stats";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import { MobileFab } from "@/components/mobile/ui/mobile-fab";
 import {
   edgeOverviewPresentation,
+  edgeServerState,
   tailscaleDetails,
   EDGE_NETWORKS_QUERY_KEY,
   EMPTY_EDGE_NETWORKS_OVERVIEW,
@@ -39,22 +39,27 @@ import {
   type OtherEdgeNetwork,
 } from "@/components/network/edge-networks-types";
 import { cloudflareZoneForHostname } from "@/components/network/edge-network-utils";
+import { MobileAllConnectorsPanel } from "./mobile-connectors-all";
 import { MobileEdgeServerSection } from "./mobile-edge-server";
+import { MobileSummaryLine, type MobileSummaryItem } from "./mobile-edge-tabs";
 
-const ADD_HREFS: Record<EdgeNetworkTab, string> = {
-  edge: "/settings/integrations?add=EDGE_NAT_SERVER",
-  tailscale: "/settings/integrations?add=TAILSCALE",
-  cloudflare: "/settings/integrations?add=CLOUDFLARE",
-};
+/**
+ * Connectors sit beside the edge boxes rather than inside one: a connector is
+ * installed once and serves every edge box it is linked to, so it is a
+ * top-level section of this page, not a child of a single edge.
+ */
+type MobileEdgeTab = EdgeNetworkTab | "connectors";
 
-const ADD_LABELS: Record<EdgeNetworkTab, string> = {
-  edge: "Add Edge NAT server",
-  tailscale: "Connect Tailscale",
-  cloudflare: "Connect Cloudflare",
-};
+/** The FAB's action for a tab. A null href means the tab handles it itself. */
+function addAction(tab: MobileEdgeTab): { label: string; href: string | null } {
+  if (tab === "connectors") return { label: "Add connector", href: null };
+  if (tab === "tailscale") return { label: "Connect Tailscale", href: "/settings/integrations?add=TAILSCALE" };
+  if (tab === "cloudflare") return { label: "Connect Cloudflare", href: "/settings/integrations?add=CLOUDFLARE" };
+  return { label: "Add Edge NAT server", href: "/settings/integrations?add=EDGE_NAT_SERVER" };
+}
 
-function resolveEdgeTab(param: string | null, fallback: EdgeNetworkTab): EdgeNetworkTab {
-  if (param === "edge" || param === "tailscale" || param === "cloudflare") return param;
+function resolveEdgeTab(param: string | null, fallback: EdgeNetworkTab): MobileEdgeTab {
+  if (param === "edge" || param === "tailscale" || param === "cloudflare" || param === "connectors") return param;
   return fallback;
 }
 
@@ -62,6 +67,7 @@ function resolveEdgeTab(param: string | null, fallback: EdgeNetworkTab): EdgeNet
 export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [connectorCreateOpen, setConnectorCreateOpen] = useState(false);
   const overviewQuery = useQuery({
     queryKey: EDGE_NETWORKS_QUERY_KEY,
     queryFn: () => apiFetch<EdgeNetworksOverview>("/api/network/edge-networks"),
@@ -70,6 +76,7 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
   const overview = overviewQuery.data ?? EMPTY_EDGE_NETWORKS_OVERVIEW;
   const { cloudflare, counts, hasAnyNetwork, defaultTab } = edgeOverviewPresentation(overview);
   const tab = resolveEdgeTab(searchParams.get("tab"), defaultTab);
+  const add = addAction(tab);
 
   return (
     <>
@@ -90,6 +97,11 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
         <MobileSegmented
           items={[
             { label: `SSH · ${overview.edgeServers.length}`, href: "/network/edge-networks?tab=edge", active: tab === "edge" },
+            {
+              label: "Connectors",
+              href: "/network/edge-networks?tab=connectors",
+              active: tab === "connectors",
+            },
             {
               label: `Tailnet · ${overview.tailscale.length}`,
               href: "/network/edge-networks?tab=tailscale",
@@ -115,13 +127,17 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
           isLoading={overviewQuery.isLoading}
           error={overviewQuery.error as Error | null}
           onRetry={() => void overviewQuery.refetch()}
+          connectorCreateOpen={connectorCreateOpen}
+          onConnectorCreateOpenChange={setConnectorCreateOpen}
         />
       </MobilePage>
 
       {isAdmin && (
         <MobileFab
-          aria-label={ADD_LABELS[tab]}
-          onClick={() => pushWithNavigationFeedback(router, ADD_HREFS[tab])}
+          aria-label={add.label}
+          onClick={() =>
+            add.href ? pushWithNavigationFeedback(router, add.href) : setConnectorCreateOpen(true)
+          }
         >
           <Plus />
         </MobileFab>
@@ -141,16 +157,20 @@ function EdgeNetworksBody({
   isLoading,
   error,
   onRetry,
+  connectorCreateOpen,
+  onConnectorCreateOpenChange,
 }: {
   overview: EdgeNetworksOverview;
   cloudflare: OtherEdgeNetwork[];
   counts: ReturnType<typeof edgeOverviewPresentation>["counts"];
   hasAnyNetwork: boolean;
-  tab: EdgeNetworkTab;
+  tab: MobileEdgeTab;
   isAdmin: boolean;
   isLoading: boolean;
   error: Error | null;
   onRetry: () => void;
+  connectorCreateOpen: boolean;
+  onConnectorCreateOpenChange: (open: boolean) => void;
 }) {
   if (isLoading) {
     return (
@@ -168,6 +188,18 @@ function EdgeNetworksBody({
         title="Could not load edge networks"
         description={error.message || "The edge network inventory is unavailable."}
         action={<Button onClick={onRetry}>Try again</Button>}
+      />
+    );
+  }
+  // Connectors are independent of edge boxes, so that section stands even when
+  // no network is connected yet: one can exist before it serves anything.
+  if (tab === "connectors") {
+    return (
+      <MobileAllConnectorsPanel
+        servers={overview.edgeServers}
+        isAdmin={isAdmin}
+        createOpen={connectorCreateOpen}
+        onCreateOpenChange={onConnectorCreateOpenChange}
       />
     );
   }
@@ -196,16 +228,6 @@ function EdgeServersPanel({
 }) {
   return (
     <>
-      <MobileStatStrip>
-        <MobileStat label="Online" value={`${counts.onlineServers}/${overview.edgeServers.length}`} icon={<Server />} />
-        <MobileStat label="Rules" value={counts.enabledRules} icon={<Route />} />
-        <MobileStat
-          label="Review"
-          value={counts.needsReconcile}
-          icon={<TriangleAlert />}
-          tone={counts.needsReconcile > 0 ? "text-warning" : undefined}
-        />
-      </MobileStatStrip>
       {overview.edgeServers.length === 0 ? (
         <EmptyState
           icon={Server}
@@ -213,12 +235,37 @@ function EdgeServersPanel({
           description="Add an Edge NAT server to publish selected services through a remote IP."
         />
       ) : (
-        overview.edgeServers.map((server) => (
-          <MobileEdgeServerSection key={server.id} server={server} isAdmin={isAdmin} />
-        ))
+        <MobileSummaryLine items={edgeOverviewItems(overview, counts)} />
       )}
+      {overview.edgeServers.map((server) => (
+        <MobileEdgeServerSection
+          key={server.id}
+          server={server}
+          servers={overview.edgeServers}
+          isAdmin={isAdmin}
+        />
+      ))}
     </>
   );
+}
+
+/**
+ * The edge tab's headline numbers on one line. Amber is for a box PolySIEM
+ * tried to reach and could not — an edge that has simply never been verified,
+ * or one with changes still to push, is a normal step in setting one up.
+ */
+function edgeOverviewItems(
+  overview: EdgeNetworksOverview,
+  counts: ReturnType<typeof edgeOverviewPresentation>["counts"],
+): MobileSummaryItem[] {
+  const total = overview.edgeServers.length;
+  const offline = overview.edgeServers.filter((server) => edgeServerState(server) === "offline").length;
+  const items: MobileSummaryItem[] = [
+    { label: `${counts.onlineServers}/${total} online`, tone: offline > 0 ? "warning" : undefined },
+    { label: `${counts.enabledRules} published ${counts.enabledRules === 1 ? "port" : "ports"}` },
+  ];
+  if (counts.needsReconcile > 0) items.push({ label: `${counts.needsReconcile} not in sync` });
+  return items;
 }
 
 function TailscalePanel({ networks }: { networks: EdgeNetworksOverview["tailscale"] }) {

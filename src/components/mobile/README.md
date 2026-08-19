@@ -48,6 +48,7 @@ Rules that keep this maintainable (SOLID/DRY):
 | `MobileStatStrip`, `MobileStat` | Horizontal stat chips |
 | `MobileSegmented` | Sibling views (tabs); URL-driven |
 | `MobileStateSegmented` (page-area, `pages/network-edge/mobile-edge-tabs.tsx`) | Sibling views **inside a repeated card**; component state, not the URL |
+| `MobileSummaryLine` (page-area, `pages/network-edge/mobile-edge-tabs.tsx`) | Two or three headline counts on one line, where a `MobileStatStrip` would spend ~64px of the first screen on them |
 | `MobileSearchBar` | URL-synced `q` search (same params as `TableToolbar`) |
 | `BottomSheet` | Filters, row details, pickers — instead of popover/side sheet |
 | `MobileFab` | The page's single primary action; composes with Radix triggers via prop spread |
@@ -67,6 +68,11 @@ type and looser on touch targets:
 - One sheet at a time. A sub-sheet (edit form, scanner, picker) opened from a
   row's detail sheet **replaces** it and reopens it on close — stacking two
   `BottomSheet`s fights over the scroll lock and buries the back gesture.
+- When the same entity is listed from two places (every connector on the
+  Connectors tab, and the ones linked to one edge box on that edge's card), the
+  two lists own only their rows. Every sheet they open — detail, edit, setup,
+  delete — lives in one shared "sheet host" component that the list mounts with
+  the selected id, so the two surfaces can never drift apart in behaviour.
 - A card with several long sections (the edge server card: routes, connectors,
   tunnel, interfaces) gets a segmented control instead of one long scroll: the
   identity, state and primary actions stay pinned, and **only the selected
@@ -74,6 +80,32 @@ type and looser on touch targets:
   lives in component state and each segment carries a compact badge (count,
   "2/3 ready", On/Off) so the tab strip doubles as the summary. Mirror the
   desktop card's tab order so both views describe the same thing.
+- **Show state and consequence, not bookkeeping.** A card's always-visible part
+  answers "what is this, can we reach it, is what I configured actually live,
+  and what do I press" — for the edge card that is one plain-language sync line
+  (`3 routes staged · not pushed to the edge yet`, `In sync · pushed 3m ago`)
+  plus one primary button. Revisions, hashes, fingerprints and kernel flags are
+  real and stay reachable, but they belong in a details `BottomSheet` behind
+  that line, not on the first screen.
+  `pages/network-edge/mobile-edge-sync.tsx` is the worked example.
+- **Words about shared state live in the shared module, not here.** When a
+  desktop surface already describes the same thing, mobile imports its wording
+  and derives only the phone treatment from it. The edge pages take their sync
+  sentence, fact list, route badges, path text and sensitive-port table from
+  `network/edge-sync-presentation.ts` (deliberately React-free) and keep just
+  the tone→colour map, the amber gate and the tap-to-copy split local. Two
+  copies of a rule like "which ports are risky when unrestricted" drift, and a
+  port that warns on desktop while staying silent on a phone is a safety bug,
+  not a styling one.
+- **Do not repeat the card's state on every row.** A per-row badge that reads
+  the same on all N rows carries no information; badge a row only where it
+  *differs* from the card (disabled, already live, not applied yet). Same for
+  prose: a footnote explaining a status column means the column is wrong.
+- **Amber and ⚠ mean something is wrong**, and the text says what. Normal
+  configuration — routing through a connector, a rule with no source CIDR, a
+  connector not linked yet, forwarding that the next Apply turns on — is
+  neutral. A banner that renders in every state is not a banner; gate it on the
+  state it describes.
 - Safe areas: shell handles the tab bar inset; full-bleed screens use
   `pb-safe`/`pt-safe`. Horizontal scrollers get `no-scrollbar`.
 - Maps/canvases: full-bleed (own the space outside `MobilePage`), pinch to

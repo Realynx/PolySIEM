@@ -10,6 +10,8 @@ import {
   connectorRestrictedAuthorizedKey,
   connectorRulesetHash,
   type ConnectorRoute,
+  type ConnectorRuleset,
+  type ConnectorTunnel,
 } from "@/lib/integrations/connector";
 import {
   ConnectorSshError,
@@ -48,15 +50,21 @@ const CONNECTOR_STALE_AFTER_POLLS = 3;
 /** Keepalive pushed to every derived edge peer (§1c). */
 export const CONNECTOR_KEEPALIVE_SECONDS = 25;
 
-const MAX_CONNECTORS_PER_SERVER = 64;
+/** WireGuard interface a connector owns when its row predates `interfaceName`. */
+const DEFAULT_CONNECTOR_INTERFACE = "wg0";
+
+/** Ceiling on peers one edge server will hand tunnel addresses to. */
+const MAX_LINKS_PER_EDGE = 64;
 
 /**
- * Route shape shared with the connector agent — re-exported from the generator
- * that owns `canonicalConnectorRuleset`, so the hash the agent recomputes and the
+ * Wire shapes shared with the connector agent — re-exported from the generator
+ * that owns the canonical form, so the hash the agent recomputes and the
  * `configHash` we publish can never drift apart. `listenPort` is the PUBLIC port
- * (preserved across the tunnel, §1b).
+ * (preserved across the tunnel); `localAddress` is this connector's address on
+ * the edge that published the port, which is what keeps two edges publishing the
+ * same port from colliding on the connector (§1).
  */
-export type { ConnectorRoute };
+export type { ConnectorRoute, ConnectorTunnel };
 
 /**
  * `configured` belongs to the MANUAL kinds only (§1): an OPNsense box or a plain
@@ -215,10 +223,38 @@ export function deriveConnectorStatus(
 // DTO
 // ---------------------------------------------------------------------------
 
-export interface ConnectorDto {
+/**
+ * One connector peered with one edge server.
+ *
+ * The tunnel address lives HERE rather than on the connector because every edge
+ * owns its own tunnel subnet: a connector serving edge A (`10.9.9.0/24`) and
+ * edge B (`10.9.10.0/24`) holds a different address on each. PolySIEM allocates
+ * it; the operator never types one.
+ */
+export interface ConnectorLinkDto {
   id: string;
   integrationId: string;
+  /** Display name of that edge server, so a UI row reads without a second lookup. */
+  edgeName: string | null;
+  tunnelAddress: string;
+  /** False keeps the link (and its allocated address) while tearing the peer off the edge. */
+  enabled: boolean;
+  lastHandshakeAt: string | null;
+}
+
+export interface ConnectorDto {
+  id: string;
   name: string;
+  /**
+   * Every edge server this connector serves. A connector is standalone: it is
+   * installed once and linked to as many edges as the operator likes.
+   */
+  links: ConnectorLinkDto[];
+  /**
+   * The SINGLE WireGuard interface the agent owns. It carries one peer and one
+   * address per linked edge — never one netdev per edge (§1).
+   */
+  interfaceName: string;
   /**
    * What kind of peer this is (§1). `agent` is PolySIEM's own connector agent;
    * `opnsense` and `peer` are hand-configured WireGuard endpoints.
@@ -232,8 +268,6 @@ export interface ConnectorDto {
   isManual: boolean;
   /** Stable public identifier (`cx_…`), shown mono/copyable in the UI. */
   connectorId: string;
-  /** Implicit tunnel address. Read-only: the operator never types it. */
-  tunnelAddress: string;
   publicKey: string | null;
   status: ConnectorStatus;
   /** Operator toggle, distinct from derived status. */
@@ -246,7 +280,7 @@ export interface ConnectorDto {
   hostname: string | null;
   agentVersion: string | null;
   notes: string | null;
-  /** Enabled + disabled routes currently pinned to this connector. */
+  /** Enabled + disabled routes currently pinned to this connector, across every edge. */
   ruleCount: number;
 
   // --- SSH management (phase 2). Public material only; never the private key. ---
@@ -270,7 +304,16 @@ export interface ConnectorDto {
   updatedAt: string;
 }
 
-type ConnectorRow = Connector & { _count?: { rules: number } };
+interface ConnectorLinkRow {
+  id: string;
+  integrationId: string;
+  tunnelAddress: string;
+  enabled: boolean;
+  lastHandshakeAt: Date | null;
+  integration?: { name: string } | null;
+}
+
+type ConnectorRow = Connector & { _count?: { rules: number }; links?: ConnectorLinkRow[] };
 
 function metadataString(metadata: Prisma.JsonValue | null, key: string): string | null {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
@@ -279,6 +322,17 @@ function metadataString(metadata: Prisma.JsonValue | null, key: string): string 
 }
 
 const iso = (value: Date | null): string | null => (value ? value.toISOString() : null);
+
+export function toConnectorLinkDto(row: ConnectorLinkRow): ConnectorLinkDto {
+  return {
+    id: row.id,
+    integrationId: row.integrationId,
+    edgeName: row.integration?.name ?? null,
+    tunnelAddress: row.tunnelAddress,
+    enabled: row.enabled,
+    lastHandshakeAt: iso(row.lastHandshakeAt),
+  };
+}
 
 /**
  * Explicit allow-list projection. Never spread the row: `installTokenHash` and
@@ -289,12 +343,12 @@ export function toConnectorDto(row: ConnectorRow, now: Date = new Date()): Conne
   const kind = normalizeConnectorKind(row.kind);
   return {
     id: row.id,
-    integrationId: row.integrationId,
     name: row.name,
+    links: (row.links ?? []).map(toConnectorLinkDto),
+    interfaceName: row.interfaceName || DEFAULT_CONNECTOR_INTERFACE,
     kind,
     isManual: isManualConnectorKind(kind),
     connectorId: row.connectorId,
-    tunnelAddress: row.tunnelAddress,
     publicKey: row.publicKey,
     status: deriveConnectorStatus(row, now),
     disabled: row.status === "disabled",
@@ -332,7 +386,8 @@ export function toConnectorDto(row: ConnectorRow, now: Date = new Date()): Conne
 // returned by any service, DTO, audit entry, or log line.
 //
 // The connector's WIREGUARD key is NOT generated here — the agent makes its own
-// and reports only the public half through STATUS.
+// and reports only the public half through STATUS. That one key is its identity
+// on EVERY edge it links to; PolySIEM never mints a per-edge key.
 // ---------------------------------------------------------------------------
 
 export interface ConnectorSshKeyMaterial {
@@ -428,7 +483,20 @@ export function connectorInstallInstructions(baseUrl: string, token: string): Co
 // Shared loading helpers
 // ---------------------------------------------------------------------------
 
-const CONNECTOR_INCLUDE = { _count: { select: { rules: true } } } as const;
+/** Exactly the link columns the DTO exposes. No secret ever lives on a link row. */
+const CONNECTOR_LINK_SELECT = {
+  id: true,
+  integrationId: true,
+  tunnelAddress: true,
+  enabled: true,
+  lastHandshakeAt: true,
+  integration: { select: { name: true } },
+} satisfies Prisma.ConnectorEdgeLinkSelect;
+
+const CONNECTOR_INCLUDE = {
+  _count: { select: { rules: true } },
+  links: { orderBy: { createdAt: "asc" }, select: CONNECTOR_LINK_SELECT },
+} satisfies Prisma.ConnectorInclude;
 
 async function edgeIntegration(id: string, tx?: Prisma.TransactionClient) {
   const row = await (tx ?? prisma).integrationConfig.findUnique({ where: { id } });
@@ -437,18 +505,34 @@ async function edgeIntegration(id: string, tx?: Prisma.TransactionClient) {
 }
 
 /**
- * Same advisory-lock key as `edge-networks.ts` on purpose: connector creation
+ * Same advisory-lock key as `edge-networks.ts` on purpose: linking a connector
  * allocates an address AND recomputes the desired edge ruleset, so it must
  * serialize against rule edits rather than race them under a second lock.
+ *
+ * A connector can now touch SEVERAL edges at once (delete, re-key, disable), so
+ * the keys are de-duplicated and SORTED: two concurrent operations spanning the
+ * same pair of edges therefore always take the locks in the same order and
+ * cannot deadlock. Passing an empty list is legal — a standalone connector with
+ * no links needs no edge lock at all.
  */
-async function withConnectorLock<T>(
+async function withConnectorLocks<T>(
+  integrationIds: readonly string[],
+  work: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  const keys = Array.from(new Set(integrationIds)).sort();
+  return prisma.$transaction(async (tx) => {
+    for (const key of keys) {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('polysiem-edge-rules-' || ${key}))::text AS lock_result`;
+    }
+    return work(tx);
+  }, { maxWait: 10_000, timeout: 60_000 });
+}
+
+function withConnectorLock<T>(
   integrationId: string,
   work: (tx: Prisma.TransactionClient) => Promise<T>,
 ): Promise<T> {
-  return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('polysiem-edge-rules-' || ${integrationId}))::text AS lock_result`;
-    return work(tx);
-  }, { maxWait: 10_000, timeout: 60_000 });
+  return withConnectorLocks([integrationId], work);
 }
 
 function edgeSettings(settings: Prisma.JsonValue | null): EdgeNatSettings {
@@ -459,7 +543,7 @@ function edgeSettings(settings: Prisma.JsonValue | null): EdgeNatSettings {
 function tunnelSubnetForEdge(settings: EdgeNatSettings) {
   const address = settings.wireguard?.address;
   if (!settings.wireguard?.enabled || !address) {
-    throw new ApiError(409, "wireguard_not_configured", "Configure and enable the edge WireGuard tunnel before adding connectors");
+    throw new ApiError(409, "wireguard_not_configured", "Configure and enable the edge WireGuard tunnel before linking connectors to it");
   }
   try {
     return tunnelSubnetFrom(address);
@@ -501,12 +585,53 @@ function edgeParams(baseUrl: string, settings: EdgeNatSettings): ConnectorEdgePa
 }
 
 // ---------------------------------------------------------------------------
-// Paste-ready peer block for a manual connector (§1)
+// Tunnel address allocation, per LINK
+// ---------------------------------------------------------------------------
+
+/**
+ * Next free address inside ONE edge's tunnel subnet.
+ *
+ * Scoped to the edge, never to the connector: the same connector legitimately
+ * holds `10.9.9.3` on edge A and `10.9.10.7` on edge B, so what must not collide
+ * is the set of addresses handed out on THIS edge. Runs inside that edge's
+ * advisory lock, so two concurrent links cannot be handed the same address.
+ */
+async function allocateLinkAddress(
+  tx: Prisma.TransactionClient,
+  integrationId: string,
+  settings: EdgeNatSettings,
+): Promise<string> {
+  const subnet = tunnelSubnetForEdge(settings);
+  const existing = await tx.connectorEdgeLink.findMany({
+    where: { integrationId },
+    select: { tunnelAddress: true },
+  });
+  if (existing.length >= MAX_LINKS_PER_EDGE) {
+    throw new ApiError(400, "connector_limit", `An edge server supports at most ${MAX_LINKS_PER_EDGE} linked connectors`);
+  }
+  // The legacy manually-entered peer already owns its AllowedIPs inside this
+  // subnet; treat them as reserved so we never hand out a clash.
+  const taken = [
+    ...existing.map((entry) => entry.tunnelAddress),
+    ...(settings.wireguard?.peer?.allowedIps ?? []),
+  ];
+  try {
+    return allocateTunnelAddress(subnet.cidr, subnet.edgeHost, taken);
+  } catch (error) {
+    if (error instanceof TunnelAllocationError) {
+      throw new ApiError(409, `tunnel_${error.code}`, error.message);
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Paste-ready peer block for a manual connector (§1, phase 3)
 //
 // PolySIEM cannot program an OPNsense box, so the operator gets exactly the
 // values to type on the far side: where to dial, whose key to trust, what to
-// allow through, and which tunnel address WE allocated for them. Nothing here is
-// secret — the edge PUBLIC key, an endpoint, and addressing.
+// allow through, and which tunnel address WE allocated for them on THIS edge.
+// Nothing here is secret — the edge PUBLIC key, an endpoint, and addressing.
 // ---------------------------------------------------------------------------
 
 export interface ConnectorPeerConfig {
@@ -514,6 +639,9 @@ export interface ConnectorPeerConfig {
   /** The connector's stable public id, so the UI can label the block. */
   connectorId: string;
   name: string;
+  /** The edge this block is for — a connector serving several edges has one block per edge. */
+  integrationId: string;
+  edgeName: string | null;
   /** `host:listenPort` the far side dials. The edge only LISTENS; it never dials out. */
   edgeEndpoint: string;
   /** The edge's WireGuard public key. Null until the edge tunnel has been configured. */
@@ -522,13 +650,13 @@ export interface ConnectorPeerConfig {
   edgeAddress: string;
   /** AllowedIPs to set on the FAR side for the edge peer — the edge tunnel /32. */
   allowedIps: string[];
-  /** Address PolySIEM allocated for the far side. The operator never picks this. */
+  /** Address PolySIEM allocated for the far side on this edge. Never picked by hand. */
   tunnelAddress: string;
   /** The same address with the tunnel prefix, ready to paste into an interface config. */
   tunnelAddressCidr: string;
   /** The whole tunnel subnet, e.g. "10.9.9.0/24". */
   tunnelCidr: string;
-  /** Interface name the edge uses; shown for orientation, not required far-side. */
+  /** Interface name the far side should use for this tunnel. */
   interfaceName: string;
   persistentKeepalive: number;
   /** The far side's public key once it has been pasted back, else null. */
@@ -539,6 +667,8 @@ export interface ConnectorPeerConfigInput {
   kind: ConnectorKind;
   connectorId: string;
   name: string;
+  integrationId: string;
+  edgeName: string | null;
   /** Host part of the edge integration's base URL. */
   host: string;
   listenPort: number;
@@ -560,6 +690,8 @@ export function buildConnectorPeerConfig(input: ConnectorPeerConfigInput): Conne
     kind: input.kind,
     connectorId: input.connectorId,
     name: input.name,
+    integrationId: input.integrationId,
+    edgeName: input.edgeName,
     edgeEndpoint: wireguardEndpoint(input.host, input.listenPort),
     edgePublicKey: input.edgePublicKey,
     edgeAddress: `${subnet.edgeHost}/${subnet.prefix}`,
@@ -573,40 +705,63 @@ export function buildConnectorPeerConfig(input: ConnectorPeerConfigInput): Conne
   };
 }
 
-/** Assemble the block from an edge integration + one connector row. */
+type PeerConfigConnector = Pick<Connector, "kind" | "connectorId" | "name" | "interfaceName" | "publicKey">;
+
+/** Assemble the block from one edge integration + one connector + that link's address. */
 function connectorPeerConfig(
-  baseUrl: string,
+  integration: { id: string; name: string; baseUrl: string },
   settings: EdgeNatSettings,
-  row: Pick<Connector, "kind" | "connectorId" | "name" | "tunnelAddress" | "publicKey">,
+  row: PeerConfigConnector,
+  tunnelAddress: string,
 ): ConnectorPeerConfig {
   const subnet = tunnelSubnetForEdge(settings);
-  const { host } = parseEdgeSshUrl(baseUrl);
+  const { host } = parseEdgeSshUrl(integration.baseUrl);
   return buildConnectorPeerConfig({
     kind: normalizeConnectorKind(row.kind),
     connectorId: row.connectorId,
     name: row.name,
+    integrationId: integration.id,
+    edgeName: integration.name,
     host,
     listenPort: settings.wireguard?.listenPort ?? 51820,
-    interfaceName: settings.wireguard?.interfaceName ?? "wg0",
+    // The far side runs the connector's own interface name; every edge shares it
+    // because ONE interface carries every peer (§1).
+    interfaceName: row.interfaceName || DEFAULT_CONNECTOR_INTERFACE,
     // Deliberately nullable: the block is still useful (endpoint, addressing)
     // before the edge tunnel has a key, and the UI can prompt for that step.
     edgePublicKey: settings.wireguard?.publicKey ?? null,
     edgeAddress: settings.wireguard?.address ?? subnet.cidr,
-    tunnelAddress: row.tunnelAddress,
+    tunnelAddress,
     publicKey: row.publicKey,
   });
 }
 
+/** No usable link for the requested edge — the whole peer block depends on one. */
+function notLinked(): ApiError {
+  return new ApiError(
+    400,
+    "connector_not_linked",
+    "This connector is not linked to that edge server. Link it first, and PolySIEM will allocate its tunnel address.",
+  );
+}
+
 /**
- * The far-side peer block for one connector. Available for every kind (it is all
- * public material), but it is what MAKES the manual kinds usable: it is the only
- * way an OPNsense box learns what to configure.
+ * The far-side peer block for one connector on one edge.
+ *
+ * Available for every kind (it is all public material), but it is what MAKES the
+ * manual kinds usable: it is the only way an OPNsense box learns what to
+ * configure. `integrationId` picks the edge; with several links and no explicit
+ * edge, the first enabled link wins.
  */
-export async function getConnectorPeerConfig(id: string): Promise<ConnectorPeerConfig> {
-  const row = await prisma.connector.findUnique({ where: { id } });
+export async function getConnectorPeerConfig(id: string, integrationId?: string): Promise<ConnectorPeerConfig> {
+  const row = await prisma.connector.findUnique({ where: { id }, include: CONNECTOR_INCLUDE });
   if (!row) throw new ApiError(404, "not_found", "Connector not found");
-  const integration = await edgeIntegration(row.integrationId);
-  return connectorPeerConfig(integration.baseUrl, edgeSettings(integration.settings), row);
+  const link = integrationId
+    ? row.links.find((entry) => entry.integrationId === integrationId)
+    : row.links.find((entry) => entry.enabled) ?? row.links[0];
+  if (!link) throw notLinked();
+  const integration = await edgeIntegration(link.integrationId);
+  return connectorPeerConfig(integration, edgeSettings(integration.settings), row, link.tunnelAddress);
 }
 
 /** Generic failure text for every machine-token path — never leaks existence. */
@@ -615,12 +770,141 @@ function invalidToken(): ApiError {
 }
 
 // ---------------------------------------------------------------------------
+// Tunnel plans — one per ENABLED link (§2)
+//
+// A connector runs ONE interface holding one peer and one address per edge it
+// serves. Everything downstream (the poll response, the SSH APPLY payload, the
+// canonical hash) is built from this list, so the two transports cannot drift.
+// ---------------------------------------------------------------------------
+
+export interface ConnectorTunnelPlan {
+  /** The edge integration id — `edgeKey` on the wire (§2). Opaque to the agent. */
+  edgeKey: string;
+  edgeName: string;
+  /** This connector's address on that edge's subnet. */
+  tunnelAddress: string;
+  tunnelAddressCidr: string;
+  tunnelCidr: string;
+  edge: ConnectorEdgeParams;
+}
+
+/**
+ * Every enabled link, as a tunnel the agent can bring up.
+ *
+ * An edge whose WireGuard tunnel is not configured yet (or has no key) simply
+ * contributes NO tunnel: a half-configured edge must not stop a connector from
+ * serving the edges that are ready.
+ */
+async function connectorTunnelPlans(connectorId: string): Promise<ConnectorTunnelPlan[]> {
+  const links = await prisma.connectorEdgeLink.findMany({
+    where: { connectorId, enabled: true },
+    include: { integration: true },
+    orderBy: [{ createdAt: "asc" }],
+  });
+  return links.flatMap((link) => {
+    if (link.integration.type !== "EDGE_NAT_SERVER") return [];
+    const settings = edgeSettings(link.integration.settings);
+    try {
+      const subnet = tunnelSubnetForEdge(settings);
+      return [{
+        edgeKey: link.integrationId,
+        edgeName: link.integration.name,
+        tunnelAddress: link.tunnelAddress,
+        tunnelAddressCidr: `${link.tunnelAddress}/${subnet.prefix}`,
+        tunnelCidr: subnet.cidr,
+        edge: edgeParams(link.integration.baseUrl, settings),
+      }];
+    } catch (error) {
+      if (error instanceof ApiError) return [];
+      throw error;
+    }
+  });
+}
+
+/** One linked edge as the agent's frozen `TUNNEL` shape — one peer, one address. */
+function toApplyTunnel(plan: ConnectorTunnelPlan): ConnectorTunnel {
+  return {
+    edgeKey: plan.edgeKey,
+    address: plan.tunnelAddressCidr,
+    endpoint: plan.edge.endpoint,
+    publicKey: plan.edge.publicKey,
+    allowedIps: plan.edge.allowedIps,
+    persistentKeepalive: plan.edge.persistentKeepalive,
+  };
+}
+
+/**
+ * Desired last-hop routes across EVERY edge this connector serves.
+ *
+ * Each route carries `localAddress` — the connector's tunnel address on the edge
+ * that published the port — so two edges publishing the same public port render
+ * as two distinct DNAT rules instead of colliding (§1).
+ */
+async function connectorDesiredRoutes(
+  connectorId: string,
+  tunnels: readonly ConnectorTunnelPlan[],
+): Promise<ConnectorRoute[]> {
+  const localByEdge = new Map(tunnels.map((tunnel) => [tunnel.edgeKey, tunnel.tunnelAddress]));
+  if (localByEdge.size === 0) return [];
+  const rules = await prisma.edgeNatRule.findMany({
+    where: {
+      connectorId,
+      mode: "connector",
+      enabled: true,
+      integrationId: { in: Array.from(localByEdge.keys()) },
+    },
+    orderBy: [{ integrationId: "asc" }, { protocol: "asc" }, { publicPort: "asc" }],
+    select: { integrationId: true, protocol: true, publicPort: true, targetAddress: true, targetPort: true },
+  });
+  return rules.flatMap((rule) => {
+    const localAddress = localByEdge.get(rule.integrationId);
+    return localAddress
+      ? [{
+          localAddress,
+          protocol: rule.protocol === "udp" ? ("udp" as const) : ("tcp" as const),
+          listenPort: rule.publicPort,
+          targetAddress: rule.targetAddress,
+          targetPort: rule.targetPort,
+        }]
+      : [];
+  });
+}
+
+interface ConnectorDesiredState {
+  interfaceName: string;
+  tunnels: ConnectorTunnelPlan[];
+  routes: ConnectorRoute[];
+  ruleset: ConnectorRuleset;
+  configHash: string;
+}
+
+/**
+ * The one place the desired connector configuration is computed. Both transports
+ * — the token poll and the SSH push — read it, so `configHash` means exactly one
+ * thing everywhere.
+ */
+async function connectorDesiredState(row: Pick<Connector, "id" | "interfaceName">): Promise<ConnectorDesiredState> {
+  const interfaceName = row.interfaceName || DEFAULT_CONNECTOR_INTERFACE;
+  const tunnels = await connectorTunnelPlans(row.id);
+  const routes = await connectorDesiredRoutes(row.id, tunnels);
+  const ruleset: ConnectorRuleset = { interfaceName, tunnels: tunnels.map(toApplyTunnel), routes };
+  return { interfaceName, tunnels, routes, ruleset, configHash: connectorRulesetHash(ruleset) };
+}
+
+// ---------------------------------------------------------------------------
 // Operator-facing services
 // ---------------------------------------------------------------------------
 
+/**
+ * Every connector, or — with `integrationId` — only those LINKED to that edge.
+ *
+ * The filter is deliberately a filter and not a scope: connectors exist
+ * independently of any one edge server, so the edge card asks for its own subset
+ * while the top-level Connectors view asks for all of them.
+ */
 export async function listConnectors(integrationId?: string): Promise<ConnectorDto[]> {
   const rows = await prisma.connector.findMany({
-    where: integrationId ? { integrationId } : undefined,
+    where: integrationId ? { links: { some: { integrationId } } } : undefined,
     include: CONNECTOR_INCLUDE,
     orderBy: [{ createdAt: "asc" }],
   });
@@ -645,8 +929,12 @@ export interface CreatedConnector {
   installCommand: string | null;
   installCommandInsecure: string | null;
   installUrl: string | null;
-  /** Paste-ready far-side block. Always present; it is the whole flow for manual kinds. */
-  peerConfig: ConnectorPeerConfig;
+  /**
+   * Paste-ready far-side block for the edge this connector was linked to in the
+   * same call. NULL when the connector was created standalone — a connector no
+   * longer belongs to an edge, so there is no block to render until it is linked.
+   */
+  peerConfig: ConnectorPeerConfig | null;
 }
 
 const NO_INSTALL = {
@@ -656,104 +944,120 @@ const NO_INSTALL = {
   installUrl: null,
 } as const;
 
+/** Translate a unique-name collision into the one error the operator can act on. */
+function asConnectorApiError(error: unknown): never {
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+    throw new ApiError(409, "connector_exists", "A connector with that name already exists");
+  }
+  throw error;
+}
+
+/** Reject a `publicKey` supplied for an `agent` connector, which owns its own key. */
+function assertPublicKeyAllowed(manual: boolean, publicKey: string | null): void {
+  if (!publicKey || manual) return;
+  // An agent generates its own WireGuard key on the host and reports only the
+  // public half; accepting one here would let an operator register a key whose
+  // private half nobody controls.
+  throw new ApiError(
+    400,
+    "connector_public_key_not_allowed",
+    "A PolySIEM agent connector generates its own WireGuard key on the host; do not supply one",
+  );
+}
+
+/** The row payload shared by both creation paths (linked and standalone). */
+function connectorCreateData(
+  input: CreateConnectorInput,
+  kind: ConnectorKind,
+  connectorId: string,
+  publicKey: string | null,
+  token: string | null,
+  ssh: ConnectorSshKeyMaterial | null,
+): Prisma.ConnectorUncheckedCreateInput {
+  return {
+    name: input.name,
+    notes: input.notes ?? null,
+    kind,
+    connectorId,
+    publicKey,
+    status: publicKey ? "configured" : "pending",
+    ...(token ? { installTokenHash: hashConnectorToken(token), installTokenIssuedAt: new Date() } : {}),
+    ...(ssh
+      ? {
+          sshUsername: ssh.sshUsername,
+          sshPublicKey: ssh.sshPublicKey,
+          sshAuthorizedKey: ssh.sshAuthorizedKey,
+          encryptedCredentials: ssh.encryptedCredentials,
+        }
+      : {}),
+  };
+}
+
+/**
+ * Create the row plus, when `integrationId` is given, its FIRST link — allocating
+ * that edge's tunnel address inside the same transaction so a concurrent link can
+ * never be handed the same address.
+ */
+async function createConnectorRow(
+  integrationId: string | undefined,
+  data: Prisma.ConnectorUncheckedCreateInput,
+): Promise<{ row: ConnectorRow; peerConfig: ConnectorPeerConfig | null }> {
+  if (!integrationId) {
+    const row = await prisma.connector.create({ data, include: CONNECTOR_INCLUDE }).catch(asConnectorApiError);
+    return { row, peerConfig: null };
+  }
+  return withConnectorLock(integrationId, async (tx) => {
+    const integration = await edgeIntegration(integrationId, tx);
+    const settings = edgeSettings(integration.settings);
+    const tunnelAddress = await allocateLinkAddress(tx, integrationId, settings);
+    const row = await tx.connector.create({
+      data: { ...data, links: { create: { integrationId, tunnelAddress } } },
+      include: CONNECTOR_INCLUDE,
+    }).catch(asConnectorApiError);
+    // A manual connector supplied with its key is a peer from this moment on.
+    if (data.publicKey) await markEdgeRulesPending(tx, integrationId);
+    return { row, peerConfig: connectorPeerConfig(integration, settings, row, tunnelAddress) };
+  });
+}
+
 /**
  * Create a connector.
  *
- * Every kind gets the same two things: an implicitly allocated tunnel address
- * (under the edge lock) and a place in the edge's derived peer list.
+ * A connector is STANDALONE (§1): it is not owned by an edge server. Passing an
+ * `integrationId` is a convenience for the common "add one and use it here"
+ * flow — it creates the first link, and its tunnel address, in the same
+ * transaction. Omit it and the connector exists with no links until one is added.
  *
- * An `agent` connector additionally gets the one-time install token AND the
- * per-connector restricted SSH key, exactly as in phases 1–2. The MANUAL kinds
- * (`opnsense`, `peer`) deliberately get NEITHER: no token is minted, no SSH
- * keypair is generated, and nothing is stored that could later authenticate a
- * machine. They are pure WireGuard peers, so all they can carry is a public key —
- * optionally supplied here, more usually pasted back after the operator generates
- * it on the far side.
+ * An `agent` connector gets the one-time install token AND the per-connector
+ * restricted SSH key, exactly as in phases 1–2. The MANUAL kinds (`opnsense`,
+ * `peer`) deliberately get NEITHER: no token is minted, no SSH keypair is
+ * generated, and nothing is stored that could later authenticate a machine. They
+ * are pure WireGuard peers, so all they can carry is a public key — optionally
+ * supplied here, more usually pasted back after the operator generates it on the
+ * far side.
  */
 export async function createConnector(
   actor: AuditActor,
-  integrationId: string,
+  integrationId: string | undefined,
   input: CreateConnectorInput,
   options: { baseUrl?: string } = {},
 ): Promise<CreatedConnector> {
   const kind = normalizeConnectorKind(input.kind);
   const manual = isManualConnectorKind(kind);
   const publicKey = input.publicKey?.trim() || null;
-  if (publicKey && !manual) {
-    // An agent generates its own WireGuard key on the host and reports only the
-    // public half; accepting one here would let an operator register a key whose
-    // private half nobody controls.
-    throw new ApiError(
-      400,
-      "connector_public_key_not_allowed",
-      "A PolySIEM agent connector generates its own WireGuard key on the host; do not supply one",
-    );
-  }
+  assertPublicKeyAllowed(manual, publicKey);
 
   const connectorId = generateConnectorPublicId();
   const token = manual ? null : generateConnectorToken();
   const ssh = manual ? null : generateConnectorSshKey(connectorId);
-  const created = await withConnectorLock(integrationId, async (tx) => {
-    const integration = await edgeIntegration(integrationId, tx);
-    const settings = edgeSettings(integration.settings);
-    const subnet = tunnelSubnetForEdge(settings);
+  const { row, peerConfig } = await createConnectorRow(
+    integrationId,
+    connectorCreateData(input, kind, connectorId, publicKey, token, ssh),
+  );
 
-    const existing = await tx.connector.findMany({ where: { integrationId }, select: { tunnelAddress: true } });
-    if (existing.length >= MAX_CONNECTORS_PER_SERVER) {
-      throw new ApiError(400, "connector_limit", `An edge server supports at most ${MAX_CONNECTORS_PER_SERVER} connectors`);
-    }
-    // The legacy manually-entered peer already owns its AllowedIPs inside this
-    // subnet; treat them as reserved so we never hand out a clash.
-    const taken = [
-      ...existing.map((entry) => entry.tunnelAddress),
-      ...(settings.wireguard?.peer?.allowedIps ?? []),
-    ];
-    let tunnelAddress: string;
-    try {
-      tunnelAddress = allocateTunnelAddress(subnet.cidr, subnet.edgeHost, taken);
-    } catch (error) {
-      if (error instanceof TunnelAllocationError) {
-        throw new ApiError(409, `tunnel_${error.code}`, error.message);
-      }
-      throw error;
-    }
-
-    try {
-      const row = await tx.connector.create({
-        data: {
-          integrationId,
-          name: input.name,
-          notes: input.notes ?? null,
-          kind,
-          connectorId,
-          tunnelAddress,
-          publicKey,
-          status: publicKey ? "configured" : "pending",
-          ...(token ? { installTokenHash: hashConnectorToken(token), installTokenIssuedAt: new Date() } : {}),
-          ...(ssh
-            ? {
-                sshUsername: ssh.sshUsername,
-                sshPublicKey: ssh.sshPublicKey,
-                sshAuthorizedKey: ssh.sshAuthorizedKey,
-                encryptedCredentials: ssh.encryptedCredentials,
-              }
-            : {}),
-        },
-        include: CONNECTOR_INCLUDE,
-      });
-      // A manual connector supplied with its key is a peer from this moment on.
-      if (publicKey) await markEdgeRulesPending(tx, integrationId);
-      return { row, peerConfig: connectorPeerConfig(integration.baseUrl, settings, row) };
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        throw new ApiError(409, "connector_exists", "A connector with that name already exists on this edge server");
-      }
-      throw error;
-    }
-  });
-  const { row, peerConfig } = created;
   await audit(actor, "edge_nat.connector.create", { type: "connector", id: row.id }, {
-    integrationId, connectorId: row.connectorId, tunnelAddress: row.tunnelAddress, kind,
+    connectorId: row.connectorId, kind,
+    ...(integrationId ? { integrationId, tunnelAddress: row.links?.[0]?.tunnelAddress ?? null } : {}),
     // The fingerprint identifies the key without revealing anything usable.
     ...(ssh ? { sshKeyFingerprint: ssh.fingerprint } : {}),
   });
@@ -764,6 +1068,183 @@ export async function createConnector(
       : NO_INSTALL),
     peerConfig,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Links — the many-to-many join that makes connectors independent (§1)
+// ---------------------------------------------------------------------------
+
+export interface ConnectorLinkResult {
+  connector: ConnectorDto;
+  link: ConnectorLinkDto;
+  /** Paste-ready far-side block for THIS edge. The whole flow for a manual kind. */
+  peerConfig: ConnectorPeerConfig;
+}
+
+async function connectorOrThrow(id: string): Promise<Connector> {
+  const row = await prisma.connector.findUnique({ where: { id } });
+  if (!row) throw new ApiError(404, "not_found", "Connector not found");
+  return row;
+}
+
+async function connectorDtoById(id: string, tx?: Prisma.TransactionClient): Promise<ConnectorDto> {
+  const row = await (tx ?? prisma).connector.findUnique({ where: { id }, include: CONNECTOR_INCLUDE });
+  if (!row) throw new ApiError(404, "not_found", "Connector not found");
+  return toConnectorDto(row);
+}
+
+/** The link row, verified to belong to this connector. */
+async function connectorLinkOrThrow(connectorId: string, linkId: string) {
+  const link = await prisma.connectorEdgeLink.findUnique({ where: { id: linkId } });
+  if (!link || link.connectorId !== connectorId) {
+    throw new ApiError(404, "not_found", "That connector is not linked to that edge server");
+  }
+  return link;
+}
+
+/**
+ * Link an existing connector to an edge server.
+ *
+ * PolySIEM allocates the tunnel address from THAT edge's subnet — a connector
+ * holds a different address on every edge it serves, so the operator never
+ * supplies one. The edge is marked pending so the existing Apply button
+ * registers the new peer.
+ */
+export async function linkConnector(
+  actor: AuditActor,
+  id: string,
+  integrationId: string,
+): Promise<ConnectorLinkResult> {
+  const connector = await connectorOrThrow(id);
+  const created = await withConnectorLock(integrationId, async (tx) => {
+    const integration = await edgeIntegration(integrationId, tx);
+    const settings = edgeSettings(integration.settings);
+    const existing = await tx.connectorEdgeLink.findUnique({
+      where: { connectorId_integrationId: { connectorId: id, integrationId } },
+    });
+    if (existing) {
+      throw new ApiError(409, "connector_already_linked", "This connector already serves that edge server");
+    }
+    const tunnelAddress = await allocateLinkAddress(tx, integrationId, settings);
+    const link = await tx.connectorEdgeLink.create({
+      data: { connectorId: id, integrationId, tunnelAddress },
+      select: CONNECTOR_LINK_SELECT,
+    }).catch((error: unknown) => {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        throw new ApiError(409, "connector_already_linked", "This connector already serves that edge server");
+      }
+      throw error;
+    });
+    // The peer list is derived from (enabled link + connector public key), so a
+    // keyed connector changes the desired edge config the moment it is linked.
+    if (connector.publicKey && connector.status !== "disabled") await markEdgeRulesPending(tx, integrationId);
+    return {
+      link,
+      peerConfig: connectorPeerConfig(integration, settings, connector, tunnelAddress),
+    };
+  });
+  await audit(actor, "edge_nat.connector.link", { type: "connector", id }, {
+    integrationId, connectorId: connector.connectorId, tunnelAddress: created.link.tunnelAddress,
+  });
+  return {
+    connector: await connectorDtoById(id),
+    link: toConnectorLinkDto(created.link),
+    peerConfig: created.peerConfig,
+  };
+}
+
+/** Rules that would be left DNATing into nothing if this link disappeared. */
+async function linkDependentRules(
+  tx: Prisma.TransactionClient,
+  connectorId: string,
+  integrationId: string,
+): Promise<string[]> {
+  const rules = await tx.edgeNatRule.findMany({
+    where: { integrationId, connectorId, mode: "connector", enabled: true },
+    select: { name: true },
+    orderBy: [{ name: "asc" }],
+    take: 25,
+  });
+  return rules.map((rule) => rule.name);
+}
+
+/**
+ * Unlink a connector from one edge server.
+ *
+ * Refused while ENABLED connector-mode rules on that edge still route through
+ * this connector: unlinking would strip the peer and the tunnel address those
+ * rules DNAT to, turning them into a black hole. The offending rules are named
+ * so the operator can retarget or disable them first.
+ */
+export async function unlinkConnector(
+  actor: AuditActor,
+  id: string,
+  linkId: string,
+): Promise<{ unlinked: true; connector: ConnectorDto }> {
+  const connector = await connectorOrThrow(id);
+  const link = await connectorLinkOrThrow(id, linkId);
+  await withConnectorLock(link.integrationId, async (tx) => {
+    const blocking = await linkDependentRules(tx, id, link.integrationId);
+    if (blocking.length > 0) {
+      throw new ApiError(
+        409,
+        "connector_link_in_use",
+        `Unlink refused: ${blocking.length} enabled route${blocking.length === 1 ? "" : "s"} on this edge server still route through this connector (${blocking.join(", ")}). Point them elsewhere or disable them first.`,
+      );
+    }
+    const result = await tx.connectorEdgeLink.deleteMany({ where: { id: linkId, connectorId: id } });
+    if (result.count === 0) throw new ApiError(404, "not_found", "That connector is not linked to that edge server");
+    await markEdgeRulesPending(tx, link.integrationId);
+  });
+  await audit(actor, "edge_nat.connector.unlink", { type: "connector", id }, {
+    integrationId: link.integrationId, connectorId: connector.connectorId, tunnelAddress: link.tunnelAddress,
+  });
+  return { unlinked: true, connector: await connectorDtoById(id) };
+}
+
+/**
+ * Suspend or resume one link without losing its allocated address.
+ *
+ * Disabling tears the peer off that edge (and drops its connector-mode rules
+ * from the applied ruleset) while keeping the address reserved, so re-enabling
+ * restores exactly the previous addressing.
+ */
+export async function setConnectorLinkEnabled(
+  actor: AuditActor,
+  id: string,
+  linkId: string,
+  enabled: boolean,
+): Promise<ConnectorLinkResult> {
+  const connector = await connectorOrThrow(id);
+  const existing = await connectorLinkOrThrow(id, linkId);
+  const updated = await withConnectorLock(existing.integrationId, async (tx) => {
+    const integration = await edgeIntegration(existing.integrationId, tx);
+    const settings = edgeSettings(integration.settings);
+    const link = await tx.connectorEdgeLink.update({
+      where: { id: linkId },
+      data: { enabled },
+      select: CONNECTOR_LINK_SELECT,
+    });
+    if (existing.enabled !== enabled) await markEdgeRulesPending(tx, existing.integrationId);
+    return { link, peerConfig: connectorPeerConfig(integration, settings, connector, link.tunnelAddress) };
+  });
+  await audit(actor, "edge_nat.connector.link.update", { type: "connector", id }, {
+    integrationId: existing.integrationId, connectorId: connector.connectorId, enabled,
+  });
+  return {
+    connector: await connectorDtoById(id),
+    link: toConnectorLinkDto(updated.link),
+    peerConfig: updated.peerConfig,
+  };
+}
+
+/** Every edge this connector currently peers with, for lock + pending bookkeeping. */
+async function linkedIntegrationIds(connectorId: string): Promise<string[]> {
+  const links = await prisma.connectorEdgeLink.findMany({
+    where: { connectorId },
+    select: { integrationId: true },
+  });
+  return links.map((link) => link.integrationId);
 }
 
 /**
@@ -838,7 +1319,8 @@ function assertConnectorPatchAllowed(
 
 /**
  * The edge peer list is derived from (publicKey, not disabled), so any move in
- * either direction — including a re-keyed manual peer — has to re-pend the edge.
+ * either direction — including a re-keyed manual peer — has to re-pend EVERY
+ * edge this connector serves.
  */
 function edgePeersChanged(
   existing: { status: string; publicKey: string | null },
@@ -880,34 +1362,28 @@ export async function updateConnector(
   const nextPublicKey = patch.publicKey === undefined ? existing.publicKey : patch.publicKey?.trim() || null;
   const nextStatus = nextConnectorStatus(existing, kind, nextPublicKey, patch.disabled);
   const peersChanged = edgePeersChanged(existing, nextStatus, nextPublicKey);
+  const integrationIds = peersChanged ? await linkedIntegrationIds(id) : [];
 
-  const row = await withConnectorLock(existing.integrationId, async (tx) => {
-    try {
-      const updated = await tx.connector.update({
-        where: { id },
-        data: connectorUpdateData(
-          patch,
-          { publicKey: nextPublicKey, status: nextStatus, previousStatus: existing.status },
-          ssh.data as Record<string, unknown>,
-        ),
-        include: CONNECTOR_INCLUDE,
-      });
-      if (peersChanged) await markEdgeRulesPending(tx, existing.integrationId);
-      return updated;
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        throw new ApiError(409, "connector_exists", "A connector with that name already exists on this edge server");
-      }
-      throw error;
-    }
+  const row = await withConnectorLocks(integrationIds, async (tx) => {
+    const updated = await tx.connector.update({
+      where: { id },
+      data: connectorUpdateData(
+        patch,
+        { publicKey: nextPublicKey, status: nextStatus, previousStatus: existing.status },
+        ssh.data as Record<string, unknown>,
+      ),
+      include: CONNECTOR_INCLUDE,
+    }).catch(asConnectorApiError);
+    for (const integrationId of integrationIds) await markEdgeRulesPending(tx, integrationId);
+    return updated;
   });
   await audit(actor, "edge_nat.connector.update", { type: "connector", id }, {
-    integrationId: existing.integrationId, fields: Object.keys(patch),
+    connectorId: existing.connectorId, fields: Object.keys(patch),
     ...(ssh.hostKeyCleared ? { sshHostKeyCleared: true } : {}),
   });
   if (patchTouchesSsh(patch)) {
     await audit(actor, "connector.ssh.endpoint", { type: "connector", id }, {
-      integrationId: existing.integrationId, connectorId: existing.connectorId,
+      connectorId: existing.connectorId,
       sshHost: row.sshHost, sshPort: row.sshPort, sshUsername: row.sshUsername,
       hostKeyCleared: ssh.hostKeyCleared,
     });
@@ -956,26 +1432,26 @@ export async function ensureConnectorSshKey(actor: AuditActor, id: string): Prom
     include: CONNECTOR_INCLUDE,
   });
   await audit(actor, "connector.ssh.key.generate", { type: "connector", id }, {
-    integrationId: existing.integrationId, connectorId: existing.connectorId,
-    sshKeyFingerprint: ssh.fingerprint,
+    connectorId: existing.connectorId, sshKeyFingerprint: ssh.fingerprint,
   });
   return toConnectorDto(row);
 }
 
 /**
- * Delete a connector. Its routes cascade away with it, and the desired edge
- * ruleset is recomputed so the existing Apply button tears the peer off.
+ * Delete a connector. Its links and routes cascade away with it, and the desired
+ * ruleset is recomputed for EVERY edge it served so the existing Apply button
+ * tears the peer off each of them.
  */
 export async function deleteConnector(actor: AuditActor, id: string): Promise<void> {
-  const existing = await prisma.connector.findUnique({ where: { id } });
-  if (!existing) throw new ApiError(404, "not_found", "Connector not found");
-  await withConnectorLock(existing.integrationId, async (tx) => {
+  const existing = await connectorOrThrow(id);
+  const integrationIds = await linkedIntegrationIds(id);
+  await withConnectorLocks(integrationIds, async (tx) => {
     const result = await tx.connector.deleteMany({ where: { id } });
     if (result.count === 0) throw new ApiError(404, "not_found", "Connector not found");
-    await markEdgeRulesPending(tx, existing.integrationId);
+    for (const integrationId of integrationIds) await markEdgeRulesPending(tx, integrationId);
   });
   await audit(actor, "edge_nat.connector.delete", { type: "connector", id }, {
-    integrationId: existing.integrationId, connectorId: existing.connectorId,
+    connectorId: existing.connectorId, integrationIds,
   });
 }
 
@@ -988,8 +1464,7 @@ export async function rotateConnectorToken(
   id: string,
   options: { baseUrl?: string } = {},
 ): Promise<CreatedConnector> {
-  const found = await prisma.connector.findUnique({ where: { id } });
-  if (!found) throw new ApiError(404, "not_found", "Connector not found");
+  const found = await connectorOrThrow(id);
   // Manual kinds have no installer to re-run and no agent to authenticate.
   assertAgentConnector(found, "be issued an install token");
   const token = generateConnectorToken();
@@ -1007,13 +1482,14 @@ export async function rotateConnectorToken(
     throw error;
   });
   await audit(actor, "edge_nat.connector.rotate_token", { type: "connector", id }, {
-    integrationId: row.integrationId, connectorId: row.connectorId,
+    connectorId: row.connectorId,
   });
-  const integration = await edgeIntegration(row.integrationId);
   return {
     connector: toConnectorDto(row),
     ...connectorInstallInstructions(options.baseUrl ?? resolveConnectorBaseUrl(null), token),
-    peerConfig: connectorPeerConfig(integration.baseUrl, edgeSettings(integration.settings), row),
+    // Informational for an agent connector, and only when it already serves an
+    // edge; a standalone connector simply has no far-side block yet.
+    peerConfig: await getConnectorPeerConfig(id).catch(() => null),
   };
 }
 
@@ -1032,11 +1508,30 @@ export interface ConnectorEnrollResult {
   connectorId: string;
   /** Plaintext agent token — returned exactly once, at the end of enrollment. */
   agentToken: string;
-  tunnelAddress: string;
-  tunnelCidr: string;
+  /** The one interface the agent owns; every peer and address lives on it (§1). */
   interfaceName: string;
-  edge: ConnectorEdgeParams;
+  /**
+   * Phase-1 compatibility fields, taken from the FIRST enabled link. Null when
+   * the connector is not linked to any edge yet — a connector is standalone now,
+   * so it can legitimately enroll before it serves anything. Agents should read
+   * {@link ConnectorEnrollResult.tunnels}.
+   */
+  tunnelAddress: string | null;
+  tunnelCidr: string | null;
+  edge: ConnectorEdgeParams | null;
+  /** One entry per enabled link: one WireGuard peer and one address each. */
+  tunnels: ConnectorTunnelPlan[];
   pollIntervalSeconds: number;
+}
+
+/** Phase-1 shaped view of the primary link, for agents that only understand one tunnel. */
+function primaryTunnel(tunnels: readonly ConnectorTunnelPlan[]) {
+  const first = tunnels[0] ?? null;
+  return {
+    tunnelAddress: first?.tunnelAddress ?? null,
+    tunnelCidr: first?.tunnelCidr ?? null,
+    edge: first?.edge ?? null,
+  };
 }
 
 /**
@@ -1044,6 +1539,9 @@ export interface ConnectorEnrollResult {
  * a keypair it generated locally; the server records the key, rotates the token
  * (§1a), and returns everything needed to bring the tunnel up. Re-enrolling with
  * the same public key is idempotent.
+ *
+ * That ONE key is the connector's identity on every edge it serves, so a key
+ * change re-pends all of them.
  */
 export async function enrollConnector(input: ConnectorEnrollInput): Promise<ConnectorEnrollResult> {
   const found = await connectorForToken(input.token);
@@ -1064,15 +1562,13 @@ export async function enrollConnector(input: ConnectorEnrollInput): Promise<Conn
     throw new ApiError(409, "already_enrolled", "This connector is already enrolled with a different key");
   }
 
-  const integration = await edgeIntegration(found.integrationId);
-  const settings = edgeSettings(integration.settings);
-  const edge = edgeParams(integration.baseUrl, settings);
-  const subnet = tunnelSubnetForEdge(settings);
+  const rekeyed = found.publicKey !== input.publicKey;
+  const integrationIds = rekeyed ? await linkedIntegrationIds(found.id) : [];
   const agentToken = generateConnectorToken();
   const now = new Date();
 
-  const row = await withConnectorLock(found.integrationId, async (tx) => {
-    const updated = await tx.connector.update({
+  await withConnectorLocks(integrationIds, async (tx) => {
+    await tx.connector.update({
       where: { id: found.id },
       data: {
         publicKey: input.publicKey,
@@ -1092,22 +1588,21 @@ export async function enrollConnector(input: ConnectorEnrollInput): Promise<Conn
       },
     });
     // The peer list is derived from enrolled connectors, so a new key changes
-    // the desired edge config — surface it through the normal Apply flow.
-    if (found.publicKey !== input.publicKey) await markEdgeRulesPending(tx, found.integrationId);
-    return updated;
+    // the desired edge config on EVERY edge — surface it through Apply.
+    for (const integrationId of integrationIds) await markEdgeRulesPending(tx, integrationId);
   });
 
-  await audit({ type: "system" }, "edge_nat.connector.enroll", { type: "connector", id: row.id }, {
-    integrationId: row.integrationId, connectorId: row.connectorId, rekeyed: found.publicKey !== input.publicKey,
+  await audit({ type: "system" }, "edge_nat.connector.enroll", { type: "connector", id: found.id }, {
+    connectorId: found.connectorId, rekeyed, integrationIds,
   });
 
+  const tunnels = await connectorTunnelPlans(found.id);
   return {
-    connectorId: row.connectorId,
+    connectorId: found.connectorId,
     agentToken,
-    tunnelAddress: row.tunnelAddress,
-    tunnelCidr: subnet.cidr,
-    interfaceName: settings.wireguard?.interfaceName ?? "wg0",
-    edge,
+    interfaceName: found.interfaceName || DEFAULT_CONNECTOR_INTERFACE,
+    ...primaryTunnel(tunnels),
+    tunnels,
     pollIntervalSeconds: CONNECTOR_POLL_INTERVAL_SECONDS,
   };
 }
@@ -1115,16 +1610,21 @@ export async function enrollConnector(input: ConnectorEnrollInput): Promise<Conn
 export interface ConnectorConfigResult {
   configHash: string;
   interfaceName: string;
-  tunnelAddress: string;
-  edge: ConnectorEdgeParams;
+  /** Phase-1 compatibility: the primary link's address / edge. Null when unlinked. */
+  tunnelAddress: string | null;
+  edge: ConnectorEdgeParams | null;
+  /** One WireGuard peer and one address per enabled link (§1). */
+  tunnels: ConnectorTunnelPlan[];
+  /** Desired last-hop routes across every linked edge, each scoped by `localAddress`. */
   routes: ConnectorRoute[];
   pollIntervalSeconds: number;
 }
 
 /**
- * Machine endpoint. Records the heartbeat and returns the desired last-hop
- * routes for THIS connector plus the hash the agent compares against what it has
- * applied. `listenPort` is the public port — it is preserved across the tunnel.
+ * Machine endpoint. Records the heartbeat and returns the desired tunnels and
+ * last-hop routes for THIS connector plus the hash the agent compares against
+ * what it has applied. `listenPort` is the public port — it is preserved across
+ * the tunnel — and `localAddress` says which edge published it.
  */
 export async function connectorConfig(input: ConnectorHeartbeatInput): Promise<ConnectorConfigResult> {
   const found = await prisma.connector.findUnique({ where: { connectorId: input.connectorId } });
@@ -1134,22 +1634,7 @@ export async function connectorConfig(input: ConnectorHeartbeatInput): Promise<C
   assertAgentConnector(found, "poll for configuration");
   if (found.status === "disabled") throw new ApiError(403, "connector_disabled", "This connector is disabled");
 
-  const integration = await edgeIntegration(found.integrationId);
-  const settings = edgeSettings(integration.settings);
-  const edge = edgeParams(integration.baseUrl, settings);
-
-  const rules = await prisma.edgeNatRule.findMany({
-    where: { integrationId: found.integrationId, connectorId: found.id, mode: "connector", enabled: true },
-    orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
-    select: { protocol: true, publicPort: true, targetAddress: true, targetPort: true },
-  });
-  const routes: ConnectorRoute[] = rules.map((rule) => ({
-    protocol: rule.protocol === "udp" ? "udp" : "tcp",
-    listenPort: rule.publicPort,
-    targetAddress: rule.targetAddress,
-    targetPort: rule.targetPort,
-  }));
-
+  const desired = await connectorDesiredState(found);
   const now = new Date();
   const handshakeAge = input.handshakeAgeSeconds;
   await prisma.connector.update({
@@ -1175,11 +1660,11 @@ export async function connectorConfig(input: ConnectorHeartbeatInput): Promise<C
   });
 
   return {
-    configHash: connectorRulesetHash(routes),
-    interfaceName: settings.wireguard?.interfaceName ?? "wg0",
-    tunnelAddress: found.tunnelAddress,
-    edge,
-    routes,
+    configHash: desired.configHash,
+    interfaceName: desired.interfaceName,
+    ...primaryTunnel(desired.tunnels),
+    tunnels: desired.tunnels,
+    routes: desired.routes,
     pollIntervalSeconds: CONNECTOR_POLL_INTERVAL_SECONDS,
   };
 }
@@ -1202,18 +1687,18 @@ export interface ConnectorInstallContext {
  * Resolve an install token for `GET .../install.sh`. Returns null for an unknown
  * or already-consumed token so the route can serve a generic failing script
  * rather than confirming whether the token ever existed.
+ *
+ * A connector no longer belongs to an edge server, so nothing here depends on
+ * one: an operator can install the agent first and link it to edges afterwards.
  */
 export async function connectorInstallContext(token: string): Promise<ConnectorInstallContext | null> {
   const found = await connectorForToken(token);
   // A manual kind has no agent to install; serve the generic failing script.
   if (!found || found.status === "disabled" || isManualConnector(found)) return null;
-  const integration = await prisma.integrationConfig.findUnique({ where: { id: found.integrationId } });
-  if (!integration || integration.type !== "EDGE_NAT_SERVER") return null;
-  const settings = edgeSettings(integration.settings);
   return {
     token,
     connectorId: found.connectorId,
-    interfaceName: settings.wireguard?.interfaceName ?? "wg0",
+    interfaceName: found.interfaceName || DEFAULT_CONNECTOR_INTERFACE,
     ...(found.sshAuthorizedKey ? { sshAuthorizedKey: found.sshAuthorizedKey } : {}),
     ...(found.sshAuthorizedKey ? { sshUsername: found.sshUsername } : {}),
   };
@@ -1324,7 +1809,7 @@ export async function enrollConnectorHostKey(
     include: CONNECTOR_INCLUDE,
   });
   await audit(actor, "connector.ssh.host_key.enroll", { type: "connector", id }, {
-    integrationId: row.integrationId, connectorId: row.connectorId, fingerprint,
+    connectorId: row.connectorId, fingerprint,
   });
 
   // Confirm the restricted key actually answers. A failure here is informative,
@@ -1349,58 +1834,40 @@ export async function enrollConnectorHostKey(
   }
 }
 
-/** Tunnel parameters for the §1c TUNNEL line, derived from the edge integration. */
-async function connectorApplyTunnel(row: Connector) {
-  const integration = await edgeIntegration(row.integrationId);
-  const settings = edgeSettings(integration.settings);
-  const subnet = tunnelSubnetForEdge(settings);
-  const edge = edgeParams(integration.baseUrl, settings);
-  return {
-    integrationId: row.integrationId,
-    tunnel: {
-      interfaceName: settings.wireguard?.interfaceName ?? "wg0",
-      address: `${row.tunnelAddress}/${subnet.prefix}`,
-      endpoint: edge.endpoint,
-      publicKey: edge.publicKey,
-      allowedIps: edge.allowedIps,
-      persistentKeepalive: edge.persistentKeepalive,
-    },
-  };
-}
-
-/** This connector's desired last-hop routes — the same rows the poll path serves. */
-async function connectorDesiredRoutes(row: Connector): Promise<ConnectorRoute[]> {
-  const rules = await prisma.edgeNatRule.findMany({
-    where: { integrationId: row.integrationId, connectorId: row.id, mode: "connector", enabled: true },
-    orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
-    select: { protocol: true, publicPort: true, targetAddress: true, targetPort: true },
-  });
-  return rules.map((rule) => ({
-    protocol: rule.protocol === "udp" ? "udp" : "tcp",
-    listenPort: rule.publicPort,
-    targetAddress: rule.targetAddress,
-    targetPort: rule.targetPort,
-  }));
-}
-
 export interface ConnectorApplyResult {
   applied: true;
   routeCount: number;
   revision: number;
   hash: string;
   appliedAt: string;
+  /** How many edge servers this push configured as peers. */
+  tunnelCount: number;
   connector: ConnectorDto;
 }
 
+/** The next monotonic revision for this connector, or a clear 409 at the ceiling. */
+function nextConnectorRevision(metadata: Prisma.JsonValue | null): number {
+  const revision = Math.max(
+    metadataNumber(metadata, SSH_REVISION_KEY),
+    metadataNumber(metadata, SSH_APPLIED_REVISION_KEY),
+  ) + 1;
+  if (revision > 999_999_999) {
+    throw new ApiError(409, "connector_revision_exhausted", "This connector's apply revision counter is exhausted");
+  }
+  return revision;
+}
+
 /**
- * Push this connector's desired configuration over SSH (§1c).
+ * Push this connector's desired configuration over SSH (§2).
  *
- * The payload carries the tunnel parameters and the canonical ROUTE lines and
- * NOTHING else — in particular no WireGuard private key, because the connector
- * owns that key and merely reports its public half back through STATUS.
+ * The payload carries ONE `IFACE` line, one `TUNNEL` line per enabled link, and
+ * every route across all of those edges — each scoped by the tunnel address of
+ * the edge that published it, so two edges publishing the same public port do
+ * not collide on the connector. It carries NO WireGuard private key: the
+ * connector owns that key and merely reports its public half back through STATUS.
  *
- * Revisions are monotonic per connector so a late-arriving older apply can be
- * refused by the agent (`exit 5`) instead of quietly winning.
+ * Revisions are monotonic PER CONNECTOR (not per edge) so a late-arriving older
+ * apply can be refused by the agent (`exit 5`) instead of quietly winning.
  */
 export async function applyConnectorOverSsh(actor: AuditActor, id: string): Promise<ConnectorApplyResult> {
   const row = await connectorRow(id);
@@ -1410,22 +1877,24 @@ export async function applyConnectorOverSsh(actor: AuditActor, id: string): Prom
   if (row.status === "disabled") {
     throw new ApiError(409, "connector_disabled", "Re-enable this connector before pushing its configuration");
   }
-  const { tunnel } = await connectorApplyTunnel(row);
-  const routes = await connectorDesiredRoutes(row);
-  const hash = connectorRulesetHash(routes);
-  const revision = Math.max(
-    metadataNumber(row.metadata, SSH_REVISION_KEY),
-    metadataNumber(row.metadata, SSH_APPLIED_REVISION_KEY),
-  ) + 1;
-  if (revision > 999_999_999) {
-    throw new ApiError(409, "connector_revision_exhausted", "This connector's apply revision counter is exhausted");
+  const desired = await connectorDesiredState(row);
+  if (desired.tunnels.length === 0) {
+    throw new ApiError(
+      409,
+      "connector_not_linked",
+      "Link this connector to at least one edge server with a configured WireGuard tunnel before pushing its configuration",
+    );
   }
-  const protocol = buildConnectorApplyProtocol({ revision, tunnel, routes });
+  const revision = nextConnectorRevision(row.metadata);
+  const protocol = buildConnectorApplyProtocol({ revision, ...desired.ruleset });
 
   try {
     const result = await runConnectorSsh(row, "APPLY", protocol).catch(asApiError);
     const applied = parseConnectorApplyResponse(result.stdout);
-    if (result.code !== 0 || !applied || applied.hash !== hash || applied.revision !== revision || applied.routeCount !== routes.length) {
+    if (
+      result.code !== 0 || !applied || applied.hash !== desired.configHash ||
+      applied.revision !== revision || applied.routeCount !== desired.routes.length
+    ) {
       const reason = connectorApplyExitReason(result.code);
       throw new Error(
         reason ||
@@ -1453,8 +1922,8 @@ export async function applyConnectorOverSsh(actor: AuditActor, id: string): Prom
       include: CONNECTOR_INCLUDE,
     });
     await audit(actor, "connector.ssh.apply", { type: "connector", id }, {
-      integrationId: row.integrationId, connectorId: row.connectorId,
-      routeCount: applied.routeCount, revision: applied.revision, hash: applied.hash,
+      connectorId: row.connectorId, routeCount: applied.routeCount, revision: applied.revision,
+      hash: applied.hash, integrationIds: desired.tunnels.map((tunnel) => tunnel.edgeKey),
     });
     return {
       applied: true,
@@ -1462,6 +1931,7 @@ export async function applyConnectorOverSsh(actor: AuditActor, id: string): Prom
       revision: applied.revision,
       hash: applied.hash,
       appliedAt: appliedAt.toISOString(),
+      tunnelCount: desired.tunnels.length,
       connector: toConnectorDto(updated),
     };
   } catch (error) {
@@ -1472,7 +1942,7 @@ export async function applyConnectorOverSsh(actor: AuditActor, id: string): Prom
       data: { metadata: mergedMetadata(row.metadata, { [SSH_REVISION_KEY]: revision, [SSH_ERROR_KEY]: message }) },
     }).catch(() => undefined);
     await audit(actor, "connector.ssh.apply_failed", { type: "connector", id }, {
-      integrationId: row.integrationId, connectorId: row.connectorId, revision, error: message,
+      connectorId: row.connectorId, revision, error: message,
     });
     throw new ApiError(502, "connector_apply_failed", message);
   }
@@ -1485,6 +1955,8 @@ export interface ConnectorSshStatusReport {
   /** Hash of what PolySIEM wants applied right now. */
   desiredConfigHash: string;
   desiredRouteCount: number;
+  /** How many edge peers PolySIEM expects this connector to hold. */
+  desiredTunnelCount: number;
   /** True when the connector has not applied the desired ruleset (or drifted). */
   pendingChanges: boolean;
   /** Set when this STATUS taught PolySIEM a new connector WireGuard public key. */
@@ -1493,12 +1965,37 @@ export interface ConnectorSshStatusReport {
 }
 
 /**
+ * Fold STATUS v2's per-peer handshakes back onto the links.
+ *
+ * The peers a CONNECTOR reports are the EDGES, so `WG_PEER.publicKey` is an edge
+ * WireGuard public key — that is what maps a handshake to one link and lets the
+ * UI say which edge is actually up.
+ */
+async function recordLinkHandshakes(
+  tx: Prisma.TransactionClient,
+  connectorId: string,
+  tunnels: readonly ConnectorTunnelPlan[],
+  status: ConnectorSshStatus,
+): Promise<void> {
+  const byEdgeKey = new Map(status.peerDetails.map((peer) => [peer.publicKey, peer.latestHandshakeAt]));
+  for (const tunnel of tunnels) {
+    const handshake = byEdgeKey.get(tunnel.edge.publicKey);
+    if (!handshake) continue;
+    await tx.connectorEdgeLink.updateMany({
+      where: { connectorId, integrationId: tunnel.edgeKey },
+      data: { lastHandshakeAt: new Date(handshake) },
+    });
+  }
+}
+
+/**
  * Read live STATUS from the connector over SSH.
  *
  * This is also how PolySIEM LEARNS the connector's WireGuard public key: the
- * agent generates that key locally (§1a) and reports only its public half. When
- * the reported key differs from what we hold, we adopt it and mark the edge
- * ruleset pending so the next edge apply re-registers the peer.
+ * agent generates that keypair itself and reports only its public half. That ONE
+ * key is its identity on every edge, so when the reported key differs from what
+ * we hold we adopt it and mark EVERY linked edge pending, so the next edge apply
+ * re-registers the peer.
  */
 export async function fetchConnectorSshStatus(id: string): Promise<ConnectorSshStatusReport> {
   const row = await connectorRow(id);
@@ -1515,12 +2012,12 @@ export async function fetchConnectorSshStatus(id: string): Promise<ConnectorSshS
     throw new ApiError(502, "connector_status_failed", error instanceof Error ? error.message : String(error));
   }
 
-  const routes = await connectorDesiredRoutes(row);
-  const desiredConfigHash = connectorRulesetHash(routes);
+  const desired = await connectorDesiredState(row);
   const now = new Date();
   const adoptKey = Boolean(status.wgPublicKey) && status.wgPublicKey !== row.publicKey;
+  const integrationIds = adoptKey ? await linkedIntegrationIds(id) : [];
 
-  const updated = await withConnectorLock(row.integrationId, async (tx) => {
+  const updated = await withConnectorLocks(integrationIds, async (tx) => {
     const next = await tx.connector.update({
       where: { id },
       data: {
@@ -1541,15 +2038,16 @@ export async function fetchConnectorSshStatus(id: string): Promise<ConnectorSshS
       },
       include: CONNECTOR_INCLUDE,
     });
+    await recordLinkHandshakes(tx, id, desired.tunnels, status);
     // The edge peer list is derived from connector public keys, so a new key
     // changes the desired edge config: surface it through the normal Apply flow.
-    if (adoptKey) await markEdgeRulesPending(tx, row.integrationId);
+    for (const integrationId of integrationIds) await markEdgeRulesPending(tx, integrationId);
     return next;
   });
 
   if (adoptKey) {
     await audit({ type: "system" }, "connector.ssh.wireguard_key", { type: "connector", id }, {
-      integrationId: row.integrationId, connectorId: row.connectorId, rekeyed: row.publicKey !== null,
+      connectorId: row.connectorId, rekeyed: row.publicKey !== null, integrationIds,
     });
   }
 
@@ -1558,9 +2056,10 @@ export async function fetchConnectorSshStatus(id: string): Promise<ConnectorSshS
     connector: toConnectorDto(updated),
     status,
     capturedAt: now.toISOString(),
-    desiredConfigHash,
-    desiredRouteCount: routes.length,
-    pendingChanges: status.drift || status.appliedHash !== desiredConfigHash,
+    desiredConfigHash: desired.configHash,
+    desiredRouteCount: desired.routes.length,
+    desiredTunnelCount: desired.tunnels.length,
+    pendingChanges: status.drift || status.appliedHash !== desired.configHash,
     wireguardKeyAdopted: adoptKey,
     lastApplyError: typeof lastError === "string" ? lastError : null,
   };

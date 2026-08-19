@@ -35,8 +35,17 @@ async function withEdgeRuleLock<T>(
   }, { maxWait: 10_000, timeout: 60_000 });
 }
 
+/**
+ * One connector ↔ edge link, as an apply needs it.
+ *
+ * The tunnel address is per LINK, not per connector: a connector serving several
+ * edges holds a different address on each, so the address this edge DNATs to can
+ * only come from the link between THIS edge and that connector.
+ */
+type RuleConnectorLink = { tunnelAddress: string; enabled: boolean };
+
 /** The connector columns an apply needs; null for direct-mode rules. */
-type RuleConnector = { tunnelAddress: string; publicKey: string | null; status: string } | null;
+type RuleConnector = { publicKey: string | null; status: string; links?: RuleConnectorLink[] } | null;
 
 interface EdgeRuleRow {
   id: string; name: string; protocol: string; publicPort: number;
@@ -44,19 +53,33 @@ interface EdgeRuleRow {
   mode?: string; connector?: RuleConnector;
 }
 
-/** Prisma selection carrying just enough of the connector to render a rule. */
-const RULE_CONNECTOR_INCLUDE = {
-  connector: { select: { tunnelAddress: true, publicKey: true, status: true } },
-} as const;
+/**
+ * Prisma selection carrying just enough of the connector to render a rule.
+ *
+ * The nested `links` are filtered to THIS edge, so a connector that also serves
+ * three other edges still contributes exactly one candidate address here.
+ */
+function ruleConnectorInclude(integrationId: string) {
+  return {
+    connector: {
+      select: {
+        publicKey: true,
+        status: true,
+        links: { where: { integrationId }, select: { tunnelAddress: true, enabled: true } },
+      },
+    },
+  };
+}
 
 /**
- * Desired edge-side rules (§1b).
+ * Desired edge-side rules (§1b, updated by §1 of the independence contract).
  *
  * A `direct` rule renders exactly as it always has — the edge DNATs straight to
  * `targetAddress:targetPort`. A `connector` rule instead DNATs to the connector's
- * tunnel address on the SAME public port; the connector performs the last hop.
- * Connector rules whose connector is missing, disabled, or not yet enrolled have
- * no peer on the edge, so they are dropped rather than DNATed into a black hole.
+ * tunnel address ON THIS EDGE, on the SAME public port; the connector performs
+ * the last hop. Connector rules are dropped rather than DNATed into a black hole
+ * when the connector is missing, disabled, has no key, or is no longer linked to
+ * this edge (an unlinked or suspended connector has no peer and no address here).
  */
 export function deriveEdgeApplyRules(rows: EdgeRuleRow[]): Array<EdgeApplyRule & { id: string; name: string }> {
   return rows.flatMap((rule) => {
@@ -67,7 +90,9 @@ export function deriveEdgeApplyRules(rows: EdgeRuleRow[]): Array<EdgeApplyRule &
     if (rule.mode === "connector") {
       const connector = rule.connector;
       if (!connector || !connector.publicKey || connector.status === "disabled") return [];
-      return [{ ...base, targetAddress: connector.tunnelAddress, targetPort: rule.publicPort }];
+      const link = (connector.links ?? []).find((entry) => entry.enabled);
+      if (!link) return [];
+      return [{ ...base, targetAddress: link.tunnelAddress, targetPort: rule.publicPort }];
     }
     return [{ ...base, targetAddress: rule.targetAddress, targetPort: rule.targetPort }];
   });
@@ -85,16 +110,30 @@ function normalizeRule(input: EdgeNatRuleInput) {
 }
 
 /**
- * Every non-disabled connector that has a public key — the derived half of the
- * edge peer list (§1c). Deliberately kind-agnostic: an OPNsense box added as an
- * `opnsense` connector is a peer on exactly the same terms as an agent host.
+ * The derived half of the edge peer list.
+ *
+ * Peers now come from LINKS, not from ownership: every ENABLED link into this
+ * edge whose connector is non-disabled and has a public key. A connector serving
+ * three edges appears once on each of them, with that edge's own address, and
+ * unlinking it from one edge removes the peer there and nowhere else.
+ *
+ * Deliberately kind-agnostic: an OPNsense box added as an `opnsense` connector
+ * is a peer on exactly the same terms as an agent host.
  */
 async function loadConnectorPeers(tx: Prisma.TransactionClient, integrationId: string) {
-  return tx.connector.findMany({
-    where: { integrationId, status: { not: "disabled" }, publicKey: { not: null } },
-    select: { publicKey: true, tunnelAddress: true },
-    orderBy: [{ tunnelAddress: "asc" }, { connectorId: "asc" }],
+  const links = await tx.connectorEdgeLink.findMany({
+    where: {
+      integrationId,
+      enabled: true,
+      connector: { status: { not: "disabled" }, publicKey: { not: null } },
+    },
+    select: { tunnelAddress: true, connector: { select: { publicKey: true } } },
+    orderBy: [{ tunnelAddress: "asc" }],
   });
+  return links.map((link) => ({
+    publicKey: link.connector.publicKey,
+    tunnelAddress: link.tunnelAddress,
+  }));
 }
 
 type ConnectorPeerRow = { publicKey: string | null; tunnelAddress: string };
@@ -233,7 +272,7 @@ export async function markEdgeRulesPending(tx: Prisma.TransactionClient, integra
   const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
   const rows = await tx.edgeNatRule.findMany({
     where: { integrationId, enabled: true },
-    include: RULE_CONNECTOR_INCLUDE,
+    include: ruleConnectorInclude(integrationId),
     orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
   });
   const rules = deriveEdgeApplyRules(rows);
@@ -268,15 +307,21 @@ async function assertRuleCanListen(tx: Prisma.TransactionClient, integrationId: 
 }
 
 /**
- * A connector-mode rule may only reference a connector that belongs to THIS edge
- * server and is not disabled.
+ * A connector-mode rule may only reference a connector that is LINKED to this
+ * edge server (with the link enabled) and is not disabled.
+ *
+ * Connectors are standalone since phase 4, so "belongs to this edge" became "has
+ * an enabled link to this edge": that link is what carries the tunnel address
+ * this rule will DNAT to, so without it there is nothing to point at — hence
+ * `connector_not_linked` rather than a generic not-found.
  *
  * For an `agent` connector we additionally require enrollment: PolySIEM pushes
  * the last hop to it, and DNATing to a tunnel address with no peer behind it is
- * a black hole. A MANUAL connector (§1) is allowed BEFORE its key arrives — the
- * operator legitimately publishes the port first and configures the OPNsense side
- * afterwards. The rule simply stays out of the applied ruleset until the key
- * exists (`deriveEdgeApplyRules` drops it), so nothing is ever DNATed nowhere.
+ * a black hole. A MANUAL connector (§1, phase 3) is allowed BEFORE its key
+ * arrives — the operator legitimately publishes the port first and configures
+ * the OPNsense side afterwards. The rule simply stays out of the applied ruleset
+ * until the key exists (`deriveEdgeApplyRules` drops it), so nothing is ever
+ * DNATed nowhere.
  */
 async function assertConnectorRoutable(
   tx: Prisma.TransactionClient,
@@ -285,17 +330,27 @@ async function assertConnectorRoutable(
 ) {
   if (value.mode !== "connector") return;
   if (!value.connectorId) {
-    throw new ApiError(400, "connector_not_enrolled", "Select a connector for a connector-routed rule");
+    throw new ApiError(400, "connector_not_linked", "Select a connector for a connector-routed rule");
   }
-  const connector = await tx.connector.findFirst({
-    where: { id: value.connectorId, integrationId },
-    select: { publicKey: true, status: true, kind: true },
+  const connector = await tx.connector.findUnique({
+    where: { id: value.connectorId },
+    select: {
+      publicKey: true, status: true, kind: true,
+      links: { where: { integrationId }, select: { enabled: true } },
+    },
   });
   if (!connector) {
-    throw new ApiError(400, "connector_not_enrolled", "That connector does not belong to this edge server");
+    throw new ApiError(400, "connector_not_linked", "That connector no longer exists");
+  }
+  const link = connector.links[0];
+  if (!link) {
+    throw new ApiError(400, "connector_not_linked", "Link that connector to this edge server before routing a port through it");
+  }
+  if (!link.enabled) {
+    throw new ApiError(400, "connector_not_linked", "That connector's link to this edge server is suspended; re-enable it before routing a port through it");
   }
   if (connector.status === "disabled") {
-    throw new ApiError(400, "connector_not_enrolled", "Re-enable that connector before routing a port through it");
+    throw new ApiError(400, "connector_not_linked", "Re-enable that connector before routing a port through it");
   }
   if (!connector.publicKey && !isManualConnectorKind(connector.kind ?? "agent")) {
     throw new ApiError(400, "connector_not_enrolled", "Install and enroll that connector before routing a port through it");
@@ -401,7 +456,7 @@ export async function applyEdgeNatRules(
     const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
     const rows = options.clear ? [] : await tx.edgeNatRule.findMany({
       where: { integrationId, enabled: true },
-      include: RULE_CONNECTOR_INCLUDE,
+      include: ruleConnectorInclude(integrationId),
       orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
     });
     const rules = deriveEdgeApplyRules(rows);
@@ -451,7 +506,7 @@ export async function applyEdgeNatRules(
       const settings = edgeNatSettingsSchema.parse(latest.settings ?? {});
       const desiredRows = await tx.edgeNatRule.findMany({
         where: { integrationId, enabled: true },
-        include: RULE_CONNECTOR_INCLUDE,
+        include: ruleConnectorInclude(integrationId),
         orderBy: [{ protocol: "asc" }, { publicPort: "asc" }],
       });
       const desired = deriveEdgeApplyRules(desiredRows);
@@ -623,9 +678,15 @@ export async function getEdgeWireguardConfig(integrationId: string) {
   const integration = await edgeIntegration(integrationId);
   const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
   const peer = settings.wireguard?.peer ?? null;
+  // A connector only claims this edge's peer slot when it is LINKED here and the
+  // link is live — the same condition `loadConnectorPeers` derives peers from.
   const duplicate = peer
     ? await prisma.connector.count({
-        where: { integrationId, publicKey: peer.publicKey, status: { not: "disabled" } },
+        where: {
+          publicKey: peer.publicKey,
+          status: { not: "disabled" },
+          links: { some: { integrationId, enabled: true } },
+        },
       })
     : 0;
   return {

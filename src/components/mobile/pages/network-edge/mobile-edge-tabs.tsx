@@ -1,9 +1,13 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /**
+ * Compact chrome for the edge-network screens: the in-card segmented control,
+ * and the one-line summary that replaced the strip of stat tiles above the
+ * lists. Both exist to buy vertical space back for the content.
+ *
  * The four sibling views inside one edge server, in the same order as the
  * desktop card's tabs. Kept local to the phone tree for now — if the desktop
  * layer promotes the order to `edge-networks-types.ts`, import it from there
@@ -101,6 +105,36 @@ export function MobileStateSegmented<T extends string>({
         />
       ))}
     </div>
+  );
+}
+
+export interface MobileSummaryItem {
+  label: string;
+  tone?: "muted" | "success" | "warning";
+}
+
+/**
+ * The counts that used to be a row of stat tiles, on one line.
+ *
+ * Three tiles cost ~64px of the first screen to carry three small numbers; the
+ * same numbers read fine as a sentence, and the space goes to the servers and
+ * routes the page is actually about. A tone is for a state that needs an
+ * operator's attention — not for "there is something to apply", which is normal.
+ */
+export function MobileSummaryLine({ items }: { items: readonly MobileSummaryItem[] }) {
+  return (
+    <p className="flex flex-wrap items-center gap-x-1.5 px-0.5 text-[12px] text-muted-foreground">
+      {items.map((item, index) => (
+        <Fragment key={item.label}>
+          {index > 0 && (
+            <span aria-hidden className="text-muted-foreground/50">
+              ·
+            </span>
+          )}
+          <span className={cn(item.tone && TONE_CLASS[item.tone])}>{item.label}</span>
+        </Fragment>
+      ))}
+    </p>
   );
 }
 

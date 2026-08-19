@@ -2,7 +2,7 @@
 
 import { type FormEvent, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Cable, Loader2, Route, TriangleAlert } from "lucide-react";
+import { Cable, Link2, Loader2, Route, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
@@ -15,7 +15,9 @@ import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import {
   connectorKindLabel,
   connectorRouteWarning,
-  isConnectorSelectable,
+  connectorTunnelAddressFor,
+  connectorsAvailableToLink,
+  isConnectorSelectableFor,
   natRuleRouting,
   natRuleTargetCopy,
   ruleRouteMode,
@@ -29,6 +31,7 @@ import {
   type NatRuleInput,
 } from "@/components/network/edge-networks-types";
 import { isValidNetworkPort } from "@/components/network/edge-network-utils";
+import { useAllConnectorsQuery, useLinkConnectorMutation } from "./mobile-connector-links";
 import { useConnectorsQuery } from "./mobile-connectors";
 import { MobileOptionCard } from "./mobile-form-controls";
 
@@ -130,7 +133,7 @@ function NatRuleRouteModePicker({
             disabledHint={
               connectorsLoading
                 ? "Loading connectors…"
-                : "Add a connector on this server first — an agent, OPNsense, or another WireGuard peer."
+                : "Link a connector to this edge first — an existing one will do; a connector can serve several edges."
             }
           />
         ))}
@@ -144,11 +147,13 @@ function NatRuleRouteModePicker({
  * cannot program a hand-configured far end, so the operator has to.
  */
 function NatRuleConnectorField({
+  server,
   connectors,
   connectorId,
   onChange,
   publicPort,
 }: {
+  server: EdgeNatServer;
   connectors: readonly ConnectorDto[];
   connectorId: string;
   onChange: (id: string) => void;
@@ -157,6 +162,7 @@ function NatRuleConnectorField({
   const selected = connectors.find((connector) => connector.id === connectorId) ?? null;
   // Non-null only for manual kinds: PolySIEM cannot program the far side there.
   const warning = selected ? connectorRouteWarning(selected, { publicPort: publicPort || null }) : null;
+  const address = selected ? connectorTunnelAddressFor(selected, server.id) : null;
   return (
     <div className="grid gap-1.5">
       <Label>Connector</Label>
@@ -173,8 +179,9 @@ function NatRuleConnectorField({
         </SelectContent>
       </Select>
       <p className="text-xs text-muted-foreground">
-        The edge port is preserved across the tunnel. Agent connectors must be enrolled; OPNsense and other WireGuard
-        peers only need their key registered.
+        Only connectors linked to {server.name} are listed. The edge hands the port to
+        {address ? ` ${address}, this connector's address on this edge.` : " the connector's address on this edge."}{" "}
+        The port is preserved across the tunnel.
       </p>
       {warning && (
         <div className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
@@ -184,6 +191,60 @@ function NatRuleConnectorField({
             <span className="mt-0.5 block leading-snug">{warning.detail}</span>
           </span>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Nothing is linked to this edge yet, so the rule cannot be routed over a
+ * connector. Rather than dead-ending, link one right here — a connector already
+ * installed for another edge serves this one the moment it is linked. Kept
+ * inline instead of a sub-sheet: a second bottom sheet over this form would
+ * fight it for the scroll lock.
+ */
+function NatRuleLinkConnectorField({ server }: { server: EdgeNatServer }) {
+  const [choice, setChoice] = useState("");
+  const allConnectors = useAllConnectorsQuery();
+  const linkable = connectorsAvailableToLink(allConnectors.data ?? [], server.id);
+  const mutation = useLinkConnectorMutation(() => setChoice(""));
+
+  if (allConnectors.isLoading) return null;
+  return (
+    <div className="grid gap-1.5 rounded-xl border border-info/30 bg-info/5 p-3">
+      <Label>No connector is linked to {server.name}</Label>
+      {linkable.length === 0 ? (
+        <p className="text-xs text-info">
+          Add a connector from the Connectors section of Edge networks, then come back — a connector is installed once
+          and can serve any edge box you link it to.
+        </p>
+      ) : (
+        <>
+          <p className="text-xs text-info">
+            One of your existing connectors can serve this edge too. Link it and it appears in the picker.
+          </p>
+          <Select value={choice} onValueChange={setChoice}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Choose a connector to link" />
+            </SelectTrigger>
+            <SelectContent>
+              {linkable.map((connector) => (
+                <SelectItem key={connector.id} value={connector.id}>
+                  {connector.name} · {connectorKindLabel(connector)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            disabled={!choice || mutation.isPending}
+            onClick={() => mutation.mutate({ connectorId: choice, integrationId: server.id })}
+          >
+            {mutation.isPending ? <Loader2 className="animate-spin" /> : <Link2 />} Link to this edge
+          </Button>
+        </>
       )}
     </div>
   );
@@ -285,9 +346,10 @@ export function MobileNatRuleSheet({
   const update = (patch: Partial<NatRuleFormState>) => setForm((current) => ({ ...current, ...patch }));
 
   const connectorsQuery = useConnectorsQuery(server.id, { enabled: server.enabled });
-  // The shared predicate is kind-aware: an agent connector proves itself by
-  // enrolling, a manual peer by having its public key registered.
-  const usable = (connectorsQuery.data ?? []).filter(isConnectorSelectable);
+  // The shared predicate is kind- AND link-aware: an agent connector proves
+  // itself by enrolling and a manual peer by having its key registered, and
+  // either way it must hold a live link to THIS edge to carry its traffic.
+  const usable = (connectorsQuery.data ?? []).filter((connector) => isConnectorSelectableFor(connector, server.id));
 
   const mutation = useMutation({
     mutationFn: (input: NatRuleInput) =>
@@ -340,14 +402,16 @@ export function MobileNatRuleSheet({
           connectorsLoading={connectorsQuery.isLoading}
         />
 
-        {form.mode === "connector" && (
+        {form.mode === "connector" && usable.length > 0 && (
           <NatRuleConnectorField
+            server={server}
             connectors={usable}
             connectorId={form.connectorId}
             onChange={(connectorId) => update({ connectorId })}
             publicPort={form.publicPort}
           />
         )}
+        {usable.length === 0 && !connectorsQuery.isLoading && <NatRuleLinkConnectorField server={server} />}
 
         <NatRuleEndpointFields form={form} update={update} />
         <NatRuleSourceField value={form.sourceCidr} onChange={(sourceCidr) => update({ sourceCidr })} />

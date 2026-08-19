@@ -1,11 +1,22 @@
 /**
- * Implicit tunnel addressing for connectors.
+ * Implicit tunnel addressing for connector ↔ edge LINKS.
  *
  * A connector's WireGuard address is never typed by an operator: PolySIEM
  * derives the tunnel subnet from the edge's own WireGuard address and hands out
- * the next free host inside it. Everything here is pure IPv4 arithmetic on plain
- * numbers — the build targets ES2017, so BigInt literals are forbidden. A 32-bit
- * address fits comfortably inside a JS double, so `*`/`/` on octets is exact.
+ * the next free host inside it.
+ *
+ * Since phase 4 a connector is standalone and may serve SEVERAL edge servers, so
+ * an address is a property of the LINK, not of the connector: edge A allocates
+ * from `10.9.9.0/24` while edge B allocates from `10.9.10.0/24`, and the same
+ * connector legitimately holds one address in each. Nothing here needs to know
+ * that — every function is scoped to a single edge's subnet, and the caller runs
+ * one allocation per link under that edge's advisory lock. `taken` is therefore
+ * the addresses already handed out ON THAT EDGE (its other links plus the legacy
+ * manual peer's AllowedIPs), never a connector's addresses on other edges.
+ *
+ * Everything here is pure IPv4 arithmetic on plain numbers — the build targets
+ * ES2017, so BigInt literals are forbidden. A 32-bit address fits comfortably
+ * inside a JS double, so `*`/`/` on octets is exact.
  */
 
 /** Prefix assumed when an edge address is stored without one (e.g. "10.9.9.1"). */

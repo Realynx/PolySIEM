@@ -7,9 +7,11 @@ import {
   CircleCheck,
   Clipboard,
   KeyRound,
+  Link2,
   Loader2,
   LockKeyhole,
   Radio,
+  Server,
   ShieldAlert,
   ShieldCheck,
   Terminal,
@@ -41,28 +43,34 @@ import {
   buildConnectorPeerSnippet,
   connectorAgentSummary,
   connectorInstallProgress,
+  connectorInterfaceName,
   connectorKindOf,
   connectorKindPresentation,
   connectorLastContactAt,
+  connectorLinkEdgeName,
+  connectorLinks,
+  connectorPeerBlockFor,
   connectorPeerConfigQueryKey,
   connectorPeerConfigUrl,
   connectorPeerProgress,
   connectorSshUsername,
   connectorStatusPresentation,
+  connectorTunnelAddressFor,
   connectorUrl,
-  connectorsQueryKey,
   edgeInstallStep,
+  edgeServerForLink,
+  edgeTunnelEndpoint,
   isManualConnector,
   isWireguardPublicKey,
-  resolveConnectorPeerBlock,
+  CONNECTOR_INDEPENDENCE_COPY,
   CONNECTOR_SSH_TRUST_FACTS,
+  CONNECTORS_QUERY_PREFIX,
   EDGE_NETWORKS_QUERY_KEY,
   type ConnectorDto,
   type ConnectorInstallReason,
   type ConnectorInstallReveal,
   type ConnectorInstallState,
   type ConnectorKind,
-  type ConnectorPeerBlock,
   type ConnectorPeerConfigDto,
   type ConnectorPeerState,
   type EdgeNatServer,
@@ -85,35 +93,48 @@ export interface ConnectorInstallDialogProps {
   connector: ConnectorDto;
   /** Freshest row from the polling connectors list; drives the live status. */
   liveConnector?: ConnectorDto;
-  /** The edge server this connector dials out to — supplies step ①'s state. */
-  server: EdgeNatServer;
-  /** e.g. "23.94.251.183:51820/udp" — where the connector must reach outbound. */
-  edgeEndpointLabel: string;
+  /** Every edge box, so each link resolves to the server it points at. */
+  servers: EdgeNatServer[];
+  /**
+   * The edge box whose card opened this, when one did. It drives step ① and the
+   * outbound endpoint to check. Absent on the page-level Connectors tab, where
+   * the connector is not being set up "for" any particular edge.
+   */
+  contextServer?: EdgeNatServer | null;
   /** Opens the edge server's own SSH enrollment dialog, owned by the panel. */
   onSetupEdgeSsh?: () => void;
+  /** Opens the "link this connector to an edge box" picker. */
+  onLinkEdge?: () => void;
 }
 
 /**
  * Setup flow for one connector, branching on its kind.
  *
- * `agent` keeps the two-ended install exactly as it was: PolySIEM manages the
- * edge box AND the connector, so the dialog walks both machines.
+ * `agent` keeps the two-ended install: PolySIEM manages the edge box AND the
+ * connector, so the dialog walks both machines. One install serves every edge
+ * box the connector is linked to — the machine is never set up twice.
  *
  * `opnsense` / `peer` have no agent, no token, and no SSH key — PolySIEM can
- * only hand over the values to type on the far side and take that side's public
- * key back. Both paths share the same header, status step, and footer so the
- * two feel like one flow with a different middle.
+ * only hand over the values to type on the far side (one address per linked
+ * edge) and take that side's public key back.
  */
 export function ConnectorInstallDialog(props: ConnectorInstallDialogProps) {
   const current = props.liveConnector ?? props.connector;
   return isManualConnector(current) ? <ManualPeerDialog {...props} /> : <AgentInstallDialog {...props} />;
 }
 
+/** The edge boxes a connector serves, resolved to the servers we have loaded. */
+function useLinkedServers(connector: ConnectorDto, servers: EdgeNatServer[]): EdgeNatServer[] {
+  return useMemo(
+    () => connectorLinks(connector)
+      .map((link) => edgeServerForLink(servers, link))
+      .filter((server): server is EdgeNatServer => server !== null),
+    [connector, servers],
+  );
+}
+
 /**
  * The Cloudflare-style two-ended install for a PolySIEM agent connector.
- * Step ① reuses the edge integration's existing key and enrollment (and
- * collapses to a green, satisfied step when that end is already provisioned);
- * step ② is the connector one-liner.
  *
  * Mount with `key={reveal.installToken}` so a re-issued token resets the
  * baseline used to detect the re-enrollment.
@@ -125,11 +146,14 @@ function AgentInstallDialog({
   reason,
   connector,
   liveConnector,
-  server,
-  edgeEndpointLabel,
+  servers,
+  contextServer,
   onSetupEdgeSsh,
+  onLinkEdge,
 }: ConnectorInstallDialogProps) {
   const current = liveConnector ?? connector;
+  const linkedServers = useLinkedServers(current, servers);
+  const primary = contextServer ?? linkedServers[0] ?? null;
   // Captured once per mount: after a rotate the connector is usually already
   // "connected" on its old token, so success needs a fresh check-in.
   const [baselineLastSeenAt] = useState<string | null>(connector.lastSeenAt);
@@ -155,33 +179,26 @@ function AgentInstallDialog({
           </DialogTitle>
           <DialogDescription>
             {created
-              ? `Two machines, two snippets: ${server.name} at the edge and this connector inside your network. PolySIEM ends up managing both, and the connector dials out so nothing at home needs a public IP or an inbound port.`
+              ? `Install it once on a machine inside your network. ${CONNECTOR_INDEPENDENCE_COPY} It dials out, so nothing at home needs a public IP or an inbound port.`
               : `Re-run the installer on the connector to move ${connector.name} onto this token. The previous token stops working immediately.`}
           </DialogDescription>
         </DialogHeader>
 
-        {reveal && (
-          <div className="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/5 p-3">
-            <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
-            <div className="min-w-0">
-              <p className="text-sm font-medium">This token is shown only once</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                PolySIEM keeps only a hash of it. Copy the command now — if it is lost, issue a new one with
-                <span className="font-medium text-foreground"> Rotate token</span> rather than trying to recover this one.
-              </p>
-            </div>
-          </div>
-        )}
+        {reveal && <TokenOnceNotice />}
 
         <div className="space-y-5">
-          <AgentEdgeStep server={server} onSetupEdgeSsh={onSetupEdgeSsh} />
-          <AgentConnectorStep connector={current} reveal={reveal} edgeEndpointLabel={edgeEndpointLabel} />
-          <AgentStatusStep connector={current} progress={progress} />
+          {primary
+            ? <AgentEdgeStep server={primary} onSetupEdgeSsh={contextServer ? onSetupEdgeSsh : undefined} />
+            : <AgentNoEdgeStep onLinkEdge={onLinkEdge} />}
+          <AgentConnectorStep connector={current} reveal={reveal} edgeEndpointLabel={outboundLabel(primary)} />
+          <AgentStatusStep connector={current} progress={progress} primary={primary} />
         </div>
+
+        <ConnectorEdgeScope connector={current} servers={servers} onLinkEdge={onLinkEdge} />
 
         <TrustPanel />
 
-        <IdentityFooter connector={connector} tunnelAddress={current.tunnelAddress} />
+        <IdentityFooter connector={current} servers={servers} />
 
         <DialogFooter>
           <DialogClose asChild>
@@ -193,6 +210,26 @@ function AgentInstallDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Where the connector has to be able to reach outbound, if we know an edge. */
+function outboundLabel(server: EdgeNatServer | null): string {
+  return server ? edgeTunnelEndpoint(server).label : "your edge box on its WireGuard UDP port";
+}
+
+function TokenOnceNotice() {
+  return (
+    <div className="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/5 p-3">
+      <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+      <div className="min-w-0">
+        <p className="text-sm font-medium">This token is shown only once</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          PolySIEM keeps only a hash of it. Copy the command now — if it is lost, issue a new one with
+          <span className="font-medium text-foreground"> Rotate token</span> rather than trying to recover this one.
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -266,6 +303,23 @@ function AgentEdgeStep({ server, onSetupEdgeSsh }: { server: EdgeNatServer; onSe
   );
 }
 
+/** Step ① when the connector serves no edge box yet: give it one to dial. */
+function AgentNoEdgeStep({ onLinkEdge }: { onLinkEdge?: () => void }) {
+  return (
+    <InstallStep number="1" title="Give it an edge box to dial">
+      <p className="text-sm text-muted-foreground">
+        This connector is not linked to an edge box yet, so it has nowhere to dial and no tunnel address. Link it to
+        one — you can add more later, and each one allocates its own address on the same interface.
+      </p>
+      {onLinkEdge && (
+        <Button type="button" variant="outline" size="sm" onClick={onLinkEdge}>
+          <Link2 /> Link to an edge box
+        </Button>
+      )}
+    </InstallStep>
+  );
+}
+
 /** Step ②: the one-liner that enrolls the machine inside the network. */
 function AgentConnectorStep({
   connector,
@@ -306,7 +360,9 @@ function AgentConnectorStep({
         </li>
         <li className="flex items-start gap-1.5">
           <Check className="mt-0.5 size-3.5 shrink-0 text-success" aria-hidden="true" />
-          Generates the connector&apos;s own WireGuard key on the machine and enrolls with the one-time token above.
+          Generates one WireGuard key on the machine and brings up{" "}
+          <code className="font-mono">{connectorInterfaceName(connector)}</code> — a single interface that carries one
+          peer per edge box you link, so you never run this command twice.
         </li>
       </ul>
     </InstallStep>
@@ -317,14 +373,17 @@ function AgentConnectorStep({
 function AgentStatusStep({
   connector,
   progress,
+  primary,
 }: {
   connector: ConnectorDto;
   progress: { state: ConnectorInstallState; label: string; detail: string };
+  primary: EdgeNatServer | null;
 }) {
   const connected = progress.state === "connected";
   const status = connectorStatusPresentation(connector);
   const contactAt = connectorLastContactAt(connector);
   const agentSummary = connectorAgentSummary(connector);
+  const address = primary ? connectorTunnelAddressFor(connector, primary.id) : null;
   return (
     <InstallStep number="3" title="Watch it come online">
       <div
@@ -350,7 +409,11 @@ function AgentStatusStep({
 
         {connected && (
           <div className="mt-3 grid gap-3 border-t pt-3 sm:grid-cols-3">
-            <InstallFact label="Tunnel address" value={connector.tunnelAddress} mono />
+            <InstallFact
+              label={primary ? `Address on ${primary.name}` : "Tunnel address"}
+              value={address ?? "Not linked yet"}
+              mono
+            />
             <InstallFact label="Latest contact" value={contactAt ? formatRelative(contactAt) : "just now"} />
             <InstallFact label="Reported agent" value={agentSummary ?? "Not reported"} />
           </div>
@@ -358,17 +421,54 @@ function AgentStatusStep({
       </div>
       {connected ? (
         <p className="text-xs text-muted-foreground">
-          Next: set this connector&apos;s SSH address under <span className="font-medium">SSH management</span> in
-          the connectors list, so PolySIEM can push config the moment you change a route instead of waiting for the
-          next poll.
+          Next: set this connector&apos;s SSH address under <span className="font-medium">SSH management</span>, so
+          PolySIEM can push config the moment you change a route instead of waiting for the next poll. One push covers
+          every edge box it serves.
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">
           Status refreshes every few seconds. You can close this dialog — the connector finishes enrolling on its
-          own, and the list on the server card keeps updating.
+          own, and the list keeps updating.
         </p>
       )}
     </InstallStep>
+  );
+}
+
+/** Which edge boxes this one install already covers. */
+function ConnectorEdgeScope({
+  connector,
+  servers,
+  onLinkEdge,
+}: {
+  connector: ConnectorDto;
+  servers: EdgeNatServer[];
+  onLinkEdge?: () => void;
+}) {
+  const links = connectorLinks(connector);
+  if (links.length === 0) return null;
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-sm font-medium">
+          <Server className="size-4 text-primary" aria-hidden="true" /> Edge boxes this one install serves
+        </p>
+        {onLinkEdge && servers.length > links.length && (
+          <Button type="button" variant="ghost" size="sm" className="h-7" onClick={onLinkEdge}>
+            <Link2 /> Link another
+          </Button>
+        )}
+      </div>
+      <ul className="mt-2 grid gap-1.5">
+        {links.map((link) => (
+          <li key={link.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+            <span className="font-medium">{connectorLinkEdgeName(link, servers)}</span>
+            <code className="font-mono text-muted-foreground">{link.tunnelAddress}</code>
+            <span className="text-muted-foreground">· allocated from that edge&apos;s subnet</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -376,9 +476,9 @@ function AgentStatusStep({
  * Setup for a hand-configured peer (OPNsense or any other WireGuard endpoint).
  *
  * There is nothing to install and nothing to authenticate: PolySIEM allocates a
- * tunnel address, shows the exact values for the far side, and waits for that
- * side's PUBLIC key. No token, no SSH key, no pushed ruleset — and the private
- * key is generated over there and never travels.
+ * tunnel address on EACH linked edge box, shows the exact values for the far
+ * side, and waits for that side's PUBLIC key. No token, no SSH key, no pushed
+ * ruleset — and the private key is generated over there and never travels.
  */
 function ManualPeerDialog({
   open,
@@ -386,26 +486,27 @@ function ManualPeerDialog({
   peerConfig,
   connector,
   liveConnector,
-  server,
+  servers,
+  contextServer,
+  onLinkEdge,
 }: ConnectorInstallDialogProps) {
   const current = liveConnector ?? connector;
   const kind = connectorKindPresentation(connectorKindOf(current));
   const opnsense = kind.kind === "opnsense";
+  const linkedServers = useLinkedServers(current, servers);
+  const primary = contextServer ?? linkedServers[0] ?? null;
 
-  // Only asked for when the create response did not already carry the block;
-  // a missing endpoint is fine, the block is then derived from the edge server.
+  // Only asked for when the create response did not already carry the block and
+  // there is exactly one edge to describe; with several, each block is derived
+  // from the edge it belongs to.
   const peerConfigQuery = useQuery({
     queryKey: connectorPeerConfigQueryKey(current.id),
     queryFn: () => apiFetch<ConnectorPeerConfigDto>(connectorPeerConfigUrl(current.id)),
-    enabled: open && !peerConfig,
+    enabled: open && !peerConfig && linkedServers.length === 1,
     retry: false,
     refetchOnWindowFocus: false,
   });
-  const block = resolveConnectorPeerBlock({
-    server,
-    connector: current,
-    peerConfig: peerConfig ?? peerConfigQuery.data ?? null,
-  });
+  const suppliedPeerConfig = peerConfig ?? peerConfigQuery.data ?? null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -417,42 +518,31 @@ function ManualPeerDialog({
             {current.name}
           </DialogTitle>
           <DialogDescription>
-            PolySIEM has reserved this connector&apos;s identity and tunnel address. Enter the values below on{" "}
-            {kind.farSide}, then paste its public key back here. Nothing is installed and no token exists — this kind of
-            connector is a plain WireGuard peer.
+            PolySIEM has reserved this connector&apos;s identity and a tunnel address on every edge box it serves.
+            Enter the values below on {kind.farSide}, then paste its public key back here. Nothing is installed and no
+            token exists — this kind of connector is a plain WireGuard peer.
           </DialogDescription>
         </DialogHeader>
 
-        <Alert>
-          <Radio />
-          <AlertTitle>{opnsense ? "OPNsense dials in; the edge only listens" : "The far side dials in; the edge only listens"}</AlertTitle>
-          <AlertDescription>
-            {server.name} never initiates the tunnel and never needs to reach {kind.farSide}. That side connects outbound
-            to <code className="font-mono">{block.edgeEndpoint}</code> and holds the tunnel open with keepalive, so a
-            dynamic or CGNAT address at that end is fine.
-          </AlertDescription>
-        </Alert>
-
-        {!block.edgePublicKey && (
-          <Alert variant="destructive">
-            <TriangleAlert />
-            <AlertTitle>The edge has no tunnel key yet</AlertTitle>
-            <AlertDescription>
-              Open <span className="font-medium">Tunnel → Set up tunnel</span> on {server.name} and generate
-              its keypair. The far side cannot trust a peer whose public key does not exist yet.
-            </AlertDescription>
-          </Alert>
-        )}
+        <ManualPeerDialHint server={primary} farSide={kind.farSide} opnsense={opnsense} />
 
         <div className="space-y-5">
-          <ManualPeerValuesStep block={block} connector={current} kindValue={kind.kind} opnsense={opnsense} />
-          <ManualPeerKeyStep connector={current} server={server} opnsense={opnsense} />
-          <ManualPeerApplyStep connector={current} farSide={kind.farSide} opnsense={opnsense} />
+          <ManualPeerValuesStep
+            connector={current}
+            servers={linkedServers}
+            primary={primary}
+            peerConfig={suppliedPeerConfig}
+            kindValue={kind.kind}
+            opnsense={opnsense}
+            onLinkEdge={onLinkEdge}
+          />
+          <ManualPeerKeyStep connector={current} opnsense={opnsense} />
+          <ManualPeerApplyStep connector={current} servers={servers} farSide={kind.farSide} opnsense={opnsense} />
         </div>
 
         <ManualPeerScopePanel farSide={kind.farSide} />
 
-        <IdentityFooter connector={connector} tunnelAddress={current.tunnelAddress} />
+        <IdentityFooter connector={current} servers={servers} />
 
         <DialogFooter>
           <DialogClose asChild>
@@ -467,55 +557,151 @@ function ManualPeerDialog({
   );
 }
 
-/** Step ①: every value the far side needs, individually and as one snippet. */
-function ManualPeerValuesStep({
-  block,
-  connector,
-  kindValue,
+/** "The far side dials in" — plus the edge key warning when there is no key. */
+function ManualPeerDialHint({
+  server,
+  farSide,
   opnsense,
 }: {
-  block: ConnectorPeerBlock;
-  connector: ConnectorDto;
-  kindValue: ConnectorKind;
+  server: EdgeNatServer | null;
+  farSide: string;
   opnsense: boolean;
 }) {
-  const snippet = buildConnectorPeerSnippet(block, { kind: kindValue, name: connector.name });
+  const edgeKeyMissing = Boolean(server) && !server?.settings?.wireguard?.publicKey;
   return (
-    <InstallStep number="1" title={opnsense ? "Enter these in OPNsense" : "Enter these on the far side"} hint={connector.name}>
+    <>
+      <Alert>
+        <Radio />
+        <AlertTitle>{opnsense ? "OPNsense dials in; the edge only listens" : "The far side dials in; the edge only listens"}</AlertTitle>
+        <AlertDescription>
+          An edge box never initiates the tunnel and never needs to reach {farSide}. That side connects outbound to each
+          edge it should serve and holds the tunnel open with keepalive, so a dynamic or CGNAT address at that end is
+          fine.
+        </AlertDescription>
+      </Alert>
+      {edgeKeyMissing && server && (
+        <Alert variant="destructive">
+          <TriangleAlert />
+          <AlertTitle>{server.name} has no tunnel key yet</AlertTitle>
+          <AlertDescription>
+            Open <span className="font-medium">Tunnel → Set up tunnel</span> on {server.name} and generate its keypair.
+            The far side cannot trust a peer whose public key does not exist yet.
+          </AlertDescription>
+        </Alert>
+      )}
+    </>
+  );
+}
+
+/** Step ①: one paste-ready block per edge box this peer serves. */
+function ManualPeerValuesStep({
+  connector,
+  servers,
+  primary,
+  peerConfig,
+  kindValue,
+  opnsense,
+  onLinkEdge,
+}: {
+  connector: ConnectorDto;
+  /** Only the edges this connector is actually linked to. */
+  servers: EdgeNatServer[];
+  primary: EdgeNatServer | null;
+  peerConfig: ConnectorPeerConfigDto | null;
+  kindValue: ConnectorKind;
+  opnsense: boolean;
+  onLinkEdge?: () => void;
+}) {
+  const title = opnsense ? "Enter these in OPNsense" : "Enter these on the far side";
+  if (servers.length === 0) {
+    return (
+      <InstallStep number="1" title={title} hint={connector.name}>
+        <Alert>
+          <Link2 />
+          <AlertTitle>No edge box to peer with yet</AlertTitle>
+          <AlertDescription>
+            A tunnel address is allocated per edge box, so there is nothing to paste until this connector is linked to
+            one.
+          </AlertDescription>
+        </Alert>
+        {onLinkEdge && (
+          <Button type="button" variant="outline" size="sm" onClick={onLinkEdge}>
+            <Link2 /> Link to an edge box
+          </Button>
+        )}
+      </InstallStep>
+    );
+  }
+  return (
+    <InstallStep number="1" title={title} hint={connector.name}>
       <p className="text-sm text-muted-foreground">
         {opnsense
-          ? "VPN → WireGuard → Instances: add a local instance with the tunnel address below and let OPNsense generate its keypair. Then under Peers, add the edge with its public key, endpoint, allowed IPs, and keepalive."
-          : "Create a WireGuard interface with the tunnel address below, let that device generate its own keypair, and add the edge as its peer using these values."}
+          ? "VPN → WireGuard → Instances: add a local instance and let OPNsense generate its keypair. Give that one instance the tunnel address for every edge box below, and add each edge under Peers with its own public key, endpoint, allowed IPs, and keepalive."
+          : "Create ONE WireGuard interface, let that device generate its own keypair, then give it the tunnel address for every edge box below and add each edge as a peer."}
+        {servers.length > 1 && " The same keypair is used for all of them — that is what lets one peer serve several edge boxes."}
       </p>
-      <div className="grid gap-2 rounded-lg border bg-primary/[0.03] p-3">
-        <PeerField
-          label="Tunnel address to assign there"
-          value={block.tunnelAddressCidr}
-          hint="Allocated by PolySIEM — do not pick your own"
-          emphasized
+      {servers.map((server) => (
+        <ManualPeerEdgeBlock
+          key={server.id}
+          server={server}
+          connector={connector}
+          // The create response describes the edge it was created against.
+          peerConfig={primary && server.id === primary.id ? peerConfig : null}
+          kindValue={kindValue}
+          opnsense={opnsense}
+          labelled={servers.length > 1}
         />
-        <div className="grid gap-2 sm:grid-cols-2">
-          <PeerField label="Edge endpoint" value={block.edgeEndpoint} />
-          <PeerField label="Edge public key" value={block.edgePublicKey} emptyHint="Generate the edge key first" />
-          <PeerField label={opnsense ? "Allowed IPs (on the peer)" : "AllowedIPs"} value={block.allowedIps.join(", ")} />
-          <PeerField label="Persistent keepalive" value={String(block.persistentKeepalive)} />
-        </div>
-        <SnippetBlock snippet={snippet} />
-      </div>
+      ))}
     </InstallStep>
   );
 }
 
-/** Step ②: taking the far side's PUBLIC key back. Never a private one. */
-function ManualPeerKeyStep({
-  connector,
+/** The values for ONE edge box: its endpoint, key, and this peer's address there. */
+function ManualPeerEdgeBlock({
   server,
+  connector,
+  peerConfig,
+  kindValue,
   opnsense,
+  labelled,
 }: {
-  connector: ConnectorDto;
   server: EdgeNatServer;
+  connector: ConnectorDto;
+  peerConfig: ConnectorPeerConfigDto | null;
+  kindValue: ConnectorKind;
   opnsense: boolean;
+  /** Names the edge above the block, which only helps when there are several. */
+  labelled: boolean;
 }) {
+  const block = connectorPeerBlockFor({ server, connector, peerConfig });
+  if (!block) return null;
+  const snippet = buildConnectorPeerSnippet(block, { kind: kindValue, name: `${connector.name} → ${server.name}` });
+  return (
+    <div className="grid gap-2 rounded-lg border bg-primary/[0.03] p-3">
+      {labelled && (
+        <p className="flex items-center gap-1.5 text-xs font-medium">
+          <Server className="size-3.5 text-primary" aria-hidden="true" /> {server.name}
+        </p>
+      )}
+      <PeerField
+        label="Tunnel address to assign there"
+        value={block.tunnelAddressCidr}
+        hint="Allocated by PolySIEM for this edge box — do not pick your own"
+        emphasized
+      />
+      <div className="grid gap-2 sm:grid-cols-2">
+        <PeerField label="Edge endpoint" value={block.edgeEndpoint} />
+        <PeerField label="Edge public key" value={block.edgePublicKey} emptyHint="Generate the edge key first" />
+        <PeerField label={opnsense ? "Allowed IPs (on the peer)" : "AllowedIPs"} value={block.allowedIps.join(", ")} />
+        <PeerField label="Persistent keepalive" value={String(block.persistentKeepalive)} />
+      </div>
+      <SnippetBlock snippet={snippet} />
+    </div>
+  );
+}
+
+/** Step ②: taking the far side's PUBLIC key back. Never a private one. */
+function ManualPeerKeyStep({ connector, opnsense }: { connector: ConnectorDto; opnsense: boolean }) {
   const queryClient = useQueryClient();
   const [publicKey, setPublicKey] = useState("");
   const keyValid = isWireguardPublicKey(publicKey);
@@ -526,9 +712,9 @@ function ManualPeerKeyStep({
     mutationFn: (input: UpdateConnectorInput) =>
       apiFetch<ConnectorDto>(connectorUrl(connector.id), { method: "PATCH", body: JSON.stringify(input) }),
     onSuccess: () => {
-      toast.success(`${connector.name} registered. Apply changes on ${server.name} to add it as a peer.`);
+      toast.success(`${connector.name} registered. Apply changes on each linked edge box to add it as a peer.`);
       setPublicKey("");
-      void queryClient.invalidateQueries({ queryKey: connectorsQueryKey(server.id) });
+      void queryClient.invalidateQueries({ queryKey: CONNECTORS_QUERY_PREFIX });
       void queryClient.invalidateQueries({ queryKey: connectorPeerConfigQueryKey(connector.id) });
       void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
@@ -540,10 +726,11 @@ function ManualPeerKeyStep({
       <p className="text-sm text-muted-foreground">
         {registered
           ? "PolySIEM already holds a public key for this peer. Paste a new one only if you regenerated the keypair on that side."
-          : `Copy the PUBLIC key ${opnsense ? "OPNsense" : "that device"} generated. PolySIEM never asks for a private key — that half stays on the far side.`}
+          : `Copy the PUBLIC key ${opnsense ? "OPNsense" : "that device"} generated. PolySIEM never asks for a private key — that half stays on the far side.`}{" "}
+        One key identifies this connector on every edge box it serves.
       </p>
       {connector.publicKey && (
-        <PeerField label="Registered public key" value={connector.publicKey} hint="Currently trusted by the edge" />
+        <PeerField label="Registered public key" value={connector.publicKey} hint="Currently trusted by every linked edge" />
       )}
       <div className="grid gap-1.5">
         <Label htmlFor={`peer-key-${connector.id}`}>
@@ -577,18 +764,21 @@ function ManualPeerKeyStep({
 /** Step ③: where the peer stands, and where PolySIEM's reach stops. */
 function ManualPeerApplyStep({
   connector,
+  servers,
   farSide,
   opnsense,
 }: {
   connector: ConnectorDto;
+  servers: EdgeNatServer[];
   farSide: string;
   opnsense: boolean;
 }) {
   const progress = connectorPeerProgress(connector);
   const status = connectorStatusPresentation(connector);
   const configured = progress.state === "configured";
+  const links = connectorLinks(connector);
   return (
-    <InstallStep number="3" title="Apply on the edge">
+    <InstallStep number="3" title="Apply on each edge box">
       <div
         className={cn(
           "rounded-lg border p-3 transition-colors",
@@ -610,9 +800,12 @@ function ManualPeerApplyStep({
         </div>
       </div>
       <p className="text-xs text-muted-foreground">
-        Publishing a port through this connector? The edge forwards it to{" "}
-        <code className="font-mono">{connector.tunnelAddress}</code> over the tunnel and stops there — PolySIEM
-        cannot program {farSide}, so add the matching{" "}
+        Publishing a port through this connector? Each edge forwards it to the address this peer holds on{" "}
+        <span className="font-medium">that</span> edge
+        {links.length > 0 && (
+          <> — {links.map((link) => `${connectorLinkEdgeName(link, servers)} → ${link.tunnelAddress}`).join(", ")}</>
+        )}{" "}
+        — and stops there. PolySIEM cannot program {farSide}, so add the matching{" "}
         {opnsense ? "port forward in OPNsense" : "forwarding rule on that device"} yourself.
       </p>
     </InstallStep>
@@ -629,7 +822,7 @@ function ManualPeerScopePanel({ farSide }: { farSide: string }) {
       <ul className="mt-2 grid gap-1.5 text-xs">
         <li className="flex items-start gap-1.5">
           <Check className="mt-0.5 size-3.5 shrink-0 text-success" aria-hidden="true" />
-          <span>Registers this peer on the edge, allocates its tunnel address, and forwards the routes you publish to it.</span>
+          <span>Registers this peer on every edge box you link it to, allocates its tunnel address on each, and forwards the routes you publish to it.</span>
         </li>
         <li className="flex items-start gap-1.5">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -643,8 +836,9 @@ function ManualPeerScopePanel({ farSide }: { farSide: string }) {
   );
 }
 
-/** Connector ID + allocated tunnel address, shared by both flows. */
-function IdentityFooter({ connector, tunnelAddress }: { connector: ConnectorDto; tunnelAddress: string }) {
+/** Connector ID, its single interface, and its address on each edge box. */
+function IdentityFooter({ connector, servers }: { connector: ConnectorDto; servers: EdgeNatServer[] }) {
+  const links = connectorLinks(connector);
   return (
     <div className="grid gap-2 rounded-lg border bg-muted/20 p-3 sm:grid-cols-2">
       <div>
@@ -655,12 +849,22 @@ function IdentityFooter({ connector, tunnelAddress }: { connector: ConnectorDto;
         </div>
       </div>
       <div>
-        <p className="text-[0.6875rem] font-medium tracking-wide text-muted-foreground uppercase">Tunnel address</p>
-        <p className="flex flex-wrap items-baseline gap-1.5">
-          <code className="font-mono text-xs">{tunnelAddress}</code>
-          <span className="inline-flex items-center gap-1 text-[0.6875rem] text-muted-foreground">
-            <Waypoints className="size-3" aria-hidden="true" /> assigned automatically
-          </span>
+        <p className="text-[0.6875rem] font-medium tracking-wide text-muted-foreground uppercase">
+          Tunnel {links.length === 1 ? "address" : "addresses"}
+        </p>
+        {links.length === 0 ? (
+          <p className="text-xs text-muted-foreground italic">Allocated when you link it to an edge box</p>
+        ) : (
+          links.map((link) => (
+            <p key={link.id} className="flex flex-wrap items-baseline gap-1.5">
+              <code className="font-mono text-xs">{link.tunnelAddress}</code>
+              <span className="text-[0.6875rem] text-muted-foreground">on {connectorLinkEdgeName(link, servers)}</span>
+            </p>
+          ))
+        )}
+        <p className="mt-0.5 inline-flex items-center gap-1 text-[0.6875rem] text-muted-foreground">
+          <Waypoints className="size-3" aria-hidden="true" /> assigned automatically on{" "}
+          <code className="font-mono">{connectorInterfaceName(connector)}</code>
         </p>
       </div>
     </div>

@@ -76,6 +76,9 @@ export const FIELD_TYPES: Record<BackupModel, ModelFieldTypes> = {
     date: ["installTokenIssuedAt", "enrolledAt", "lastSeenAt", "lastHandshakeAt", "createdAt", "updatedAt"],
     json: ["metadata"],
   },
+  connectorEdgeLink: {
+    date: ["lastHandshakeAt", "createdAt", "updatedAt"],
+  },
   edgeNatRule: { date: ["createdAt", "updatedAt"] },
   trafficCounterSample: { bigint: ["bytes", "bytesIn", "bytesOut", "delta"], date: ["sampledAt"] },
   tunnel: { date: ["createdAt", "updatedAt"] },

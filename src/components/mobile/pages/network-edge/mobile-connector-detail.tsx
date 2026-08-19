@@ -6,6 +6,7 @@ import {
   Check,
   Fingerprint,
   KeyRound,
+  Link2,
   Loader2,
   Pencil,
   Power,
@@ -16,7 +17,6 @@ import {
   Trash2,
   TriangleAlert,
   Upload,
-  Waypoints,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -40,11 +40,12 @@ import {
   connectorRotateTokenUrl,
   connectorSshPresentation,
   connectorStatusPresentation,
+  connectorLinkSummary,
+  connectorLinks,
   connectorStatusQueryKey,
   connectorStatusUrl,
   connectorUrl,
   connectorWgStatePresentation,
-  connectorsQueryKey,
   hostKeyAlgorithmLabel,
   isManualConnector,
   isValidConnectorSshUsername,
@@ -54,25 +55,26 @@ import {
   CONNECTOR_SSH_PORT_CHOICES,
   CONNECTOR_SSH_TRUST_FACTS,
   CONNECTOR_SSH_USERNAME_CHOICES,
-  EDGE_NETWORKS_QUERY_KEY,
   type ConnectorApplyResult,
   type ConnectorDto,
   type ConnectorHostKeyScan,
   type ConnectorInstallReveal,
   type ConnectorSshPresentation,
+  type ConnectorLinkDto,
   type ConnectorSshStatus,
   type EdgeNatServer,
   type ObservedConnectorHostKey,
   type UpdateConnectorInput,
 } from "@/components/network/edge-networks-types";
 import {
-  ConnectorCopyRow,
   ConnectorKindBadge,
   ConnectorStatusBadge,
+  MobileCopyRow,
   contactLabel,
   elide,
   sshEndpointLabel,
 } from "./mobile-connector-atoms";
+import { ConnectorLinkList, useConnectorInvalidator } from "./mobile-connector-links";
 import { MobileSelectField } from "./mobile-form-controls";
 
 /** Every fact PolySIEM holds about a connector, phrased per kind. */
@@ -88,9 +90,7 @@ function ConnectorFacts({ connector, manual }: { connector: ConnectorDto; manual
         <MobileKeyRow label="Status">
           <ConnectorStatusBadge connector={connector} />
         </MobileKeyRow>
-        <MobileKeyRow label="Tunnel address" mono>
-          {connector.tunnelAddress}
-        </MobileKeyRow>
+        <MobileKeyRow label="Edges served">{connectorLinkSummary(connector).label}</MobileKeyRow>
         <MobileKeyRow label="Tunnel key">{tunnelKeyLabel(connector, manual)}</MobileKeyRow>
         {!manual && (
           <>
@@ -114,52 +114,69 @@ function tunnelKeyLabel(connector: ConnectorDto, manual: boolean): string {
   return manual ? "Not pasted in yet" : "Not enrolled yet";
 }
 
-/** Manual kinds: PolySIEM only registers the peer, so the actions are different. */
-function ConnectorManualPanel({
+/**
+ * The edges this connector serves. One install, many edges: each link carries
+ * its own tunnel address, allocated from that edge's subnet, and the connector
+ * holds all of them on a single WireGuard interface.
+ */
+function ConnectorLinksBlock({
   connector,
+  edges,
   isAdmin,
-  onPeerSetup,
+  onOpenLink,
+  onLinkEdge,
 }: {
   connector: ConnectorDto;
+  edges: readonly EdgeNatServer[];
   isAdmin: boolean;
-  onPeerSetup: (connector: ConnectorDto) => void;
+  onOpenLink: (connector: ConnectorDto, link: ConnectorLinkDto) => void;
+  onLinkEdge: (connector: ConnectorDto) => void;
 }) {
+  const linked = connectorLinks(connector).length;
   return (
-    <>
-      <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
-        PolySIEM does not manage this far end: no install token, no SSH key, no pushed rules. It is a WireGuard peer
-        of the edge and you configure it yourself.
-      </p>
-      {isAdmin && (
-        <Button variant="outline" className="w-full" onClick={() => onPeerSetup(connector)}>
-          <Waypoints /> {connector.publicKey ? "Peer settings" : "Finish peer setup"}
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between gap-2 px-0.5">
+        <span className="flex items-center gap-1.5 font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
+          <Link2 className="size-3.5" /> Linked edges
+        </span>
+        <span className="text-[11px] text-muted-foreground">{connectorLinkSummary(connector).label}</span>
+      </div>
+      <ConnectorLinkList connector={connector} edges={edges} onSelect={(link) => onOpenLink(connector, link)} />
+      {isAdmin && linked < edges.length && (
+        <Button variant="outline" size="sm" className="w-full" onClick={() => onLinkEdge(connector)}>
+          <Link2 /> Link to another edge
         </Button>
       )}
-    </>
+    </div>
+  );
+}
+
+/** Manual kinds: PolySIEM only registers the peer, so the actions are different. */
+function ConnectorManualPanel() {
+  return (
+    <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
+      PolySIEM does not manage this far end: no install token, no SSH key, no pushed rules. It is a WireGuard peer of
+      every edge it is linked to, and you configure it yourself — open a linked edge above for that edge&apos;s
+      paste-ready peer block.
+    </p>
   );
 }
 
 /** Rename / rotate / disable / delete, plus the sentence explaining what each does. */
 function ConnectorAdminActions({
-  server,
   connector,
   manual,
   onEdit,
   onDelete,
   onRotated,
 }: {
-  server: EdgeNatServer;
   connector: ConnectorDto;
   manual: boolean;
   onEdit: (connector: ConnectorDto) => void;
   onDelete: (connector: ConnectorDto) => void;
   onRotated: (connector: ConnectorDto, minted: ConnectorInstallReveal) => void;
 }) {
-  const queryClient = useQueryClient();
-  const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: connectorsQueryKey(server.id) });
-    void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
-  };
+  const invalidate = useConnectorInvalidator();
 
   const rotateMutation = useMutation({
     mutationFn: (id: string) => apiFetch<ConnectorInstallReveal>(connectorRotateTokenUrl(id), { method: "POST" }),
@@ -215,8 +232,8 @@ function ConnectorAdminActions({
       </div>
       <p className="px-0.5 text-[11px] text-muted-foreground">
         {manual
-          ? "Disabling drops this peer from the edge on the next apply; the far side keeps its own config until you remove it there."
-          : "Rotating issues a fresh one-time token and a new install command; the old one stops working."}
+          ? "Disabling drops this peer from every linked edge on the next apply; the far side keeps its own config until you remove it there."
+          : "Rotating issues a fresh one-time token and a new install command; the old one stops working. One install still serves every linked edge."}
       </p>
     </>
   );
@@ -228,25 +245,28 @@ function ConnectorAdminActions({
  * of the two it shows.
  */
 export function ConnectorDetailSheet({
-  server,
   connector,
+  edges,
   isAdmin,
   onOpenChange,
   onEdit,
   onEditSsh,
   onScanHostKey,
-  onPeerSetup,
+  onOpenLink,
+  onLinkEdge,
   onDelete,
   onRotated,
 }: {
-  server: EdgeNatServer;
   connector: ConnectorDto | null;
+  /** Every edge box, so the linked list can name them and offer new links. */
+  edges: readonly EdgeNatServer[];
   isAdmin: boolean;
   onOpenChange: (open: boolean) => void;
   onEdit: (connector: ConnectorDto) => void;
   onEditSsh: (connector: ConnectorDto) => void;
   onScanHostKey: (connector: ConnectorDto) => void;
-  onPeerSetup: (connector: ConnectorDto) => void;
+  onOpenLink: (connector: ConnectorDto, link: ConnectorLinkDto) => void;
+  onLinkEdge: (connector: ConnectorDto) => void;
   onDelete: (connector: ConnectorDto) => void;
   onRotated: (connector: ConnectorDto, minted: ConnectorInstallReveal) => void;
 }) {
@@ -257,19 +277,28 @@ export function ConnectorDetailSheet({
       onOpenChange={onOpenChange}
       title={connector?.name ?? "Connector"}
       description={
-        manual ? `WireGuard peer of ${server.name}, configured by hand` : `Reverse tunnel into ${server.name}`
+        manual
+          ? "A WireGuard peer you configure by hand — it can serve several edge boxes"
+          : "One reverse tunnel agent, serving every edge box it is linked to"
       }
     >
       {connector && (
         <div className="flex flex-col gap-3 pb-2">
-          <ConnectorCopyRow label="Connector ID" value={connector.connectorId} />
+          <MobileCopyRow label="Connector ID" value={connector.connectorId} />
           <ConnectorFacts connector={connector} manual={manual} />
 
+          <ConnectorLinksBlock
+            connector={connector}
+            edges={edges}
+            isAdmin={isAdmin}
+            onOpenLink={onOpenLink}
+            onLinkEdge={onLinkEdge}
+          />
+
           {manual ? (
-            <ConnectorManualPanel connector={connector} isAdmin={isAdmin} onPeerSetup={onPeerSetup} />
+            <ConnectorManualPanel />
           ) : (
             <ConnectorSshBlock
-              server={server}
               connector={connector}
               isAdmin={isAdmin}
               onEditSsh={onEditSsh}
@@ -279,7 +308,6 @@ export function ConnectorDetailSheet({
 
           {isAdmin && (
             <ConnectorAdminActions
-              server={server}
               connector={connector}
               manual={manual}
               onEdit={onEdit}
@@ -419,26 +447,26 @@ function ConnectorSshStatusPanel({
 
 /** Push config now / refresh status — the two admin verbs of the SSH transport. */
 function ConnectorSshActions({
-  server,
   connector,
   canManage,
   isRefreshing,
   onRefresh,
 }: {
-  server: EdgeNatServer;
   connector: ConnectorDto;
   canManage: boolean;
   isRefreshing: boolean;
   onRefresh: () => void;
 }) {
   const queryClient = useQueryClient();
+  const invalidate = useConnectorInvalidator();
+  // One push carries every linked edge: a tunnel line per link and the routes
+  // of all those edges, each scoped to the address it belongs to.
   const applyMutation = useMutation({
     mutationFn: () => apiFetch<ConnectorApplyResult>(connectorApplyUrl(connector.id), { method: "POST" }),
     onSuccess: (result) => {
       toast.success(result?.detail ?? pushedRoutesMessage(result?.routeCount, connector.name));
       void queryClient.invalidateQueries({ queryKey: connectorStatusQueryKey(connector.id) });
-      void queryClient.invalidateQueries({ queryKey: connectorsQueryKey(server.id) });
-      void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
+      invalidate();
     },
     onError: (error: Error) => toast.error(`Could not push the configuration: ${error.message}`),
   });
@@ -472,13 +500,11 @@ function pushedRoutesMessage(routeCount: number | null | undefined, name: string
  * token, so this block explains which path is live instead of blocking.
  */
 export function ConnectorSshBlock({
-  server,
   connector,
   isAdmin,
   onEditSsh,
   onScanHostKey,
 }: {
-  server: EdgeNatServer;
   connector: ConnectorDto;
   isAdmin: boolean;
   onEditSsh: (connector: ConnectorDto) => void;
@@ -517,7 +543,7 @@ export function ConnectorSshBlock({
       />
 
       {connector.sshAuthorizedKey && (
-        <ConnectorCopyRow label="Restricted authorized_keys line" value={connector.sshAuthorizedKey} />
+        <MobileCopyRow label="Restricted authorized_keys line" value={connector.sshAuthorizedKey} />
       )}
 
       {ssh.canManage && (
@@ -530,7 +556,6 @@ export function ConnectorSshBlock({
 
       {isAdmin && (
         <ConnectorSshActions
-          server={server}
           connector={connector}
           canManage={ssh.canManage}
           isRefreshing={statusQuery.isFetching}
@@ -548,15 +573,14 @@ export function ConnectorSshBlock({
 
 /** Host/port/username for the SSH push transport. */
 export function ConnectorSshEndpointSheet({
-  server,
   connector,
   onOpenChange,
 }: {
-  server: EdgeNatServer;
   connector: ConnectorDto;
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const invalidate = useConnectorInvalidator();
   const ssh = connectorSshPresentation(connector);
   const [host, setHost] = useState(connector.sshHost ?? "");
   const [port, setPort] = useState(String(connector.sshPort || 22));
@@ -571,7 +595,7 @@ export function ConnectorSshEndpointSheet({
       apiFetch<ConnectorDto>(connectorUrl(connector.id), { method: "PATCH", body: JSON.stringify(input) }),
     onSuccess: (_result, input) => {
       toast.success(input.sshHost === null ? "SSH endpoint removed — token poll only." : "SSH endpoint saved");
-      void queryClient.invalidateQueries({ queryKey: connectorsQueryKey(server.id) });
+      invalidate();
       void queryClient.invalidateQueries({ queryKey: connectorHostKeyQueryKey(connector.id) });
       void queryClient.invalidateQueries({ queryKey: connectorStatusQueryKey(connector.id) });
       onOpenChange(false);
@@ -774,15 +798,14 @@ function HostKeyFacts({
 
 /** Scan the connector's SSH host keys and pin one, mirroring the edge flow. */
 export function ConnectorHostKeySheet({
-  server,
   connector,
   onOpenChange,
 }: {
-  server: EdgeNatServer;
   connector: ConnectorDto;
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const invalidate = useConnectorInvalidator();
   const ssh = connectorSshPresentation(connector);
   const [selectedFingerprint, setSelectedFingerprint] = useState("");
 
@@ -801,7 +824,7 @@ export function ConnectorHostKeySheet({
       apiFetch(connectorHostKeyUrl(connector.id), { method: "POST", body: JSON.stringify({ fingerprint }) }),
     onSuccess: () => {
       toast.success(`Host key pinned for ${connector.name}`);
-      void queryClient.invalidateQueries({ queryKey: connectorsQueryKey(server.id) });
+      invalidate();
       void queryClient.invalidateQueries({ queryKey: connectorStatusQueryKey(connector.id) });
       onOpenChange(false);
     },

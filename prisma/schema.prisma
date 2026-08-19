@@ -178,7 +178,7 @@ model IntegrationConfig {
   networkGateways           NetworkGateway[]
   trafficSamples            TrafficCounterSample[]
   edgeNatRules              EdgeNatRule[]
-  connectors                Connector[]
+  connectorLinks            ConnectorEdgeLink[]
   services                  Service[]
   censysLookupCache         CensysLookupCache[]
   censysApiUsage            CensysApiUsage[]
@@ -190,16 +190,16 @@ model IntegrationConfig {
 
 /// A reverse-tunnel connector, modelled on Cloudflare Tunnel connectors.
 ///
-/// The operator installs it on an internal machine with a one-time token; it
-/// generates its own WireGuard keypair (the private half NEVER leaves the host),
-/// dials OUT to its Edge NAT server, and performs the last hop to internal
-/// targets. Its tunnel address is allocated by PolySIEM from the edge tunnel
-/// subnet at creation time and is never typed by the operator.
+/// A connector is a STANDALONE machine, not the property of any one edge server.
+/// It is installed once, generates its own WireGuard keypair (the private half
+/// NEVER leaves the host), and dials OUT to every edge server it is linked to.
+/// One installed connector can therefore serve many edge boxes, and any edge box
+/// can route through any linked connector — the link (and the per-edge tunnel
+/// address allocated from that edge's own subnet) lives on ConnectorEdgeLink.
 model Connector {
   id            String            @id @default(cuid())
-  integrationId String
-  integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
-  name          String
+  /// Unique across the instance: connectors are no longer scoped to one edge.
+  name          String            @unique
   /// What kind of peer this connector is. Every kind is a WireGuard peer of the
   /// edge and gets an allocated tunnel address; they differ only in how the far
   /// side is set up and whether PolySIEM manages it.
@@ -213,9 +213,11 @@ model Connector {
   /// Stable public identifier surfaced in the UI and used by the agent to
   /// identify itself. Opaque, URL-safe, generated once (never reused).
   connectorId   String            @unique
-  /// Implicitly allocated host address inside the edge tunnel subnet (e.g. "10.9.9.3").
-  tunnelAddress String
-  /// The connector's WireGuard public key, reported at enrollment. Null until enrolled.
+  /// WireGuard interface the agent owns on the host. One interface carries a peer
+  /// per linked edge, so a single connector serves many edges without extra netdevs.
+  interfaceName String            @default("wg0")
+  /// The connector's WireGuard public key — ONE identity reused across every edge
+  /// it links to. Reported by the agent (or pasted for manual kinds). Null until known.
   publicKey     String?
   /// sha256 of the one-time install token. The plaintext token is shown once at
   /// creation and never persisted.
@@ -250,11 +252,38 @@ model Connector {
   updatedAt            DateTime  @updatedAt
 
   rules EdgeNatRule[]
+  links ConnectorEdgeLink[]
 
-  @@unique([integrationId, name])
+  @@index([status])
+  @@index([kind])
+}
+
+/// One connector peered with one Edge NAT server.
+///
+/// This is what makes connectors and edge boxes independent: a connector may be
+/// linked to many edges and an edge may accept many connectors. Each link carries
+/// the tunnel address allocated from THAT edge's own subnet (a connector therefore
+/// holds a different tunnel IP on each edge it serves), which is why the address
+/// cannot live on Connector.
+model ConnectorEdgeLink {
+  id            String            @id @default(cuid())
+  connectorId   String
+  connector     Connector         @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  integrationId String
+  integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  /// Implicitly allocated host address inside this edge's tunnel subnet (e.g. "10.9.9.3").
+  /// Allocated by PolySIEM, never typed by the operator.
+  tunnelAddress String
+  /// Set false to keep the link on record while tearing the peer off the edge.
+  enabled       Boolean           @default(true)
+  /// Last handshake PolySIEM observed for this connector on this edge.
+  lastHandshakeAt DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@unique([connectorId, integrationId])
   @@unique([integrationId, tunnelAddress])
-  @@index([integrationId, status])
-  @@index([integrationId, kind])
+  @@index([integrationId, enabled])
 }
 
 /// A narrowly-scoped inbound DNAT rule owned by one Edge NAT Server.

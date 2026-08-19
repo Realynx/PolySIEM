@@ -1,7 +1,7 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { Loader2, Pencil, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -19,17 +19,17 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import { MobileKeyRow, MobileList } from "@/components/mobile/ui/mobile-list";
 import {
+  connectorLinks,
   connectorUrl,
-  connectorsListUrl,
-  connectorsQueryKey,
   isManualConnector,
   isValidConnectorName,
+  CONNECTORS_ENDPOINT,
   CONNECTOR_KIND_CHOICES,
-  EDGE_NETWORKS_QUERY_KEY,
   type ConnectorDto,
   type ConnectorKind,
   type CreateConnectorResult,
@@ -37,7 +37,11 @@ import {
   type UpdateConnectorInput,
 } from "@/components/network/edge-networks-types";
 import { connectorKindIcon } from "./mobile-connector-atoms";
+import { ConnectorLinkKeyRows, useConnectorInvalidator } from "./mobile-connector-links";
 import { MobileOptionCard } from "./mobile-form-controls";
+
+/** Sentinel for "create it standalone"; no edge id can collide with it. */
+const NO_EDGE = "__none__";
 
 /** Placeholder name per kind, so the field shows a realistic example. */
 function namePlaceholder(kind: ConnectorKind): string {
@@ -45,44 +49,78 @@ function namePlaceholder(kind: ConnectorKind): string {
   return kind === "peer" ? "GarageRouter" : "EdgeNetworkVm";
 }
 
+/** Which edge to link the new connector to, or none — it can be linked later. */
+function ConnectorEdgeField({
+  edges,
+  value,
+  onChange,
+}: {
+  edges: readonly EdgeNatServer[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  if (edges.length === 0) return null;
+  return (
+    <div className="grid gap-1.5">
+      <Label>Link it to an edge box</Label>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {edges.map((edge) => (
+            <SelectItem key={edge.id} value={edge.id}>
+              {edge.name}
+            </SelectItem>
+          ))}
+          <SelectItem value={NO_EDGE}>Link later</SelectItem>
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        A connector is not owned by one edge. This just creates its first link — you can link it to more edge boxes
+        afterwards, and it holds a separate tunnel address on each.
+      </p>
+    </div>
+  );
+}
+
 export function ConnectorCreateSheet({
-  server,
+  edges,
+  defaultEdgeId,
   onOpenChange,
   onCreated,
 }: {
-  server: EdgeNatServer;
+  edges: readonly EdgeNatServer[];
+  /** Preselected when the sheet was opened from one edge's Connectors tab. */
+  defaultEdgeId: string | null;
   onOpenChange: (open: boolean) => void;
-  onCreated: (result: CreateConnectorResult) => void;
+  /** The chosen edge travels with the result, so the next sheet knows the context. */
+  onCreated: (result: CreateConnectorResult, integrationId: string | null) => void;
 }) {
-  const queryClient = useQueryClient();
+  const invalidate = useConnectorInvalidator();
   const [name, setName] = useState("");
   const [notes, setNotes] = useState("");
   const [kind, setKind] = useState<ConnectorKind>("agent");
+  const [edgeId, setEdgeId] = useState(defaultEdgeId ?? NO_EDGE);
   const nameValid = isValidConnectorName(name);
   const manual = isManualConnector({ kind });
 
   const mutation = useMutation({
-    // The integration is named twice on purpose — as the query parameter the
-    // list endpoint already uses, and in the body — so either binding satisfies
-    // the API. This matches the desktop card exactly.
     mutationFn: () =>
-      apiFetch<CreateConnectorResult>(connectorsListUrl(server.id), {
+      apiFetch<CreateConnectorResult>(CONNECTORS_ENDPOINT, {
         method: "POST",
         body: JSON.stringify({
-          integrationId: server.id,
           name: name.trim(),
           notes: notes.trim() || undefined,
           kind,
+          // Optional: a connector is standalone, and this only creates its first link.
+          integrationId: edgeId === NO_EDGE ? undefined : edgeId,
         }),
       }),
     onSuccess: (result) => {
-      toast.success(
-        manual
-          ? "Connector created — copy the peer settings into the far side."
-          : "Connector created — run the install command on the machine.",
-      );
-      void queryClient.invalidateQueries({ queryKey: connectorsQueryKey(server.id) });
-      onCreated(result);
+      toast.success(createdMessage(manual, edgeId !== NO_EDGE));
+      invalidate();
+      onCreated(result, edgeId === NO_EDGE ? null : edgeId);
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -101,7 +139,7 @@ export function ConnectorCreateSheet({
       open
       onOpenChange={onOpenChange}
       title="Add connector"
-      description="Pick what sits at the far end of the tunnel, then name it. PolySIEM assigns its tunnel address."
+      description="Pick what sits at the far end of the tunnel, then name it. PolySIEM assigns its address on every edge you link it to."
     >
       <form onSubmit={submit} className="flex flex-col gap-4 pb-2">
         <div className="grid gap-1.5">
@@ -131,6 +169,7 @@ export function ConnectorCreateSheet({
             spellCheck={false}
             className={cn(name && !nameValid && "border-destructive")}
           />
+          <p className="text-xs text-muted-foreground">Names are unique across PolySIEM, not per edge box.</p>
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="m-cx-notes">
@@ -144,6 +183,9 @@ export function ConnectorCreateSheet({
             rows={2}
           />
         </div>
+
+        <ConnectorEdgeField edges={edges} value={edgeId} onChange={setEdgeId} />
+
         <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
           {manual
             ? "The next screen shows the tunnel settings to paste into the far side, and takes its public key back. No install token and no SSH key are issued for this kind."
@@ -157,16 +199,23 @@ export function ConnectorCreateSheet({
   );
 }
 
+function createdMessage(manual: boolean, linked: boolean): string {
+  if (!linked) return "Connector created. Link it to an edge box when you are ready.";
+  return manual
+    ? "Connector created — copy the peer settings into the far side."
+    : "Connector created — run the install command on the machine.";
+}
+
 export function ConnectorEditSheet({
-  server,
   connector,
+  edges,
   onOpenChange,
 }: {
-  server: EdgeNatServer;
   connector: ConnectorDto;
+  edges: readonly EdgeNatServer[];
   onOpenChange: (open: boolean) => void;
 }) {
-  const queryClient = useQueryClient();
+  const invalidate = useConnectorInvalidator();
   const [name, setName] = useState(connector.name);
   const [notes, setNotes] = useState(connector.notes ?? "");
   const nameValid = isValidConnectorName(name);
@@ -176,7 +225,7 @@ export function ConnectorEditSheet({
       apiFetch<ConnectorDto>(connectorUrl(connector.id), { method: "PATCH", body: JSON.stringify(input) }),
     onSuccess: () => {
       toast.success("Connector updated");
-      void queryClient.invalidateQueries({ queryKey: connectorsQueryKey(server.id) });
+      invalidate();
       onOpenChange(false);
     },
     onError: (error: Error) => toast.error(error.message),
@@ -196,7 +245,7 @@ export function ConnectorEditSheet({
       open
       onOpenChange={onOpenChange}
       title={`Rename ${connector.name}`}
-      description="Only the label and notes change — the connector ID and tunnel address stay fixed."
+      description="Only the label and notes change — the connector ID and its per-edge addresses stay fixed."
     >
       <form onSubmit={submit} className="flex flex-col gap-4 pb-2">
         <div className="grid gap-1.5">
@@ -218,9 +267,7 @@ export function ConnectorEditSheet({
           <MobileKeyRow label="Connector ID" mono>
             {connector.connectorId}
           </MobileKeyRow>
-          <MobileKeyRow label="Tunnel address" mono>
-            {connector.tunnelAddress}
-          </MobileKeyRow>
+          <ConnectorLinkKeyRows connector={connector} edges={edges} />
         </MobileList>
         <Button type="submit" className="w-full" disabled={mutation.isPending || !nameValid}>
           {mutation.isPending ? <Loader2 className="animate-spin" /> : <Pencil />} Save connector
@@ -230,38 +277,48 @@ export function ConnectorEditSheet({
   );
 }
 
-/** What deleting costs: the routes that ride this connector, and what the far side keeps. */
-function deleteConsequence(connector: ConnectorDto | null, routeCount: number): string {
+/** What deleting costs: every edge it serves, its routes, and what the far side keeps. */
+function deleteConsequence(connector: ConnectorDto | null, routeCount: number, edgeCount: number): string {
+  const edges =
+    edgeCount > 0
+      ? `It serves ${edgeCount} edge ${edgeCount === 1 ? "box" : "boxes"} and is unlinked from all of them. `
+      : "";
   const routes =
     routeCount > 0
       ? `${routeCount} published ${routeCount === 1 ? "route" : "routes"} go through this connector and are removed with it. `
       : "";
   const far =
     connector && isManualConnector(connector)
-      ? "Its WireGuard peer drops off the edge on the next apply. The far side keeps its own configuration until you remove it there."
-      : "Its WireGuard peer drops off the edge on the next apply, the agent on that machine stops enrolling, and the SSH key PolySIEM held for it is destroyed.";
-  return `${routes}${far}`;
+      ? "Its WireGuard peer drops off each edge on the next apply. The far side keeps its own configuration until you remove it there."
+      : "Its WireGuard peer drops off each edge on the next apply, the agent on that machine stops enrolling, and the SSH key PolySIEM held for it is destroyed.";
+  return `${edges}${routes}${far}`;
 }
 
 export function ConnectorDeleteDialog({
-  server,
   connector,
+  edges,
   onOpenChange,
   onDeleted,
 }: {
-  server: EdgeNatServer;
   connector: ConnectorDto | null;
+  edges: readonly EdgeNatServer[];
   onOpenChange: (open: boolean) => void;
   onDeleted: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const routeCount = connector ? server.rules.filter((rule) => rule.connectorId === connector.id).length : 0;
+  const invalidate = useConnectorInvalidator();
+  // Rules live on the edges, so the cost of deleting is counted across every
+  // edge this connector serves — not just the one being looked at.
+  const routeCount = connector
+    ? edges.reduce(
+        (total, edge) => total + edge.rules.filter((rule) => rule.connectorId === connector.id).length,
+        0,
+      )
+    : 0;
   const mutation = useMutation({
     mutationFn: (id: string) => apiFetch(connectorUrl(id), { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Connector removed. Apply changes to drop its edge peer.");
-      void queryClient.invalidateQueries({ queryKey: connectorsQueryKey(server.id) });
-      void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
+      toast.success("Connector removed. Apply each edge it served to drop its peer.");
+      invalidate();
       onDeleted();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -272,7 +329,9 @@ export function ConnectorDeleteDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {connector?.name}?</AlertDialogTitle>
-          <AlertDialogDescription>{deleteConsequence(connector, routeCount)}</AlertDialogDescription>
+          <AlertDialogDescription>
+            {deleteConsequence(connector, routeCount, connector ? connectorLinks(connector).length : 0)}
+          </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>

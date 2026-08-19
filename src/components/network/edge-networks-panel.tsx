@@ -4,11 +4,16 @@ import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import {
-  ArrowRight,
   Check,
+  ChevronDown,
+  CircleAlert,
+  CircleCheck,
+  CircleHelp,
+  CirclePause,
   Cloud,
+  Clock,
+  Ellipsis,
   ExternalLink,
-  Globe2,
   Loader2,
   LockKeyhole,
   Network,
@@ -47,6 +52,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogClose,
@@ -56,6 +62,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -68,16 +80,29 @@ import {
   edgeOverviewPresentation,
   edgeReconciliation,
   edgeServerState,
-  isRuleApplied,
   sshEndpoint,
   tailscaleDetails,
   type ConnectorDto,
   type EdgeNatRule,
   type EdgeNatServer,
+  // Aliased: this file already has a component called `EdgeNetworkTab`.
+  type EdgeNetworkTab as EdgeNetworkTabValue,
   type EdgeNetworksOverview,
+  type OtherEdgeNetwork,
 } from "./edge-networks-types";
+import {
+  edgeServersNeedingCleanup,
+  edgeSyncFacts,
+  edgeSyncSummary,
+  EDGE_TRAFFIC_PATH_CAVEAT,
+  EDGE_TRAFFIC_PATH_STEPS,
+  type EdgeSyncFact,
+  type EdgeSyncSummary,
+  type EdgeSyncTone,
+} from "./edge-sync-presentation";
 import { CloudflarePublishedRoutes } from "./edge-cloudflare-routes";
-import { ConnectorsCard, useConnectorsQuery } from "./connectors-card";
+import { ConnectorsCard, useAllConnectorsQuery, useConnectorsQuery } from "./connectors-card";
+import { ConnectorsTab } from "./connectors-tab";
 import { EdgeNatRulesTab, NatRuleDialog } from "./edge-nat-rules";
 import { EdgeInterfacesTab } from "./edge-interfaces-tab";
 import { EdgeWireguardCard, edgeWireguardTabStatus, useEdgeWireguardQuery } from "./edge-wireguard-card";
@@ -91,6 +116,9 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
   const overview = overviewQuery.data ?? EMPTY_EDGE_NETWORKS_OVERVIEW;
   const { cloudflare, counts, hasAnyNetwork, defaultTab } = edgeOverviewPresentation(overview);
   const loaded = !overviewQuery.isLoading && !overviewQuery.isError;
+  // Connectors are a peer concept of edge boxes, so the page tab bar counts them
+  // from their own instance-wide list rather than from any one server.
+  const connectorCount = useAllConnectorsQuery().data?.length ?? 0;
 
   return (
     <div>
@@ -130,44 +158,89 @@ export function EdgeNetworksPanel({ isAdmin }: { isAdmin: boolean }) {
         />
       )}
 
-      {loaded && !hasAnyNetwork && <EdgeNetworksEmpty isAdmin={isAdmin} />}
+      {loaded && !hasAnyNetwork && connectorCount === 0 && <EdgeNetworksEmpty isAdmin={isAdmin} />}
 
-      {loaded && hasAnyNetwork && (
-        <Tabs defaultValue={defaultTab} className="gap-5">
-          <div className="overflow-x-auto pb-1">
-            <TabsList className="grid h-10 min-w-[19rem] w-full grid-cols-3 sm:inline-grid sm:w-auto">
-              <EdgeNetworkTab value="edge" label="SSH edge boxes" mobileLabel="SSH" count={overview.edgeServers.length} icon={Server} />
-              <EdgeNetworkTab value="tailscale" label="Tailscale" mobileLabel="Tailnet" count={overview.tailscale.length} icon={Share2} />
-              <EdgeNetworkTab value="cloudflare" label="Cloudflare" mobileLabel="Cloudflare" count={cloudflare.length} icon={Cloud} />
-            </TabsList>
-          </div>
-
-          <TabsContent value="edge" className="space-y-6">
-            <EdgeServersTab servers={overview.edgeServers} counts={counts} isAdmin={isAdmin} />
-          </TabsContent>
-
-          <TabsContent value="tailscale">
-            <TailscaleTab networks={overview.tailscale} isAdmin={isAdmin} />
-          </TabsContent>
-
-          <TabsContent value="cloudflare">
-            {cloudflare.length > 0 ? (
-              <CloudflarePublishedRoutes integrations={cloudflare} isAdmin={isAdmin} />
-            ) : (
-              <EdgeNetworkTabEmpty
-                icon={Cloud}
-                title="No Cloudflare integration"
-                description="Connect a Cloudflare account to document and manage published tunnel routes."
-                addHref="/settings/integrations?add=CLOUDFLARE"
-                addLabel="Connect Cloudflare"
-                isAdmin={isAdmin}
-              />
-            )}
-          </TabsContent>
-        </Tabs>
+      {loaded && (hasAnyNetwork || connectorCount > 0) && (
+        <EdgeNetworkTabs
+          overview={overview}
+          cloudflare={cloudflare}
+          counts={counts}
+          connectorCount={connectorCount}
+          defaultTab={landingTab(hasAnyNetwork, defaultTab)}
+          isAdmin={isAdmin}
+        />
       )}
     </div>
   );
+}
+
+/**
+ * The page's four surfaces. `Connectors` sits beside `SSH edge boxes` rather
+ * than inside it: one installed connector can serve any number of edge boxes,
+ * so it is a peer concept, not a child of one server.
+ */
+function EdgeNetworkTabs({
+  overview,
+  cloudflare,
+  counts,
+  connectorCount,
+  defaultTab,
+  isAdmin,
+}: {
+  overview: EdgeNetworksOverview;
+  cloudflare: OtherEdgeNetwork[];
+  counts: ReturnType<typeof edgeOverviewPresentation>["counts"];
+  connectorCount: number;
+  defaultTab: EdgeNetworkTabValue;
+  isAdmin: boolean;
+}) {
+  return (
+    <Tabs defaultValue={defaultTab} className="gap-5">
+      <div className="overflow-x-auto pb-1">
+        <TabsList className="grid h-10 min-w-[25rem] w-full grid-cols-4 sm:inline-grid sm:w-auto">
+          <EdgeNetworkTab value="edge" label="SSH edge boxes" mobileLabel="SSH" count={overview.edgeServers.length} icon={Server} />
+          <EdgeNetworkTab value="connectors" label="Connectors" mobileLabel="Connect" count={connectorCount} icon={PlugZap} />
+          <EdgeNetworkTab value="tailscale" label="Tailscale" mobileLabel="Tailnet" count={overview.tailscale.length} icon={Share2} />
+          <EdgeNetworkTab value="cloudflare" label="Cloudflare" mobileLabel="Cloudflare" count={cloudflare.length} icon={Cloud} />
+        </TabsList>
+      </div>
+
+      <TabsContent value="edge" className="space-y-6">
+        <EdgeServersTab servers={overview.edgeServers} counts={counts} isAdmin={isAdmin} />
+      </TabsContent>
+
+      <TabsContent value="connectors">
+        <ConnectorsTab servers={overview.edgeServers} isAdmin={isAdmin} />
+      </TabsContent>
+
+      <TabsContent value="tailscale">
+        <TailscaleTab networks={overview.tailscale} isAdmin={isAdmin} />
+      </TabsContent>
+
+      <TabsContent value="cloudflare">
+        {cloudflare.length > 0 ? (
+          <CloudflarePublishedRoutes integrations={cloudflare} isAdmin={isAdmin} />
+        ) : (
+          <EdgeNetworkTabEmpty
+            icon={Cloud}
+            title="No Cloudflare integration"
+            description="Connect a Cloudflare account to document and manage published tunnel routes."
+            addHref="/settings/integrations?add=CLOUDFLARE"
+            addLabel="Connect Cloudflare"
+            isAdmin={isAdmin}
+          />
+        )}
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+/**
+ * Connectors can outlive every network they served, so they are the landing tab
+ * when they are the only thing left to show.
+ */
+function landingTab(hasAnyNetwork: boolean, preferred: EdgeNetworkTabValue): EdgeNetworkTabValue {
+  return hasAnyNetwork ? preferred : "connectors";
 }
 
 function edgeOverviewErrorMessage(error: unknown): string {
@@ -213,39 +286,108 @@ function EdgeServersTab({
     );
   }
   return (
-    <>
-      <TrafficBoundary servers={servers} />
+    <section className="space-y-4" aria-label="SSH-managed edge boxes">
+      {/* The only thing above the first card: one strip of fleet state, plus the
+          concept explainer that used to cost 110px of permanent diagram. */}
+      <EdgeFleetStrip servers={servers} counts={counts} isAdmin={isAdmin} />
+      <EdgeCleanupNotice servers={servers} />
+      {servers.map((server) => (
+        <EdgeServerCard key={server.id} server={server} servers={servers} isAdmin={isAdmin} />
+      ))}
+    </section>
+  );
+}
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <SummaryCard label="Edge servers online" value={`${counts.onlineServers}/${servers.length}`} icon={Server} />
-        <SummaryCard label="Enabled NAT rules" value={String(counts.enabledRules)} icon={Route} />
-        <SummaryCard label="Servers needing review" value={String(counts.needsReconcile)} icon={TriangleAlert} />
-      </div>
-
-      <section className="space-y-3" aria-labelledby="edge-nat-heading">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 id="edge-nat-heading" className="text-lg font-semibold">SSH-managed edge boxes</h2>
-            <p className="text-sm text-muted-foreground">Only the selected edge IP and listening ports are published.</p>
-          </div>
+/** Compact fleet state. Replaces three stat tiles and a section header. */
+function EdgeFleetStrip({
+  servers,
+  counts,
+  isAdmin,
+}: {
+  servers: EdgeNatServer[];
+  counts: ReturnType<typeof edgeOverviewPresentation>["counts"];
+  isAdmin: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="rounded-lg border bg-muted/20">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 py-2">
+        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-sm">
+          <Server className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="font-medium tabular-nums">{counts.onlineServers} of {servers.length} online</span>
+          <StripDot />
+          <span className="text-muted-foreground tabular-nums">
+            {counts.enabledRules} published port{counts.enabledRules === 1 ? "" : "s"}
+          </span>
+          {counts.needsReconcile > 0 && (
+            <>
+              <StripDot />
+              <span className="text-muted-foreground tabular-nums">{counts.needsReconcile} not in sync</span>
+            </>
+          )}
+        </p>
+        <div className="flex shrink-0 items-center gap-1">
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm">
+              How this works
+              <ChevronDown className={cn("transition-transform", open && "rotate-180")} />
+            </Button>
+          </CollapsibleTrigger>
           {isAdmin && (
             <Button variant="outline" size="sm" asChild>
               <Link href="/settings/integrations?add=EDGE_NAT_SERVER"><Plus /> Add server</Link>
             </Button>
           )}
         </div>
-        <Alert>
-          <TriangleAlert />
-          <AlertTitle>Disabling PolySIEM management does not remove remote NAT rules</AlertTitle>
-          <AlertDescription>Previously applied rules can keep forwarding traffic until the edge server confirms an empty ruleset. Disabled servers stay listed here so cleanup remains visible and auditable.</AlertDescription>
-        </Alert>
-        <div className="space-y-4">
-          {servers.map((server) => (
-            <EdgeServerCard key={server.id} server={server} isAdmin={isAdmin} />
-          ))}
+      </div>
+      <CollapsibleContent>
+        <div className="space-y-3 border-t p-3">
+          <ol className="space-y-2">
+            {EDGE_TRAFFIC_PATH_STEPS.map((step, index) => (
+              <li key={step.title} className="flex gap-2.5 text-sm">
+                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[0.6875rem] font-medium text-primary">
+                  {index + 1}
+                </span>
+                <span className="min-w-0">
+                  <span className="font-medium">{step.title}</span>
+                  <span className="block text-xs text-muted-foreground">{step.detail}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
+          <p className="text-xs text-muted-foreground">{EDGE_TRAFFIC_PATH_CAVEAT}</p>
         </div>
-      </section>
-    </>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function StripDot() {
+  return <span className="text-muted-foreground/50" aria-hidden="true">·</span>;
+}
+
+/**
+ * Conditional by design. The old copy warned about disabled servers on every
+ * page load, including when nothing was disabled — a warning that is always on
+ * is not a warning. It now appears only when a disabled server may still be
+ * forwarding traffic.
+ */
+function EdgeCleanupNotice({ servers }: { servers: EdgeNatServer[] }) {
+  const stale = edgeServersNeedingCleanup(servers);
+  if (stale.length === 0) return null;
+  return (
+    <Alert variant="destructive">
+      <TriangleAlert />
+      <AlertTitle>
+        {stale.length === 1
+          ? `${stale[0].name} is disabled here but may still be forwarding`
+          : `${stale.length} disabled servers may still be forwarding`}
+      </AlertTitle>
+      <AlertDescription>
+        Turning PolySIEM management off does not remove rules already installed on the edge. Traffic can keep flowing
+        through the last applied ruleset until Clear remote rules succeeds and the server reports zero managed rules.
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -338,43 +480,6 @@ function EdgeNetworkTabEmpty({
 }
 
 
-function TrafficBoundary({ servers }: { servers: EdgeNatServer[] }) {
-  const publicIps = servers.map((server) => server.settings?.syncedSnapshot?.publicIp ?? server.settings?.publicIp).filter(Boolean);
-  return (
-    <Card className="bg-primary/[0.03]">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2"><ShieldCheck className="size-5 text-success" />Port forwards terminate at the edge</CardTitle>
-        <CardDescription>Inbound traffic reaches the remote server first, keeping the home WAN address out of the public forwarding rule.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="grid items-center gap-2 sm:grid-cols-[1fr_auto_1fr_auto_1fr]" role="img" aria-label="Internet traffic reaches the edge server public IP, passes an allowlisted NAT rule, then reaches a private lab target">
-          <BoundaryNode icon={Globe2} label="Internet" detail="Untrusted source" />
-          <ArrowRight className="mx-auto size-4 rotate-90 text-muted-foreground sm:rotate-0" aria-hidden="true" />
-          <BoundaryNode icon={Router} label="Edge public IP" detail={publicIps.length > 0 ? publicIps.join(", ") : "Remote address only"} emphasized />
-          <ArrowRight className="mx-auto size-4 rotate-90 text-muted-foreground sm:rotate-0" aria-hidden="true" />
-          <BoundaryNode icon={LockKeyhole} label="Private lab target" detail="WAN address absent from rule" />
-        </div>
-      </CardContent>
-      <div className="border-t px-4 pt-3 text-xs text-muted-foreground">
-        This protects the forwarding path, not every possible identity leak. Application responses, DNS, WebRTC, and logs still need their own review.
-      </div>
-    </Card>
-  );
-}
-
-function BoundaryNode({ icon: Icon, label, detail, emphasized = false }: { icon: typeof Router; label: string; detail: string; emphasized?: boolean }) {
-  return (
-    <div className={cn("flex min-w-0 items-center gap-3 rounded-lg border p-3", emphasized && "border-primary/30 bg-primary/5")}>
-      <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted"><Icon className="size-4" /></div>
-      <div className="min-w-0"><p className="font-medium">{label}</p><p className="truncate text-xs text-muted-foreground">{detail}</p></div>
-    </div>
-  );
-}
-
-function SummaryCard({ label, value, icon: Icon }: { label: string; value: string; icon: typeof Server }) {
-  return <Card size="sm"><CardContent className="flex items-center justify-between gap-3"><div><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p></div><Icon className="size-5 text-muted-foreground" /></CardContent></Card>;
-}
-
 /**
  * One edge server.
  *
@@ -383,17 +488,28 @@ function SummaryCard({ label, value, icon: Icon }: { label: string; value: strin
  * (routes, connectors, the tunnel, interfaces) sits behind the card's own tab
  * bar, so a server with three connectors and a dozen rules stays one screen.
  */
-function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: boolean }) {
+function EdgeServerCard({
+  server,
+  servers,
+  isAdmin,
+}: {
+  server: EdgeNatServer;
+  /** Every edge box, so a connector row can name the others it also serves. */
+  servers: EdgeNatServer[];
+  isAdmin: boolean;
+}) {
   const queryClient = useQueryClient();
   const [ruleDialog, setRuleDialog] = useState<{ open: boolean; rule: EdgeNatRule | null }>({ open: false, rule: null });
   const [deleteRule, setDeleteRule] = useState<EdgeNatRule | null>(null);
   const [enrollmentOpen, setEnrollmentOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
-  const settings = server.settings ?? {};
+  // Remembered per server, for as long as the card is mounted. Owned here so the
+  // rule editor can send an operator to the Connectors tab instead of dead-ending.
+  const [tab, setTab] = useState<EdgeServerTabValue>("routes");
+  const [linkOpen, setLinkOpen] = useState(false);
   // Shared query key with the connectors card, so the rule editor, the list, and
   // the Connectors tab badge read one cached fetch.
   const connectors = useConnectorsQuery(server.id, { enabled: server.enabled }).data ?? [];
-  const pending = settings.pendingChanges || server.rules.some((rule) => rule.enabled && !isRuleApplied(rule, settings.lastAppliedAt));
   const applyMutation = useMutation({
     mutationFn: () => apiFetch(`/api/network/edge-networks/servers/${server.id}/apply`, { method: "POST" }),
     onSuccess: () => { toast.success(`Applied NAT rules on ${server.name}`); void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY }); },
@@ -423,27 +539,30 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
 
   return (
     <Card>
-      {/* Always visible: identity, sync state, and the health facts. Never tabbed. */}
+      {/* Tier 1, never tabbed: who this box is, whether PolySIEM can reach it,
+          whether what is configured is actually live, and the one button that
+          resolves the difference. */}
       <CardHeader className="gap-3 border-b pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <EdgeServerIdentity server={server} />
-          {isAdmin && (
+          {isAdmin && server.enabled && (
             <EdgeServerActions
               server={server}
-              pending={pending}
-              applying={applyMutation.isPending}
               verifying={verifyMutation.isPending}
-              onClear={() => setClearOpen(true)}
               onSetupSsh={() => setEnrollmentOpen(true)}
               onVerify={() => verifyMutation.mutate()}
               onAddRule={() => openRule(null)}
-              onApply={() => applyMutation.mutate()}
             />
           )}
         </div>
 
-        <ReconciliationStatus server={server} />
-        <EdgeServerFacts server={server} />
+        <EdgeSyncBar
+          server={server}
+          isAdmin={isAdmin}
+          applying={applyMutation.isPending}
+          onApply={() => applyMutation.mutate()}
+          onClear={() => setClearOpen(true)}
+        />
         <EdgeServerAlerts server={server} isAdmin={isAdmin} onSetupSsh={() => setEnrollmentOpen(true)} />
       </CardHeader>
 
@@ -451,8 +570,13 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
         {server.enabled ? (
           <EdgeServerTabs
             server={server}
+            servers={servers}
             isAdmin={isAdmin}
             connectors={connectors}
+            tab={tab}
+            onTabChange={setTab}
+            linkOpen={linkOpen}
+            onLinkOpenChange={setLinkOpen}
             onAddRule={() => openRule(null)}
             onEditRule={(rule) => openRule(rule)}
             onDeleteRule={setDeleteRule}
@@ -471,7 +595,14 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
       </CardContent>
 
       <SshEnrollmentDialog server={server} open={enrollmentOpen} onOpenChange={setEnrollmentOpen} />
-      <NatRuleDialog server={server} rule={ruleDialog.rule} connectors={connectors} open={ruleDialog.open} onOpenChange={(open) => setRuleDialog((current) => ({ ...current, open }))} />
+      <NatRuleDialog
+        server={server}
+        rule={ruleDialog.rule}
+        connectors={connectors}
+        open={ruleDialog.open}
+        onOpenChange={(open) => setRuleDialog((current) => ({ ...current, open }))}
+        onLinkConnector={isAdmin ? () => { setTab("connectors"); setLinkOpen(true); } : undefined}
+      />
       <AlertDialog open={deleteRule !== null} onOpenChange={(open) => !open && setDeleteRule(null)}>
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Remove {deleteRule?.name}?</AlertDialogTitle><AlertDialogDescription>The rule will be removed from PolySIEM, then must be applied before the edge server&apos;s firewall changes.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={deleteMutation.isPending} onClick={(event) => { event.preventDefault(); if (deleteRule) deleteMutation.mutate(deleteRule.id); }}>{deleteMutation.isPending && <Loader2 className="animate-spin" />}Remove rule</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
@@ -493,81 +624,82 @@ function EdgeServerCard({ server, isAdmin }: { server: EdgeNatServer; isAdmin: b
   );
 }
 
+/**
+ * Identity and reachability on one line: who this box is, how PolySIEM talks to
+ * it, what address it publishes, whether its key is pinned, and when it was last
+ * heard from. `Forwarding` is deliberately absent — it is a kernel flag that the
+ * next apply turns on, so it reads as a fault here. It lives in Sync details.
+ */
 function EdgeServerIdentity({ server }: { server: EdgeNatServer }) {
+  const settings = server.settings ?? {};
+  const publicIp = settings.syncedSnapshot?.publicIp ?? settings.publicIp;
   return (
     <div className="flex min-w-0 items-start gap-3">
       <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Server className="size-5" /></div>
       <div className="min-w-0">
         <CardTitle className="flex flex-wrap items-center gap-2">{server.name}<ServerStateBadge state={edgeServerState(server)} /></CardTitle>
-        <CardDescription className="mt-1 font-mono">ssh://{sshEndpoint(server.baseUrl)}</CardDescription>
+        <CardDescription className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+          <span className="font-mono">ssh://{sshEndpoint(server.baseUrl)}</span>
+          <StripDot />
+          <span>publishes <span className="font-mono text-foreground/80">{publicIp ?? "an address not detected yet"}</span></span>
+          <StripDot />
+          <span>{hostKeyFactValue(server)}</span>
+          <StripDot />
+          <span>{server.lastSyncAt ? `checked ${formatRelative(server.lastSyncAt)}` : "not checked yet"}</span>
+        </CardDescription>
       </div>
     </div>
   );
 }
 
+/**
+ * Secondary actions only. `Apply changes` is not here: it belongs beside the
+ * sentence that explains why you would press it. `SSH trust` and `Verify SSH`
+ * used to sit side by side sounding like the same thing; they are now named for
+ * what they each do, and are one click away in the overflow.
+ */
 function EdgeServerActions({
   server,
-  pending,
-  applying,
   verifying,
-  onClear,
   onSetupSsh,
   onVerify,
   onAddRule,
-  onApply,
 }: {
   server: EdgeNatServer;
-  pending: boolean;
-  applying: boolean;
   verifying: boolean;
-  onClear: () => void;
   onSetupSsh: () => void;
   onVerify: () => void;
   onAddRule: () => void;
-  onApply: () => void;
 }) {
-  if (!server.enabled) {
-    if (!edgeReconciliation(server).cleanupRequired) return null;
-    return (
-      <div className="flex flex-wrap gap-2">
-        <Button variant="destructive" size="sm" onClick={onClear}><Trash2 /> Clear remote rules</Button>
-      </div>
-    );
-  }
   return (
-    <div className="flex flex-wrap gap-2">
-      <Button variant="outline" size="sm" onClick={onSetupSsh}>
-        <LockKeyhole /> {server.hostKeyEnrolled ? "SSH trust" : "Set up SSH"}
-      </Button>
-      {server.hostKeyEnrolled && (
-        <Button variant="outline" size="sm" disabled={verifying} onClick={onVerify}>
-          {verifying ? <Loader2 className="animate-spin" /> : <ScanLine />} Verify SSH
-        </Button>
-      )}
+    <div className="flex shrink-0 flex-wrap items-center gap-2">
       <Button variant="outline" size="sm" onClick={onAddRule}><Plus /> Add NAT rule</Button>
-      <Button size="sm" disabled={applying || !server.hostKeyEnrolled} onClick={onApply}>
-        {applying ? <Loader2 className="animate-spin" /> : <Check />}{pending ? "Apply changes" : "Apply rules"}
-      </Button>
-    </div>
-  );
-}
-
-/** The at-a-glance facts. Never behind a tab — this is the health read. */
-function EdgeServerFacts({ server }: { server: EdgeNatServer }) {
-  const settings = server.settings ?? {};
-  return (
-    <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-      <ServerFact label="Public IP" value={settings.syncedSnapshot?.publicIp ?? settings.publicIp ?? "Not detected"} mono />
-      <ServerFact label="SSH host key" value={hostKeyFactValue(server)} />
-      <ServerFact label="Forwarding" value={settings.syncedSnapshot?.ipForwarding ?? settings.enableIpForwarding ? "Enabled" : "Disabled"} />
-      <ServerFact label="Last checked" value={server.lastSyncAt ? formatRelative(server.lastSyncAt) : "Not checked yet"} />
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="icon-sm" aria-label={`More actions for ${server.name}`}>
+            <Ellipsis />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuItem onSelect={onSetupSsh}>
+            <LockKeyhole />
+            {server.hostKeyEnrolled ? "Review SSH trust" : "Set up SSH"}
+          </DropdownMenuItem>
+          {server.hostKeyEnrolled && (
+            <DropdownMenuItem disabled={verifying} onSelect={onVerify}>
+              {verifying ? <Loader2 className="animate-spin" /> : <ScanLine />}
+              Test connection
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }
 
 function hostKeyFactValue(server: EdgeNatServer): string {
-  if (!server.hostKeyEnrolled && !server.settings?.hostKeyVerified) return "Enrollment required";
-  return edgeServerState(server) === "online" ? "Pinned and verified" : "Pinned; verify connection";
+  if (!server.hostKeyEnrolled && !server.settings?.hostKeyVerified) return "host key not enrolled yet";
+  return edgeServerState(server) === "online" ? "host key pinned and verified" : "host key pinned, connection unverified";
 }
 
 function EdgeServerAlerts({
@@ -582,8 +714,9 @@ function EdgeServerAlerts({
   const settings = server.settings ?? {};
   return (
     <>
-      <EdgeServerDisabledAlert server={server} />
-
+      {/* The disabled-server story is told once, by the sync line above: it
+          states whether rules may still be live and carries Clear remote rules.
+          Only genuine faults and unfinished setup get an alert here. */}
       {(server.lastSyncError || settings.lastApplyError) && (
         <Alert variant="destructive"><TriangleAlert /><AlertTitle>Server needs attention</AlertTitle><AlertDescription>{settings.lastApplyError ?? server.lastSyncError}</AlertDescription></Alert>
       )}
@@ -602,22 +735,6 @@ function EdgeServerAlerts({
   );
 }
 
-function EdgeServerDisabledAlert({ server }: { server: EdgeNatServer }) {
-  if (server.enabled) return null;
-  const cleanupRequired = edgeReconciliation(server).cleanupRequired;
-  return (
-    <Alert variant={cleanupRequired ? "destructive" : "default"}>
-      <TriangleAlert />
-      <AlertTitle>{cleanupRequired ? "Disabled here, but remote rules may still be live" : "Disabled and remotely cleared"}</AlertTitle>
-      <AlertDescription>
-        {cleanupRequired
-          ? "Sync and normal management are off. Traffic can continue through the last applied ruleset until Clear remote rules succeeds and the remote server reports zero managed rules."
-          : "The integration is disabled and the last observed remote state contains no PolySIEM-managed NAT rules."}
-      </AlertDescription>
-    </Alert>
-  );
-}
-
 type EdgeServerTabValue = "routes" | "connectors" | "tunnel" | "interfaces";
 
 /**
@@ -626,30 +743,38 @@ type EdgeServerTabValue = "routes" | "connectors" | "tunnel" | "interfaces";
  */
 function EdgeServerTabs({
   server,
+  servers,
   isAdmin,
   connectors,
+  tab,
+  onTabChange,
+  linkOpen,
+  onLinkOpenChange,
   onAddRule,
   onEditRule,
   onDeleteRule,
   onSetupEdgeSsh,
 }: {
   server: EdgeNatServer;
+  servers: EdgeNatServer[];
   isAdmin: boolean;
   connectors: ConnectorDto[];
+  tab: EdgeServerTabValue;
+  onTabChange: (tab: EdgeServerTabValue) => void;
+  linkOpen: boolean;
+  onLinkOpenChange: (open: boolean) => void;
   onAddRule: () => void;
   onEditRule: (rule: EdgeNatRule) => void;
   onDeleteRule: (rule: EdgeNatRule) => void;
   onSetupEdgeSsh: () => void;
 }) {
-  // Remembered per server, for as long as the card is mounted.
-  const [tab, setTab] = useState<EdgeServerTabValue>("routes");
   const wgQuery = useEdgeWireguardQuery(server);
   const summary = connectorSummary(connectors);
   const tunnel = edgeWireguardTabStatus(server, wgQuery.data);
   const interfaceCount = edgeInterfaceChoices(server).length;
 
   return (
-    <Tabs value={tab} onValueChange={(next) => setTab(next as EdgeServerTabValue)} className="gap-4">
+    <Tabs value={tab} onValueChange={(next) => onTabChange(next as EdgeServerTabValue)} className="gap-4">
       <div className="overflow-x-auto pb-1">
         <TabsList className="grid h-9 w-full min-w-[21rem] grid-cols-4 bg-muted/60 sm:inline-grid sm:w-auto">
           <EdgeServerTabTrigger
@@ -696,9 +821,17 @@ function EdgeServerTabs({
       </TabsContent>
 
       <TabsContent value="connectors">
-        {/* The connector install flow walks BOTH ends, so its step ① hands the
-            operator straight back to this server's own SSH enrollment. */}
-        <ConnectorsCard server={server} isAdmin={isAdmin} onSetupEdgeSsh={onSetupEdgeSsh} />
+        {/* The connectors THIS edge routes through. They are not owned by it —
+            "Link a connector" reuses one that is already installed elsewhere,
+            and the install flow walks both ends when a new one is added. */}
+        <ConnectorsCard
+          server={server}
+          servers={servers}
+          isAdmin={isAdmin}
+          onSetupEdgeSsh={onSetupEdgeSsh}
+          linkOpen={linkOpen}
+          onLinkOpenChange={onLinkOpenChange}
+        />
       </TabsContent>
 
       <TabsContent value="tunnel">
@@ -920,42 +1053,125 @@ function CopyBlock({ value, label }: { value: string; label: string }) {
   return <div className="relative rounded-lg bg-muted p-3 pr-12"><pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all text-xs"><code>{value}</code></pre><CopyButton value={value} label={`Copy ${label}`} className="absolute right-2 top-2" /></div>;
 }
 
-function ReconciliationStatus({ server }: { server: EdgeNatServer }) {
-  const state = edgeReconciliation(server);
-  const statusLabel = { in_sync: "In sync", pending: "Pending apply", drifted: "Drift detected", unknown: "Remote state unknown" }[state.drift];
+const SYNC_TONES: Record<EdgeSyncTone, { icon: typeof Server; frame: string; text: string }> = {
+  synced: { icon: CircleCheck, frame: "border-border bg-muted/20", text: "text-success" },
+  staged: { icon: Clock, frame: "border-primary/30 bg-primary/5", text: "text-primary" },
+  drifted: { icon: CircleAlert, frame: "border-destructive/30 bg-destructive/5", text: "text-destructive" },
+  unknown: { icon: CircleHelp, frame: "border-border bg-muted/20", text: "text-muted-foreground" },
+  disabled: { icon: CirclePause, frame: "border-border bg-muted/20", text: "text-muted-foreground" },
+  cleanup: { icon: TriangleAlert, frame: "border-destructive/30 bg-destructive/5", text: "text-destructive" },
+};
+
+/**
+ * What replaced `Desired vs. remote-applied state`.
+ *
+ * The old block gave the top third of the card to a revision number and two
+ * sha256 hashes — debugging evidence no operator decision depends on. This says
+ * the same thing in one sentence, puts the button that resolves it right there,
+ * and keeps every original field one click away under Sync details.
+ */
+function EdgeSyncBar({
+  server,
+  isAdmin,
+  applying,
+  onApply,
+  onClear,
+}: {
+  server: EdgeNatServer;
+  isAdmin: boolean;
+  applying: boolean;
+  onApply: () => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const summary = edgeSyncSummary(server);
+  const tone = SYNC_TONES[summary.tone];
+  const Icon = tone.icon;
   return (
-    <div className="rounded-lg border bg-muted/20 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-sm font-medium">Desired vs. remote-applied state</p>
-          <p className="text-xs text-muted-foreground">Remote evidence is kept separate from saved intent.</p>
+    <Collapsible open={open} onOpenChange={setOpen} className={cn("rounded-lg border", tone.frame)}>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 p-3">
+        <div className="flex min-w-0 items-start gap-2">
+          <Icon className={cn("mt-0.5 size-4 shrink-0", tone.text)} aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium">{summary.headline}</p>
+            <p className="text-xs text-muted-foreground">{summary.detail}</p>
+          </div>
         </div>
-        <Badge variant={state.drift === "in_sync" ? "secondary" : state.drift === "drifted" ? "destructive" : "outline"}>{statusLabel}</Badge>
+        <div className="flex shrink-0 items-center gap-1">
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm">
+              Sync details
+              <ChevronDown className={cn("transition-transform", open && "rotate-180")} />
+            </Button>
+          </CollapsibleTrigger>
+          {isAdmin && (
+            <EdgeSyncAction server={server} summary={summary} applying={applying} onApply={onApply} onClear={onClear} />
+          )}
+        </div>
       </div>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <ReconciliationFact label="Desired revision" value={formatRevision(state.desiredRevision)} />
-        <ReconciliationFact label="Applied revision" value={formatRevision(state.appliedRevision)} />
-        <ReconciliationFact label="Desired hash" value={shortHash(state.desiredHash)} mono />
-        <ReconciliationFact label="Applied hash" value={shortHash(state.appliedHash)} mono />
+      <CollapsibleContent>
+        <EdgeSyncDetails server={server} />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/** The single primary action, sitting beside the sentence that motivates it. */
+function EdgeSyncAction({
+  server,
+  summary,
+  applying,
+  onApply,
+  onClear,
+}: {
+  server: EdgeNatServer;
+  summary: EdgeSyncSummary;
+  applying: boolean;
+  onApply: () => void;
+  onClear: () => void;
+}) {
+  if (!server.enabled) {
+    if (!edgeReconciliation(server).cleanupRequired) return null;
+    return <Button variant="destructive" size="sm" onClick={onClear}><Trash2 /> {summary.actionLabel}</Button>;
+  }
+  return (
+    <Button
+      size="sm"
+      variant={summary.actionUrgent ? "default" : "outline"}
+      disabled={applying || !server.hostKeyEnrolled}
+      title={server.hostKeyEnrolled ? undefined : "Finish SSH enrollment before applying rules"}
+      onClick={onApply}
+    >
+      {applying ? <Loader2 className="animate-spin" /> : <Check />}{summary.actionLabel}
+    </Button>
+  );
+}
+
+/** Tier 4: revisions, hashes, counts, the forwarding flag, the pinned key. */
+function EdgeSyncDetails({ server }: { server: EdgeNatServer }) {
+  return (
+    <div className="space-y-2 border-t p-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {edgeSyncFacts(server).map((fact) => <SyncDetailFact key={fact.label} fact={fact} />)}
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Desired {state.desiredRuleCount ?? 0} · confirmed remote {state.appliedRuleCount ?? "unknown"}
-        {state.observedAt ? ` · observed ${formatRelative(state.observedAt)}` : " · no remote observation yet"}
+      <p className="text-xs text-muted-foreground">
+        Revisions and ruleset hashes are the evidence behind the line above: PolySIEM keeps what it observed on the edge
+        separate from what is saved here, and compares the two. They are useful when a state looks wrong.
       </p>
     </div>
   );
 }
 
-function ReconciliationFact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return <div><p className="text-xs text-muted-foreground">{label}</p><p className={cn("mt-0.5 font-medium", mono && "font-mono text-xs")}>{value}</p></div>;
-}
-
-function shortHash(value?: string | null) {
-  return value ? value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value : "Unknown";
-}
-
-function formatRevision(value?: string | number | null) {
-  return value === null || value === undefined ? "Unknown" : String(value);
+function SyncDetailFact({ fact }: { fact: EdgeSyncFact }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs text-muted-foreground">{fact.label}</p>
+      <div className="flex items-center gap-1">
+        <p className={cn("mt-0.5 min-w-0 flex-1 truncate font-medium", fact.mono && "font-mono text-xs")}>{fact.value}</p>
+        {fact.copy && <CopyButton value={fact.copy} label={`Copy ${fact.label.toLowerCase()}`} />}
+      </div>
+    </div>
+  );
 }
 
 function ServerFact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
@@ -983,5 +1199,10 @@ function TailscaleCard({ network }: { network: EdgeNetworksOverview["tailscale"]
 }
 
 function EdgeNetworksSkeleton() {
-  return <div className="space-y-6"><Skeleton className="h-40 rounded-xl" /><div className="grid gap-3 sm:grid-cols-3">{Array.from({ length: 3 }).map((_, index) => <Skeleton key={index} className="h-24 rounded-xl" />)}</div><Skeleton className="h-72 rounded-xl" /></div>;
+  return (
+    <div className="space-y-4">
+      <Skeleton className="h-10 rounded-lg" />
+      <Skeleton className="h-80 rounded-xl" />
+    </div>
+  );
 }

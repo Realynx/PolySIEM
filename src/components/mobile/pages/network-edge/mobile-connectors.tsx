@@ -2,64 +2,64 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Cable, Plus, TriangleAlert } from "lucide-react";
+import { Cable, Link2, Plus, TriangleAlert } from "lucide-react";
 import { apiFetch } from "@/components/shared/api-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MobileEmpty, MobileList, MobileListRow } from "@/components/mobile/ui/mobile-list";
 import {
-  connectorInstallReveal,
   connectorKindOf,
+  connectorLinks,
   connectorSshPresentation,
   connectorSummary,
+  connectorTunnelAddressFor,
   connectorsListUrl,
   connectorsQueryKey,
   isManualConnector,
   type ConnectorDto,
-  type ConnectorInstallReveal,
-  type ConnectorInstallReason,
-  type ConnectorPeerConfigDto,
-  type CreateConnectorResult,
   type EdgeNatServer,
 } from "@/components/network/edge-networks-types";
-import {
-  ConnectorKindBadge,
-  ConnectorStatusBadge,
-  connectorKindIcon,
-  contactLabel,
-} from "./mobile-connector-atoms";
-import { ConnectorDetailSheet, ConnectorHostKeySheet, ConnectorSshEndpointSheet } from "./mobile-connector-detail";
-import { ConnectorCreateSheet, ConnectorDeleteDialog, ConnectorEditSheet } from "./mobile-connector-forms";
-import {
-  ConnectorInstallSheet,
-  ConnectorPeerSetupSheet,
-  type InstallReveal,
-  type ManualSetup,
-} from "./mobile-connector-setup";
+import { ConnectorKindBadge, ConnectorStatusBadge, connectorKindIcon, contactLabel } from "./mobile-connector-atoms";
+import { EdgeConnectorPickerSheet, connectorPendingPoll, useAllConnectorsQuery } from "./mobile-connector-links";
+import { ConnectorSheetHost } from "./mobile-connector-sheets";
 
 /**
- * Connector list for one edge integration. Shares the desktop query key, DTOs
- * and derivations (presentation forks, data does not) — only the surface is
- * phone-native. Declared here rather than imported from the desktop card so the
- * phone bundle never pulls the desktop tree in.
+ * The connectors LINKED to one edge box.
+ *
+ * A connector is a standalone thing: installed once, linked to as many edge
+ * boxes as it should serve, and holding a different tunnel address on each. So
+ * this block offers two verbs — link an existing connector to this edge, or add
+ * (install) a new one and link it in the same step.
+ *
+ * Shares the desktop query key, DTOs and derivations (presentation forks, data
+ * does not); only the surface is phone-native. Declared here rather than
+ * imported from the desktop card so the phone bundle never pulls the desktop
+ * tree in.
  */
-export function useConnectorsQuery(
-  integrationId: string,
-  options?: { enabled?: boolean; refetchInterval?: number | false },
-) {
+export function useConnectorsQuery(integrationId: string, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: connectorsQueryKey(integrationId),
     queryFn: () => apiFetch<ConnectorDto[]>(connectorsListUrl(integrationId)),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? false,
+    refetchInterval: (query) => connectorPendingPoll(query.state.data),
   });
 }
 
-/** One connector as a two-line row: identity on top, its last contact trailing. */
-function ConnectorRow({ connector, onSelect }: { connector: ConnectorDto; onSelect: () => void }) {
+/** One connector on THIS edge: identity on top, this edge's address below. */
+function ConnectorRow({
+  connector,
+  integrationId,
+  onSelect,
+}: {
+  connector: ConnectorDto;
+  integrationId: string;
+  onSelect: () => void;
+}) {
   const kind = connectorKindOf(connector);
   const manual = isManualConnector(connector);
+  const address = connectorTunnelAddressFor(connector, integrationId);
+  const elsewhere = connectorLinks(connector).filter((link) => link.integrationId !== integrationId).length;
   return (
     <MobileListRow
       onClick={onSelect}
@@ -69,6 +69,11 @@ function ConnectorRow({ connector, onSelect }: { connector: ConnectorDto; onSele
           <span className="truncate">{connector.name}</span>
           <ConnectorStatusBadge connector={connector} />
           <ConnectorKindBadge kind={kind} />
+          {elsewhere > 0 && (
+            <Badge variant="outline" className="text-[10px] font-normal">
+              +{elsewhere} edge{elsewhere === 1 ? "" : "s"}
+            </Badge>
+          )}
           {!manual && connectorSshPresentation(connector).readiness === "ready" && (
             <Badge variant="outline" className="text-[10px] font-normal">
               ssh
@@ -76,7 +81,11 @@ function ConnectorRow({ connector, onSelect }: { connector: ConnectorDto; onSele
           )}
         </>
       }
-      subtitle={<span className="font-mono">{connector.connectorId}</span>}
+      subtitle={
+        <span className="font-mono">
+          {connector.connectorId} · {address ?? "no address here"}
+        </span>
+      }
       trailing={<span className="max-w-24 truncate">{trailingLabel(connector, manual)}</span>}
     />
   );
@@ -90,11 +99,13 @@ function trailingLabel(connector: ConnectorDto, manual: boolean): string {
 /** Loading, failed, empty or listed — the four states of the connector list. */
 function ConnectorsListBody({
   connectors,
+  integrationId,
   isLoading,
   error,
   onSelect,
 }: {
   connectors: readonly ConnectorDto[];
+  integrationId: string;
   isLoading: boolean;
   error: Error | null;
   onSelect: (id: string) => void;
@@ -111,14 +122,19 @@ function ConnectorsListBody({
       {!error && connectors.length === 0 && (
         <MobileEmpty
           icon={<Cable />}
-          title="No connectors"
-          description="A connector is the far end of this edge's tunnel — PolySIEM's agent, an OPNsense box, or another WireGuard peer. It dials out, so ports can be published without a public IP at home."
+          title="No connector linked"
+          description="A connector is the far end of a tunnel — PolySIEM's agent, an OPNsense box, or another WireGuard peer. It is installed once and can serve several edge boxes, so link one you already have or add a new one."
         />
       )}
       {connectors.length > 0 && (
         <MobileList>
           {connectors.map((connector) => (
-            <ConnectorRow key={connector.id} connector={connector} onSelect={() => onSelect(connector.id)} />
+            <ConnectorRow
+              key={connector.id}
+              connector={connector}
+              integrationId={integrationId}
+              onSelect={() => onSelect(connector.id)}
+            />
           ))}
         </MobileList>
       )}
@@ -126,196 +142,76 @@ function ConnectorsListBody({
   );
 }
 
-/** Everything that opens over the list: create, rename, SSH, host key, install, peer setup. */
-function ConnectorSheets({
+/**
+ * Phone connector block for one edge server: every connector linked to it,
+ * whatever kind it is. Managed kinds get the two-ended installer; manual kinds
+ * get the paste-ready peer block instead. Details and every action live in
+ * bottom sheets.
+ */
+export function MobileConnectorsBlock({
   server,
-  connectors,
-  sheets,
-  onCreateOpenChange,
-  onCreated,
-  onCloseEditing,
-  onCloseSshEditing,
-  onCloseHostKey,
-  onCloseReveal,
-  onClosePeerSetup,
+  servers,
+  isAdmin,
 }: {
   server: EdgeNatServer;
-  connectors: readonly ConnectorDto[];
-  sheets: {
-    createOpen: boolean;
-    editing: ConnectorDto | null;
-    sshEditing: ConnectorDto | null;
-    hostKeyFor: ConnectorDto | null;
-    reveal: InstallReveal | null;
-    peerSetup: ManualSetup | null;
-  };
-  onCreateOpenChange: (open: boolean) => void;
-  onCreated: (result: CreateConnectorResult) => void;
-  onCloseEditing: () => void;
-  onCloseSshEditing: (connector: ConnectorDto) => void;
-  onCloseHostKey: (connector: ConnectorDto) => void;
-  onCloseReveal: () => void;
-  onClosePeerSetup: () => void;
+  /** Every edge box, so a connector can be linked onward from its detail sheet. */
+  servers?: readonly EdgeNatServer[];
+  isAdmin: boolean;
 }) {
-  const { createOpen, editing, sshEditing, hostKeyFor, reveal, peerSetup } = sheets;
-  const live = (id: string) => connectors.find((entry) => entry.id === id);
-  return (
-    <>
-      {createOpen && <ConnectorCreateSheet server={server} onOpenChange={onCreateOpenChange} onCreated={onCreated} />}
-      {editing && (
-        <ConnectorEditSheet
-          server={server}
-          connector={editing}
-          onOpenChange={(open) => !open && onCloseEditing()}
-        />
-      )}
-      {sshEditing && (
-        <ConnectorSshEndpointSheet
-          server={server}
-          connector={sshEditing}
-          onOpenChange={(open) => !open && onCloseSshEditing(sshEditing)}
-        />
-      )}
-      {hostKeyFor && (
-        <ConnectorHostKeySheet
-          server={server}
-          connector={hostKeyFor}
-          onOpenChange={(open) => !open && onCloseHostKey(hostKeyFor)}
-        />
-      )}
-      {reveal && (
-        <ConnectorInstallSheet
-          server={server}
-          reveal={reveal}
-          live={live(reveal.connector.id)}
-          onOpenChange={(open) => !open && onCloseReveal()}
-        />
-      )}
-      {peerSetup && (
-        <ConnectorPeerSetupSheet
-          server={server}
-          setup={peerSetup}
-          live={live(peerSetup.connector.id)}
-          onOpenChange={(open) => !open && onClosePeerSetup()}
-        />
-      )}
-    </>
-  );
-}
-
-/**
- * Phone connector block for an edge server: every far end of its tunnel,
- * whatever kind it is — PolySIEM's own agent, an OPNsense box, or another
- * WireGuard peer. Managed kinds get the two-ended installer; manual kinds get
- * the paste-ready peer block instead. Details and every action live in bottom
- * sheets.
- */
-export function MobileConnectorsBlock({ server, isAdmin }: { server: EdgeNatServer; isAdmin: boolean }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState<ConnectorDto | null>(null);
-  const [sshEditing, setSshEditing] = useState<ConnectorDto | null>(null);
-  const [hostKeyFor, setHostKeyFor] = useState<ConnectorDto | null>(null);
-  const [reveal, setReveal] = useState<InstallReveal | null>(null);
-  const [peerSetup, setPeerSetup] = useState<ManualSetup | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<ConnectorDto | null>(null);
+  const [linkOpen, setLinkOpen] = useState(false);
 
-  // While an install/setup sheet is open the operator is watching for the far
-  // end to come up, so poll hard; otherwise the list rides the page refresh.
-  const connectorsQuery = useConnectorsQuery(server.id, {
-    enabled: server.enabled,
-    refetchInterval: reveal || peerSetup ? 5_000 : false,
-  });
+  const connectorsQuery = useConnectorsQuery(server.id, { enabled: server.enabled });
   const connectors = connectorsQuery.data ?? [];
-  const selected = connectors.find((connector) => connector.id === selectedId) ?? null;
-
-  const openReveal = (connector: ConnectorDto, minted: ConnectorInstallReveal, reason: ConnectorInstallReason) => {
-    setSelectedId(null);
-    setReveal({ ...minted, connector, reason, baselineLastSeenAt: connector.lastSeenAt });
-  };
-  // Manual kinds get no token and no install command — they get the paste-ready
-  // peer block instead, so a create lands on a different sheet entirely.
-  const openPeerSetup = (connector: ConnectorDto, apiPeerConfig?: ConnectorPeerConfigDto | null) => {
-    setSelectedId(null);
-    setPeerSetup({ connector, apiPeerConfig });
-  };
-  // A sub-sheet replaces the detail sheet (two stacked sheets fight for the
-  // scroll lock on a phone), then hands the operator back to it on close.
-  const openSubSheet = (connector: ConnectorDto, open: (connector: ConnectorDto) => void) => {
-    setSelectedId(null);
-    open(connector);
-  };
-  const closeSubSheet = (connector: ConnectorDto, close: () => void) => {
-    close();
-    setSelectedId(connector.id);
-  };
-  // Manual kinds come back without a token or command; anything else that
-  // arrives without one is treated the same way rather than rendering an empty
-  // command block.
-  const onCreated = (result: CreateConnectorResult) => {
-    setCreateOpen(false);
-    const minted = connectorInstallReveal(result);
-    if (isManualConnector(result.connector) || !minted) {
-      openPeerSetup(result.connector, result.peerConfig);
-      return;
-    }
-    openReveal(result.connector, minted, "created");
-  };
+  // Only fetched while the picker is open: linking is the one action that needs
+  // to see connectors this edge does not have.
+  const allConnectors = useAllConnectorsQuery({ enabled: linkOpen });
+  const edges = servers && servers.length > 0 ? servers : [server];
 
   return (
     <div className="flex flex-col gap-1.5">
       <ConnectorsListBody
         connectors={connectors}
+        integrationId={server.id}
         isLoading={connectorsQuery.isLoading}
         error={connectorsQuery.error as Error | null}
         onSelect={setSelectedId}
       />
 
       {isAdmin && server.enabled && (
-        <Button variant="outline" size="sm" className="w-full" onClick={() => setCreateOpen(true)}>
-          <Plus /> Add connector
-        </Button>
+        <div className="grid grid-cols-2 gap-2">
+          <Button variant="outline" size="sm" onClick={() => setLinkOpen(true)}>
+            <Link2 /> Link a connector
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus /> Add connector
+          </Button>
+        </div>
       )}
       <p className="px-0.5 text-[11px] text-muted-foreground">
-        A connector is any far end of this edge&apos;s tunnel — a PolySIEM agent, your OPNsense box, or another
-        WireGuard peer. Its tunnel address is assigned automatically; you never type one.
+        One connector can serve several edge boxes; each link gets its own tunnel address here.
       </p>
 
-      <ConnectorDetailSheet
-        server={server}
-        connector={selected}
-        isAdmin={isAdmin}
-        onOpenChange={(open) => !open && setSelectedId(null)}
-        onEdit={(connector) => openSubSheet(connector, setEditing)}
-        onEditSsh={(connector) => openSubSheet(connector, setSshEditing)}
-        onScanHostKey={(connector) => openSubSheet(connector, setHostKeyFor)}
-        onPeerSetup={(connector) => openPeerSetup(connector)}
-        onDelete={(connector) => setConfirmDelete(connector)}
-        onRotated={(connector, minted) => openReveal(connector, minted, "rotated")}
-      />
-
-      <ConnectorSheets
-        server={server}
+      <ConnectorSheetHost
         connectors={connectors}
-        sheets={{ createOpen, editing, sshEditing, hostKeyFor, reveal, peerSetup }}
+        edges={edges}
+        scope={server}
+        isAdmin={isAdmin}
+        selectedId={selectedId}
+        onSelectedIdChange={setSelectedId}
+        createOpen={createOpen}
         onCreateOpenChange={setCreateOpen}
-        onCreated={onCreated}
-        onCloseEditing={() => setEditing(null)}
-        onCloseSshEditing={(connector) => closeSubSheet(connector, () => setSshEditing(null))}
-        onCloseHostKey={(connector) => closeSubSheet(connector, () => setHostKeyFor(null))}
-        onCloseReveal={() => setReveal(null)}
-        onClosePeerSetup={() => setPeerSetup(null)}
       />
 
-      <ConnectorDeleteDialog
-        server={server}
-        connector={confirmDelete}
-        onOpenChange={(open) => !open && setConfirmDelete(null)}
-        onDeleted={() => {
-          setConfirmDelete(null);
-          setSelectedId(null);
-        }}
-      />
+      {linkOpen && (
+        <EdgeConnectorPickerSheet
+          server={server}
+          connectors={allConnectors.data ?? []}
+          isLoading={allConnectors.isLoading}
+          onOpenChange={setLinkOpen}
+        />
+      )}
     </div>
   );
 }

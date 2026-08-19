@@ -55,6 +55,9 @@ export const BACKUP_MODELS = [
   "trafficCounterSample",
   // Connector must precede edgeNatRule: connector-routed rules reference it.
   "connector",
+  // Links must follow connector and precede edgeNatRule: they reference a
+  // connector, and they carry the per-edge tunnel address a restored rule needs.
+  "connectorEdgeLink",
   "edgeNatRule",
   "tunnel",
   "tunnelHostname",

@@ -193,8 +193,9 @@ function EdgeTunnelIdentity({
       <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
         <PlugZap className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" />
         Adding an OPNsense box or another WireGuard endpoint? Add it in the{" "}
-        <span className="font-medium text-foreground">Connectors</span> tab and pick its kind — PolySIEM allocates its
-        tunnel address and hands you a paste-ready block for that side.
+        <span className="font-medium text-foreground">Connectors</span> tab and pick its kind — or link a connector you
+        already run elsewhere. Either way PolySIEM allocates its tunnel address on this edge box and hands you a
+        paste-ready block for that side.
       </p>
     </div>
   );
@@ -373,7 +374,8 @@ function WireguardConfigDialog({
                   invalid={Boolean(form.address) && !looksLikeCidr(form.address)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Peers get addresses from this subnet automatically (10.9.9.2, .3, …) — you never assign one.
+                  Every connector linked to this edge box gets an address from this subnet automatically (10.9.9.2, .3,
+                  …) — you never assign one. It is separate from the address that connector holds on any other edge box.
                 </p>
               </div>
               <div className="grid gap-1.5">

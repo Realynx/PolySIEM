@@ -11,7 +11,13 @@ import {
   type CommandRunner,
   type ObservedHostKey,
 } from "@/lib/integrations/edge-nat/ssh";
-import { CONNECTOR_AGENT_PATH, canonicalConnectorRuleset, connectorRulesetHash, type ConnectorRoute } from "./agent";
+import {
+  CONNECTOR_AGENT_PATH,
+  canonicalConnectorRuleset,
+  connectorRulesetHash,
+  type ConnectorRoute,
+  type ConnectorRuleset,
+} from "./agent";
 
 /**
  * SSH transport for connectors — the second management path added in phase 2.
@@ -180,90 +186,88 @@ export async function runConnectorSsh(
 }
 
 // ---------------------------------------------------------------------------
-// APPLY wire protocol (§1c)
+// APPLY wire protocol v2 (§2 of the independence contract)
+//
+// A connector is standalone and may serve SEVERAL edge servers at once. It runs
+// ONE WireGuard interface carrying one PEER and one ADDRESS per linked edge, so
+// the payload gained an `IFACE` line and became 1..n `TUNNEL` lines. Because two
+// edges may publish the same public port, every `ROUTE` is scoped by the
+// connector's tunnel address on the edge that published it (`localAddress`).
 // ---------------------------------------------------------------------------
 
-/** WireGuard parameters pushed to the connector. NEVER carries a private key. */
-export interface ConnectorApplyTunnel {
-  interfaceName: string;
-  /** The connector's own tunnel address WITH prefix, e.g. `10.9.9.3/24`. */
-  address: string;
-  /** Edge endpoint the connector dials out to, e.g. `23.94.251.183:51820`. */
-  endpoint: string;
-  /** Edge WireGuard PUBLIC key. */
-  publicKey: string;
-  allowedIps: string[];
-  persistentKeepalive: number;
-}
-
-export interface ConnectorApplyPlan {
+/**
+ * One APPLY push. The ruleset itself — the interface, one tunnel per enabled
+ * link, and every route across those edges — is the generator's frozen shape
+ * (`./agent.ts`), imported rather than restated so the control plane can never
+ * render bytes the on-host agent will not reproduce.
+ */
+export interface ConnectorApplyPlan extends ConnectorRuleset {
   revision: number;
-  tunnel: ConnectorApplyTunnel;
-  routes: readonly ConnectorRoute[];
 }
 
 const INTERFACE_PATTERN = /^[A-Za-z0-9_.:-]{1,15}$/;
 const WG_KEY_PATTERN = /^[A-Za-z0-9+/]{43}=$/;
 const CIDR_PATTERN = /^(\d{1,3}\.){3}\d{1,3}\/(3[0-2]|[12]?\d)$/;
-const ENDPOINT_PATTERN = /^[A-Za-z0-9._~:[\]-]{1,255}:\d{1,5}$/;
+const IPV4_PATTERN = /^(\d{1,3}\.){3}\d{1,3}$/;
 
 function assertField(condition: boolean, message: string): void {
   if (!condition) throw new Error(`Connector APPLY payload: ${message}`);
 }
 
 /**
- * Render the APPLY protocol the connector agent reads from stdin (§1c):
+ * A route may only be scoped to an address this connector actually holds.
+ *
+ * Everything else about a tunnel or a route (edge key, CIDRs, endpoint, keys,
+ * protocol, ports, target) is validated by `canonicalConnectorRuleset` — the
+ * exact code the on-host agent mirrors — so it is deliberately NOT restated
+ * here. What only the control plane can check is the cross-reference: a route
+ * whose `localAddress` belongs to no tunnel in this same payload would render a
+ * DNAT the connector can never match.
+ */
+function assertApplyRoute(route: ConnectorRoute, index: number, held: Set<string>): void {
+  const where = `route #${index + 1}`;
+  assertField(IPV4_PATTERN.test(String(route.localAddress ?? "")), `${where}: localAddress must be an IPv4 address`);
+  assertField(
+    held.has(route.localAddress),
+    `${where}: localAddress ${route.localAddress} is not one of this connector's tunnel addresses`,
+  );
+}
+
+/**
+ * Render the APPLY protocol the connector agent reads from stdin (§2):
  *
  * ```text
  * APPLY
  * META\t<revision>\t<rulesetHash>
- * TUNNEL\t<iface>\t<addressCidr>\t<endpoint>\t<edgePublicKey>\t<allowedIpsCsv>\t<keepalive>
- * ROUTE\t<proto>\t<listenPort>\t<targetAddress>\t<targetPort>   (zero or more)
+ * IFACE\t<interfaceName>
+ * TUNNEL\t<edgeKey>\t<tunnelAddressCidr>\t<edgeEndpoint>\t<edgePublicKey>\t<allowedIpsCsv>\t<keepalive>
+ * ROUTE\t<localAddress>\t<protocol>\t<listenPort>\t<targetAddress>\t<targetPort>
  * END
  * ```
  *
- * The ROUTE lines are taken VERBATIM from {@link canonicalConnectorRuleset}, so
- * what travels on the wire is byte-identical to what both sides hash. The agent
- * recomputes `sha256(canonical)` over the lines it parsed and refuses the apply
+ * The body between `META` and `END` is {@link canonicalConnectorRuleset} minus
+ * its `CXRULESET` header — taken VERBATIM, so what travels on the wire is
+ * byte-identical to what both sides hash, in the one order they agree on. The
+ * agent recomputes `sha256(canonical)` over the lines it parsed and fails closed
  * when it does not equal the `rulesetHash` in META.
  *
  * No private key of any kind appears in this payload.
  */
 export function buildConnectorApplyProtocol(plan: ConnectorApplyPlan): string {
-  const { revision, tunnel, routes } = plan;
+  const { revision, interfaceName, tunnels, routes } = plan;
   assertField(Number.isSafeInteger(revision) && revision >= 1 && revision <= 999_999_999, "revision is out of range");
-  assertField(INTERFACE_PATTERN.test(tunnel.interfaceName), "interface name is not a Linux interface name");
-  assertField(CIDR_PATTERN.test(tunnel.address), "tunnel address must be IPv4 CIDR, e.g. 10.9.9.3/24");
-  assertField(ENDPOINT_PATTERN.test(tunnel.endpoint), "edge endpoint must be host:port");
-  assertField(WG_KEY_PATTERN.test(tunnel.publicKey), "edge WireGuard public key is malformed");
-  assertField(tunnel.allowedIps.length > 0, "at least one AllowedIP is required");
-  for (const cidr of tunnel.allowedIps) assertField(CIDR_PATTERN.test(cidr), `AllowedIP "${cidr}" is not IPv4 CIDR`);
-  assertField(
-    Number.isInteger(tunnel.persistentKeepalive) && tunnel.persistentKeepalive >= 0 && tunnel.persistentKeepalive <= 65535,
-    "keepalive is out of range",
-  );
+  assertField(tunnels.length > 0, "a connector needs at least one enabled edge link before it can be configured");
+  const held = new Set(tunnels.map((tunnel) => String(tunnel.address ?? "").split("/")[0]));
+  routes.forEach((route, index) => assertApplyRoute(route, index, held));
 
-  // canonicalConnectorRuleset validates every route and returns the frozen,
-  // sorted, de-duplicated line set. Dropping its header leaves exactly the
-  // ROUTE lines, in the one order both ends agree on.
-  const routeLines = canonicalConnectorRuleset(routes).split("\n").slice(1).filter((line) => line.length > 0);
-  const rulesetHash = connectorRulesetHash(routes);
-
-  return [
-    "APPLY",
-    `META\t${revision}\t${rulesetHash}`,
-    [
-      "TUNNEL",
-      tunnel.interfaceName,
-      tunnel.address,
-      tunnel.endpoint,
-      tunnel.publicKey,
-      tunnel.allowedIps.join(","),
-      String(tunnel.persistentKeepalive),
-    ].join("\t"),
-    ...routeLines,
-    "END",
-  ].join("\n") + "\n";
+  // canonicalConnectorRuleset validates every field and returns the frozen,
+  // sorted, de-duplicated document. Dropping ONLY its `CXRULESET` header leaves
+  // exactly the IFACE + TUNNEL + ROUTE body the protocol calls for, in the one
+  // order both ends agree on — so the wire bytes and the hashed bytes are the
+  // same bytes, by construction rather than by convention.
+  const ruleset: ConnectorRuleset = { interfaceName, tunnels, routes };
+  const body = canonicalConnectorRuleset(ruleset).split("\n").slice(1).filter((line) => line.length > 0);
+  return ["APPLY", `META\t${revision}\t${connectorRulesetHash(ruleset)}`, ...body, "END"].join("\n") + "\n";
 }
 
 export interface ConnectorApplyAcknowledgement {
@@ -304,6 +308,19 @@ export function connectorApplyExitReason(code: number): string | null {
 
 export type ConnectorWireguardState = "up" | "down" | "absent";
 
+/**
+ * One `WG_PEER` line from STATUS v2 (§2) — a connector now holds one peer per
+ * linked edge, so the aggregate `WG_LATEST_HANDSHAKE` alone cannot say WHICH
+ * edge is healthy. `publicKey` is the EDGE's WireGuard public key (the peer as
+ * seen from the connector), which is how PolySIEM maps a handshake back to a link.
+ */
+export interface ConnectorPeerStatus {
+  publicKey: string;
+  latestHandshakeAt: string | null;
+  rxBytes: number;
+  txBytes: number;
+}
+
 /** Everything the connector reports about itself. Contains no secret material. */
 export interface ConnectorSshStatus {
   hostname: string;
@@ -319,6 +336,8 @@ export interface ConnectorSshStatus {
   /** ISO timestamp of the newest peer handshake, or null when there is none. */
   latestHandshakeAt: string | null;
   peers: number;
+  /** Per-peer detail (STATUS v2). Empty for a v1 agent, which reports no WG_PEER lines. */
+  peerDetails: ConnectorPeerStatus[];
   ipForward: boolean;
   appliedRevision: number;
   appliedHash: string | null;
@@ -338,6 +357,7 @@ function statusDefaults(): ConnectorSshStatus {
     wgAddress: null,
     latestHandshakeAt: null,
     peers: 0,
+    peerDetails: [],
     ipForward: false,
     appliedRevision: 0,
     appliedHash: null,
@@ -382,18 +402,47 @@ const TUNNEL_LINE_PARSERS = new Map<string, (value: string, status: ConnectorSsh
     status.peers = Math.max(0, Number.parseInt(value, 10) || 0);
   }],
   ["WG_LATEST_HANDSHAKE", (value, status) => {
-    const epoch = Number.parseInt(value, 10);
-    // Guard against a bogus epoch: Date(NaN).toISOString() throws.
-    status.latestHandshakeAt = Number.isFinite(epoch) && epoch > 0 && epoch < 4_102_444_800
-      ? new Date(epoch * 1000).toISOString()
-      : null;
+    status.latestHandshakeAt = handshakeIso(value);
   }],
 ]);
+
+/** Epoch seconds → ISO, or null. Guards against a bogus epoch: `Date(NaN).toISOString()` throws. */
+function handshakeIso(value: string): string | null {
+  const epoch = Number.parseInt(value, 10);
+  return Number.isFinite(epoch) && epoch > 0 && epoch < 4_102_444_800
+    ? new Date(epoch * 1000).toISOString()
+    : null;
+}
+
+/** A byte counter, clamped to a sane non-negative integer (no BigInt: ES2017). */
+function counter(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
 
 function applyTunnelLine(status: ConnectorSshStatus, kind: string, value: string): boolean {
   const parse = TUNNEL_LINE_PARSERS.get(kind);
   if (!parse) return false;
   parse(value, status);
+  return true;
+}
+
+/**
+ * `WG_PEER\t<peerPublicKey>\t<latestHandshakeEpoch>\t<rxBytes>\t<txBytes>` (§2).
+ * Repeated once per peer. A malformed line is dropped rather than aborting the
+ * parse — STATUS must stay readable from a half-provisioned box.
+ */
+function applyPeerLine(status: ConnectorSshStatus, kind: string, value: string): boolean {
+  if (kind !== "WG_PEER") return false;
+  const [publicKey, handshake, rx, tx] = value.split("\t");
+  if (WG_KEY_PATTERN.test(publicKey ?? "")) {
+    status.peerDetails.push({
+      publicKey,
+      latestHandshakeAt: handshakeIso(handshake ?? ""),
+      rxBytes: counter(rx),
+      txBytes: counter(tx),
+    });
+  }
   return true;
 }
 
@@ -415,7 +464,10 @@ function applyRulesetLine(status: ConnectorSshStatus, kind: string, value: strin
  */
 export function parseConnectorSshStatus(stdout: string): ConnectorSshStatus {
   const lines = stdout.split(/\r?\n/);
-  if (lines.shift()?.trim() !== CONNECTOR_STATUS_HEADER) {
+  // Accept any banner generation: STATUS v2 is purely additive (it keeps every
+  // v1 key and adds WG_PEER lines), so refusing a newer banner would break a
+  // connector that upgraded before PolySIEM did.
+  if (!/^POLYSIEM_CONNECTOR_STATUS_V\d{1,3}$/.test(lines.shift()?.trim() ?? "")) {
     throw new Error("The connector agent returned an unsupported status response");
   }
   const status = statusDefaults();
@@ -424,6 +476,7 @@ export function parseConnectorSshStatus(stdout: string): ConnectorSshStatus {
     const [kind, ...rest] = line.split("\t");
     const value = rest.join("\t").trim();
     if (applyIdentityLine(status, kind, value)) continue;
+    if (applyPeerLine(status, kind, value)) continue;
     if (applyTunnelLine(status, kind, value)) continue;
     applyRulesetLine(status, kind, value);
   }

@@ -7,7 +7,7 @@ import { toJsonSafe } from "@/lib/serialize";
 type Ctx = { params: Promise<{ id: string }> };
 
 /**
- * The paste-ready far-side WireGuard block for one connector.
+ * The paste-ready far-side WireGuard block for one connector on ONE edge server.
  *
  * This is how a MANUAL connector (`opnsense` / `peer`) is set up at all: PolySIEM
  * cannot program an OPNsense box, so the operator gets the exact values to enter
@@ -15,10 +15,16 @@ type Ctx = { params: Promise<{ id: string }> };
  * the edge peer, the tunnel address PolySIEM allocated for that far side, and the
  * keepalive. Everything here is public material; no key of ours is ever included.
  *
+ * A connector can serve several edge servers, and each link has its OWN tunnel
+ * address, so there is one block per edge: `?integrationId=` picks it, and
+ * without it the connector's first enabled link is used. 400 `connector_not_linked`
+ * when the connector does not serve that edge (or serves none at all).
+ *
  * Also served for `agent` connectors, where it is purely informational.
  */
-export const GET = handleApi(async (_req: NextRequest, ctx: Ctx) => {
+export const GET = handleApi(async (req: NextRequest, ctx: Ctx) => {
   await requireUser();
   const { id } = await ctx.params;
-  return jsonOk(toJsonSafe(await getConnectorPeerConfig(id)));
+  const integrationId = req.nextUrl.searchParams.get("integrationId")?.trim() || undefined;
+  return jsonOk(toJsonSafe(await getConnectorPeerConfig(id, integrationId)));
 });
