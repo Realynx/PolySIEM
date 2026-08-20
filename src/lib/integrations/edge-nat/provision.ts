@@ -54,7 +54,11 @@ export async function runEdgeNatProvisioning(
       "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
       "-o", `UserKnownHostsFile=${knownHostsPath}`, "-o", "GlobalKnownHostsFile=none",
       "-o", "ConnectTimeout=10", `${admin}@${host}`, "polysiem-edge-bootstrap",
-    ], buildEdgeAgentInstallScript(settings.publicKey, credentials.username, admin), 90_000);
+      // The installer now installs missing dependencies (wireguard-tools and
+      // friends) through the host package manager, so this budget has to cover
+      // an apt/dnf run — normally 10-30s, but a slow or stale mirror can take
+      // far longer, and timing out here leaves the box half-provisioned.
+    ], buildEdgeAgentInstallScript(settings.publicKey, credentials.username, admin), 300_000);
     if (result.code !== 0) throw provisioningError(result);
     return { stdout: result.stdout.trim().slice(0, 2_000) };
   } finally {

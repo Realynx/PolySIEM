@@ -7,9 +7,13 @@ import { CopyButton } from "@/components/ssh/copy-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  connectorKindOf,
+  connectorKindPresentation,
   connectorLinkEdgeName,
   connectorLinks,
+  connectorPeerSettingsAction,
   isConnectorLinkEnabled,
+  isManualConnector,
   type ConnectorDto,
   type ConnectorLinkDto,
   type EdgeNatServer,
@@ -26,15 +30,24 @@ export function ConnectorEdgeLinks({
   isAdmin,
   onLink,
   onUnlink,
+  onPeerSettings,
 }: {
   connector: ConnectorDto;
   servers: EdgeNatServer[];
   isAdmin: boolean;
   onLink: () => void;
   onUnlink: (link: ConnectorLinkDto) => void;
+  /**
+   * Opens ONE edge's peer settings. A manual connector needs this per row: with
+   * two edge boxes, a single action for the whole connector cannot say which
+   * edge's values you are about to read.
+   */
+  onPeerSettings?: (link: ConnectorLinkDto) => void;
 }) {
   const links = connectorLinks(connector);
   const canLinkMore = servers.length > links.length;
+  const manual = isManualConnector(connector);
+  const farSide = connectorKindPresentation(connectorKindOf(connector)).farSide;
   return (
     <div className="mt-3 rounded-lg border">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/20 px-3 py-2">
@@ -55,18 +68,30 @@ export function ConnectorEdgeLinks({
           connector can serve as many as you need.
         </p>
       ) : (
-        <ul className="divide-y">
-          {links.map((link) => (
-            <ConnectorLinkRow
-              key={link.id}
-              link={link}
-              edgeName={connectorLinkEdgeName(link, servers)}
-              connectorName={connector.name}
-              isAdmin={isAdmin}
-              onUnlink={() => onUnlink(link)}
-            />
-          ))}
-        </ul>
+        <>
+          <ul className="divide-y">
+            {links.map((link) => (
+              <ConnectorLinkRow
+                key={link.id}
+                link={link}
+                edgeName={connectorLinkEdgeName(link, servers)}
+                connectorName={connector.name}
+                isAdmin={isAdmin}
+                onUnlink={() => onUnlink(link)}
+                onPeerSettings={manual && onPeerSettings ? () => onPeerSettings(link) : undefined}
+              />
+            ))}
+          </ul>
+          {manual && (
+            <p className="border-t px-3 py-2 text-xs text-muted-foreground">
+              Every edge box above is its own peer entry on {farSide}, with its own tunnel address — they sit alongside
+              each other, so adding one never replaces another.
+              {isAdmin && onPeerSettings && (
+                <> Open <span className="font-medium">Peer settings</span> on a row for exactly that edge&apos;s values.</>
+              )}
+            </p>
+          )}
+        </>
       )}
     </div>
   );
@@ -78,14 +103,18 @@ function ConnectorLinkRow({
   connectorName,
   isAdmin,
   onUnlink,
+  onPeerSettings,
 }: {
   link: ConnectorLinkDto;
   edgeName: string;
   connectorName: string;
   isAdmin: boolean;
   onUnlink: () => void;
+  /** Set only for a manual connector, whose far side has to be typed into. */
+  onPeerSettings?: () => void;
 }) {
   const live = isConnectorLinkEnabled(link);
+  const peerAction = connectorPeerSettingsAction({ connectorName, edgeName });
   return (
     <li className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2", !live && "bg-muted/20")}>
       <span className="min-w-0 flex-1 truncate text-sm font-medium">{edgeName}</span>
@@ -98,6 +127,19 @@ function ConnectorLinkRow({
         {link.lastHandshakeAt ? formatRelative(link.lastHandshakeAt) : "No handshake yet"}
       </span>
       {!live && <Badge variant="outline" className="font-normal">Suspended</Badge>}
+      {isAdmin && onPeerSettings && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7"
+          aria-label={peerAction.ariaLabel}
+          title={peerAction.title}
+          onClick={onPeerSettings}
+        >
+          <Waypoints /> {peerAction.label}
+        </Button>
+      )}
       {isAdmin && (
         <Button
           type="button"

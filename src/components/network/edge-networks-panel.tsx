@@ -100,6 +100,8 @@ import {
   type EdgeSyncSummary,
   type EdgeSyncTone,
 } from "./edge-sync-presentation";
+import { edgeCardsStartExpanded } from "./cloudflare-presentation";
+import { EdgeCardCollapseTrigger } from "./edge-card-collapse";
 import { CloudflarePublishedRoutes } from "./edge-cloudflare-routes";
 import { ConnectorsCard, useAllConnectorsQuery, useConnectorsQuery } from "./connectors-card";
 import { ConnectorsTab } from "./connectors-tab";
@@ -292,7 +294,14 @@ function EdgeServersTab({
       <EdgeFleetStrip servers={servers} counts={counts} isAdmin={isAdmin} />
       <EdgeCleanupNotice servers={servers} />
       {servers.map((server) => (
-        <EdgeServerCard key={server.id} server={server} servers={servers} isAdmin={isAdmin} />
+        <EdgeServerCard
+          key={server.id}
+          server={server}
+          servers={servers}
+          isAdmin={isAdmin}
+          /* Same rule as the Cloudflare tunnels: a few cards open, a fleet does not. */
+          defaultExpanded={edgeCardsStartExpanded(servers.length)}
+        />
       ))}
     </section>
   );
@@ -487,18 +496,26 @@ function EdgeNetworkTabEmpty({
  * the facts an operator scans for — and everything that is a *place to work*
  * (routes, connectors, the tunnel, interfaces) sits behind the card's own tab
  * bar, so a server with three connectors and a dozen rules stays one screen.
+ *
+ * That work area also collapses, exactly as a Cloudflare tunnel card does. What
+ * stays visible when it is collapsed is the head: name, state badge, the sync
+ * line, and the route count on the collapse control itself.
  */
 function EdgeServerCard({
   server,
   servers,
   isAdmin,
+  defaultExpanded,
 }: {
   server: EdgeNatServer;
   /** Every edge box, so a connector row can name the others it also serves. */
   servers: EdgeNatServer[];
   isAdmin: boolean;
+  defaultExpanded: boolean;
 }) {
   const queryClient = useQueryClient();
+  // Remembered per card, for as long as it is mounted.
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [ruleDialog, setRuleDialog] = useState<{ open: boolean; rule: EdgeNatRule | null }>({ open: false, rule: null });
   const [deleteRule, setDeleteRule] = useState<EdgeNatRule | null>(null);
   const [enrollmentOpen, setEnrollmentOpen] = useState(false);
@@ -539,60 +556,67 @@ function EdgeServerCard({
 
   return (
     <Card>
-      {/* Tier 1, never tabbed: who this box is, whether PolySIEM can reach it,
-          whether what is configured is actually live, and the one button that
-          resolves the difference. */}
-      <CardHeader className="gap-3 border-b pb-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <EdgeServerIdentity server={server} />
-          {isAdmin && server.enabled && (
-            <EdgeServerActions
-              server={server}
-              verifying={verifyMutation.isPending}
-              onSetupSsh={() => setEnrollmentOpen(true)}
-              onVerify={() => verifyMutation.mutate()}
-              onAddRule={() => openRule(null)}
-            />
-          )}
-        </div>
+      <Collapsible open={expanded} onOpenChange={setExpanded} className="flex flex-col gap-(--card-spacing)">
+        {/* Tier 1, never tabbed and never collapsed: who this box is, whether
+            PolySIEM can reach it, whether what is configured is actually live,
+            and the one button that resolves the difference. */}
+        <CardHeader className="gap-3 border-b pb-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <EdgeServerIdentity server={server} />
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {isAdmin && server.enabled && (
+                <EdgeServerActions
+                  server={server}
+                  verifying={verifyMutation.isPending}
+                  onSetupSsh={() => setEnrollmentOpen(true)}
+                  onVerify={() => verifyMutation.mutate()}
+                  onAddRule={() => openRule(null)}
+                />
+              )}
+              <EdgeCardCollapseTrigger expanded={expanded} count={server.rules.length} name={server.name} />
+            </div>
+          </div>
 
-        <EdgeSyncBar
-          server={server}
-          isAdmin={isAdmin}
-          applying={applyMutation.isPending}
-          onApply={() => applyMutation.mutate()}
-          onClear={() => setClearOpen(true)}
-        />
-        <EdgeServerAlerts server={server} isAdmin={isAdmin} onSetupSsh={() => setEnrollmentOpen(true)} />
-      </CardHeader>
+          <EdgeSyncBar
+            server={server}
+            isAdmin={isAdmin}
+            applying={applyMutation.isPending}
+            onApply={() => applyMutation.mutate()}
+            onClear={() => setClearOpen(true)}
+          />
+          <EdgeServerAlerts server={server} isAdmin={isAdmin} onSetupSsh={() => setEnrollmentOpen(true)} />
+        </CardHeader>
 
-      <CardContent>
-        {server.enabled ? (
-          <EdgeServerTabs
-            server={server}
-            servers={servers}
-            isAdmin={isAdmin}
-            connectors={connectors}
-            tab={tab}
-            onTabChange={setTab}
-            linkOpen={linkOpen}
-            onLinkOpenChange={setLinkOpen}
-            onAddRule={() => openRule(null)}
-            onEditRule={(rule) => openRule(rule)}
-            onDeleteRule={setDeleteRule}
-            onSetupEdgeSsh={() => setEnrollmentOpen(true)}
-          />
-        ) : (
-          <EdgeNatRulesTab
-            server={server}
-            connectors={connectors}
-            isAdmin={isAdmin}
-            onAdd={() => openRule(null)}
-            onEdit={(rule) => openRule(rule)}
-            onDelete={setDeleteRule}
-          />
-        )}
-      </CardContent>
+        <CollapsibleContent>
+          <CardContent>
+            {server.enabled ? (
+              <EdgeServerTabs
+                server={server}
+                servers={servers}
+                isAdmin={isAdmin}
+                connectors={connectors}
+                tab={tab}
+                onTabChange={setTab}
+                linkOpen={linkOpen}
+                onLinkOpenChange={setLinkOpen}
+                onAddRule={() => openRule(null)}
+                onEditRule={(rule) => openRule(rule)}
+                onDeleteRule={setDeleteRule}
+                onSetupEdgeSsh={() => setEnrollmentOpen(true)}
+              />
+            ) : (
+              <EdgeNatRulesTab
+                server={server}
+                connectors={connectors}
+                isAdmin={isAdmin}
+                onAdd={() => openRule(null)}
+                onEdit={(rule) => openRule(rule)}
+                onDelete={setDeleteRule}
+              />
+            )}
+          </CardContent>
+        </CollapsibleContent>
+      </Collapsible>
 
       <SshEnrollmentDialog server={server} open={enrollmentOpen} onOpenChange={setEnrollmentOpen} />
       <NatRuleDialog

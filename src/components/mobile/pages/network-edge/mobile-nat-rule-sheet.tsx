@@ -2,7 +2,7 @@
 
 import { type FormEvent, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Cable, Link2, Loader2, Route, TriangleAlert } from "lucide-react";
+import { Cable, Link2, Loader2, Route } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
@@ -14,7 +14,6 @@ import { Switch } from "@/components/ui/switch";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import {
   connectorKindLabel,
-  connectorRouteWarning,
   connectorTunnelAddressFor,
   connectorsAvailableToLink,
   edgeTunnelSetupNotice,
@@ -32,6 +31,7 @@ import {
   type NatRuleInput,
 } from "@/components/network/edge-networks-types";
 import { isValidNetworkPort } from "@/components/network/edge-network-utils";
+import { MobileConnectorSetupDisclosure } from "./mobile-connector-instructions";
 import { useAllConnectorsQuery, useLinkConnectorMutation } from "./mobile-connector-links";
 import { useConnectorsQuery } from "./mobile-connectors";
 import { MobileOptionCard } from "./mobile-form-controls";
@@ -144,30 +144,29 @@ function NatRuleRouteModePicker({
 }
 
 /**
- * Which connector carries the route, plus the manual-peer warning: PolySIEM
- * cannot program a hand-configured far end, so the operator has to.
+ * Which connector carries the route, plus what still has to happen on the far
+ * side of a hand-configured one. PolySIEM stops at the tunnel there, which is
+ * ordinary — so the steps are neutral and collapsed, not a warning, and they
+ * carry this form's live protocol, ports and addresses.
  */
 function NatRuleConnectorField({
   server,
   connectors,
-  connectorId,
   onChange,
-  publicPort,
+  form,
 }: {
   server: EdgeNatServer;
   connectors: readonly ConnectorDto[];
-  connectorId: string;
   onChange: (id: string) => void;
-  publicPort: string;
+  /** The live form: the chosen connector, and the values the steps show. */
+  form: NatRuleFormState;
 }) {
-  const selected = connectors.find((connector) => connector.id === connectorId) ?? null;
-  // Non-null only for manual kinds: PolySIEM cannot program the far side there.
-  const warning = selected ? connectorRouteWarning(selected, { publicPort: publicPort || null }) : null;
+  const selected = connectors.find((connector) => connector.id === form.connectorId) ?? null;
   const address = selected ? connectorTunnelAddressFor(selected, server.id) : null;
   return (
     <div className="grid gap-1.5">
       <Label>Connector</Label>
-      <Select value={connectorId} onValueChange={onChange}>
+      <Select value={form.connectorId} onValueChange={onChange}>
         <SelectTrigger className="w-full">
           <SelectValue placeholder="Choose a connector" />
         </SelectTrigger>
@@ -184,14 +183,17 @@ function NatRuleConnectorField({
         {address ? ` ${address}, this connector's address on this edge.` : " the connector's address on this edge."}{" "}
         The port is preserved across the tunnel.
       </p>
-      {warning && (
-        <div className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
-          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          <span className="min-w-0">
-            <span className="block font-medium">{warning.title}</span>
-            <span className="mt-0.5 block leading-snug">{warning.detail}</span>
-          </span>
-        </div>
+      {selected && (
+        <MobileConnectorSetupDisclosure
+          connector={selected}
+          rule={{
+            protocol: form.protocol,
+            publicPort: form.publicPort,
+            targetAddress: form.targetAddress,
+            targetPort: form.targetPort,
+          }}
+          integrationId={server.id}
+        />
       )}
     </div>
   );
@@ -208,7 +210,10 @@ function NatRuleLinkConnectorField({ server }: { server: EdgeNatServer }) {
   const [choice, setChoice] = useState("");
   const allConnectors = useAllConnectorsQuery();
   const linkable = connectorsAvailableToLink(allConnectors.data ?? [], server.id);
-  const mutation = useLinkConnectorMutation(() => setChoice(""));
+  const chosen = linkable.find((connector) => connector.id === choice) ?? null;
+  // No `onPeerSetup`: this form owns the screen, so a manual kind is told in the
+  // toast where that edge's peer block lives rather than being interrupted.
+  const mutation = useLinkConnectorMutation({ onDone: () => setChoice("") });
   // Linking is also what brings this edge's tunnel up, when it has none yet.
   const tunnelPending = edgeTunnelSetupNotice(server);
 
@@ -242,8 +247,8 @@ function NatRuleLinkConnectorField({ server }: { server: EdgeNatServer }) {
             type="button"
             variant="outline"
             className="w-full"
-            disabled={!choice || mutation.isPending}
-            onClick={() => mutation.mutate({ connectorId: choice, integrationId: server.id })}
+            disabled={!chosen || mutation.isPending}
+            onClick={() => chosen && mutation.mutate({ connector: chosen, server })}
           >
             {mutation.isPending ? <Loader2 className="animate-spin" /> : <Link2 />} Link to this edge
           </Button>
@@ -410,9 +415,8 @@ export function MobileNatRuleSheet({
           <NatRuleConnectorField
             server={server}
             connectors={usable}
-            connectorId={form.connectorId}
             onChange={(connectorId) => update({ connectorId })}
-            publicPort={form.publicPort}
+            form={form}
           />
         )}
         {usable.length === 0 && !connectorsQuery.isLoading && <NatRuleLinkConnectorField server={server} />}

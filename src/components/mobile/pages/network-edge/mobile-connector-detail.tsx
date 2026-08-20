@@ -123,16 +123,23 @@ function ConnectorLinksBlock({
   connector,
   edges,
   isAdmin,
+  manual,
   onOpenLink,
   onLinkEdge,
+  onPeerSetup,
 }: {
   connector: ConnectorDto;
   edges: readonly EdgeNatServer[];
   isAdmin: boolean;
+  manual: boolean;
   onOpenLink: (connector: ConnectorDto, link: ConnectorLinkDto) => void;
   onLinkEdge: (connector: ConnectorDto) => void;
+  onPeerSetup: (connector: ConnectorDto, link: ConnectorLinkDto) => void;
 }) {
   const linked = connectorLinks(connector).length;
+  // Manual kinds only, and only for an admin: the peer sheet ends in a form that
+  // writes the far side's key back, which is an admin action.
+  const perEdgePeerSetup = manual && isAdmin ? (link: ConnectorLinkDto) => onPeerSetup(connector, link) : null;
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2 px-0.5">
@@ -141,7 +148,20 @@ function ConnectorLinksBlock({
         </span>
         <span className="text-[11px] text-muted-foreground">{connectorLinkSummary(connector).label}</span>
       </div>
-      <ConnectorLinkList connector={connector} edges={edges} onSelect={(link) => onOpenLink(connector, link)} />
+      <ConnectorLinkList
+        connector={connector}
+        edges={edges}
+        onSelect={(link) => onOpenLink(connector, link)}
+        onPeerSetup={perEdgePeerSetup}
+      />
+      {/* Said only once there are two rows to tell apart — with a single edge the
+          per-row action explains itself and this would be noise. */}
+      {perEdgePeerSetup && linked > 1 && (
+        <p className="px-0.5 text-[11px] text-muted-foreground">
+          Each edge box has its own peer settings — its own endpoint, key and address — so the far side ends up with one
+          peer per row above.
+        </p>
+      )}
       {isAdmin && linked < edges.length && (
         <Button variant="outline" size="sm" className="w-full" onClick={() => onLinkEdge(connector)}>
           <Link2 /> Link to another edge
@@ -156,8 +176,8 @@ function ConnectorManualPanel() {
   return (
     <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
       PolySIEM does not manage this far end: no install token, no SSH key, no pushed rules. It is a WireGuard peer of
-      every edge it is linked to, and you configure it yourself — open a linked edge above for that edge&apos;s
-      paste-ready peer block.
+      every edge it is linked to, and you configure it yourself — tap Peer settings on an edge above for that
+      edge&apos;s paste-ready block.
     </p>
   );
 }
@@ -254,6 +274,7 @@ export function ConnectorDetailSheet({
   onScanHostKey,
   onOpenLink,
   onLinkEdge,
+  onPeerSetup,
   onDelete,
   onRotated,
 }: {
@@ -267,6 +288,8 @@ export function ConnectorDetailSheet({
   onScanHostKey: (connector: ConnectorDto) => void;
   onOpenLink: (connector: ConnectorDto, link: ConnectorLinkDto) => void;
   onLinkEdge: (connector: ConnectorDto) => void;
+  /** That ONE edge's paste-ready peer block, opened straight from its row. */
+  onPeerSetup: (connector: ConnectorDto, link: ConnectorLinkDto) => void;
   onDelete: (connector: ConnectorDto) => void;
   onRotated: (connector: ConnectorDto, minted: ConnectorInstallReveal) => void;
 }) {
@@ -291,8 +314,10 @@ export function ConnectorDetailSheet({
             connector={connector}
             edges={edges}
             isAdmin={isAdmin}
+            manual={manual}
             onOpenLink={onOpenLink}
             onLinkEdge={onLinkEdge}
+            onPeerSetup={onPeerSetup}
           />
 
           {manual ? (

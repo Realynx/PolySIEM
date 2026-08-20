@@ -16,7 +16,12 @@ import {
 } from "@/components/network/edge-networks-types";
 import { ConnectorDetailSheet, ConnectorHostKeySheet, ConnectorSshEndpointSheet } from "./mobile-connector-detail";
 import { ConnectorCreateSheet, ConnectorDeleteDialog, ConnectorEditSheet } from "./mobile-connector-forms";
-import { ConnectorEdgePickerSheet, ConnectorLinkSheet } from "./mobile-connector-links";
+import {
+  ConnectorEdgePickerSheet,
+  ConnectorLinkSheet,
+  EdgeConnectorPickerSheet,
+  useAllConnectorsQuery,
+} from "./mobile-connector-links";
 import {
   ConnectorInstallSheet,
   ConnectorPeerSetupSheet,
@@ -32,10 +37,15 @@ import {
  * link and delete sheets. The list presentations differ; the sheets do not, so
  * they live here and each list keeps only its own rows.
  *
- * The selected connector and the create sheet are controlled by the list (a row
- * tap, the FAB); everything a sheet opens from there is internal state. A
- * sub-sheet REPLACES the detail sheet and reopens it on close — two stacked
- * bottom sheets fight over the scroll lock on a phone.
+ * The selected connector, the create sheet and the edge-side link picker are
+ * controlled by the list (a row tap, the FAB, the "Link a connector" button);
+ * everything a sheet opens from there is internal state. A sub-sheet REPLACES
+ * the detail sheet and reopens it on close — two stacked bottom sheets fight
+ * over the scroll lock on a phone.
+ *
+ * Linking lives here too because of where it ENDS: a manual connector's link
+ * response carries the new edge's paste-ready peer block, and that block is
+ * presented by the same peer sheet both pickers hand off to.
  */
 interface ConnectorLinkTarget {
   connector: ConnectorDto;
@@ -51,6 +61,8 @@ export function ConnectorSheetHost({
   onSelectedIdChange,
   createOpen,
   onCreateOpenChange,
+  linkOpen = false,
+  onLinkOpenChange,
 }: {
   /** The live list this surface renders, so a sheet always shows fresh data. */
   connectors: readonly ConnectorDto[];
@@ -63,15 +75,23 @@ export function ConnectorSheetHost({
   onSelectedIdChange: (id: string | null) => void;
   createOpen: boolean;
   onCreateOpenChange: (open: boolean) => void;
+  /** Scoped surfaces only: pick an installed connector to link to this edge. */
+  linkOpen?: boolean;
+  onLinkOpenChange?: (open: boolean) => void;
 }) {
   const [editing, setEditing] = useState<ConnectorDto | null>(null);
   const [sshEditing, setSshEditing] = useState<ConnectorDto | null>(null);
   const [hostKeyFor, setHostKeyFor] = useState<ConnectorDto | null>(null);
   const [reveal, setReveal] = useState<InstallReveal | null>(null);
   const [peerSetup, setPeerSetup] = useState<ManualSetup | null>(null);
+  /** Which detail sheet the peer sheet came from, so closing it goes back there. */
+  const [peerReturnId, setPeerReturnId] = useState<string | null>(null);
   const [linkPickerFor, setLinkPickerFor] = useState<ConnectorDto | null>(null);
   const [linkTarget, setLinkTarget] = useState<ConnectorLinkTarget | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ConnectorDto | null>(null);
+  // Only fetched while the picker is open: linking is the one action that needs
+  // to see connectors this edge does not have.
+  const linkable = useAllConnectorsQuery({ enabled: linkOpen });
 
   const live = (id: string) => connectors.find((entry) => entry.id === id);
   const selected = (selectedId ? live(selectedId) : null) ?? null;
@@ -96,11 +116,26 @@ export function ConnectorSheetHost({
       server: server ?? firstLinkedEdge(connector, edges),
     });
   };
-  const openPeerSetup = (server: EdgeNatServer, connector: ConnectorDto, link: ConnectorLinkDto | null) => {
+  /**
+   * The peer block for ONE edge. `returnToId` keeps the phone's sub-sheet rule:
+   * opened from a connector's detail sheet (its per-edge action, its link sheet,
+   * or a link made from it), closing hands the operator back to that sheet;
+   * opened from an edge's connector list there is nothing to go back to.
+   */
+  const openPeerSetup = (setup: ManualSetup, returnToId: string | null) => {
     onSelectedIdChange(null);
     setLinkTarget(null);
-    setPeerSetup({ connector, server, link });
+    setLinkPickerFor(null);
+    onLinkOpenChange?.(false);
+    setPeerReturnId(returnToId);
+    setPeerSetup(setup);
   };
+  const closePeerSetup = () => {
+    setPeerSetup(null);
+    onSelectedIdChange(peerReturnId);
+    setPeerReturnId(null);
+  };
+  const openLinkPeerSetup = (setup: ManualSetup) => openPeerSetup(setup, linkPickerFor?.id ?? null);
 
   return (
     <>
@@ -117,6 +152,7 @@ export function ConnectorSheetHost({
           onSelectedIdChange(null);
           setLinkTarget({ connector, link });
         }}
+        onPeerSetup={(connector, link) => openLinkedPeerSetup(connector, link, edges, openPeerSetup)}
         onDelete={setConfirmDelete}
         onRotated={(connector, minted) => openReveal(connector, minted, scope)}
       />
@@ -139,8 +175,21 @@ export function ConnectorSheetHost({
         linkTarget={linkTarget}
         onClosePicker={(connector) => closeSubSheet(connector, () => setLinkPickerFor(null))}
         onCloseLink={(connector) => closeSubSheet(connector, () => setLinkTarget(null))}
-        onPeerSetup={openPeerSetup}
+        onLinkedPeerSetup={openLinkPeerSetup}
+        onPeerSetup={(server, connector, link) => openPeerSetup({ connector, server, link }, connector.id)}
       />
+
+      {/* The edge-side half of linking. It lives here, not on the list, because
+          a manual connector's link ends at the peer sheet mounted below. */}
+      {scope && linkOpen && (
+        <EdgeConnectorPickerSheet
+          server={scope}
+          connectors={linkable.data ?? []}
+          isLoading={linkable.isLoading}
+          onOpenChange={(open) => !open && onLinkOpenChange?.(false)}
+          onPeerSetup={(setup) => openPeerSetup(setup, null)}
+        />
+      )}
 
       <ConnectorSetupSheets
         connectors={connectors}
@@ -148,7 +197,7 @@ export function ConnectorSheetHost({
         reveal={reveal}
         peerSetup={peerSetup}
         onCloseReveal={() => setReveal(null)}
-        onClosePeerSetup={() => setPeerSetup(null)}
+        onClosePeerSetup={closePeerSetup}
       />
 
       {createOpen && (
@@ -180,6 +229,22 @@ export function ConnectorSheetHost({
       />
     </>
   );
+}
+
+/**
+ * The per-edge peer action on a linked-edge row. The block belongs to one edge,
+ * so it needs the edge server behind that link; a link pointing at an edge this
+ * surface never loaded has no block to show, so nothing opens.
+ */
+function openLinkedPeerSetup(
+  connector: ConnectorDto,
+  link: ConnectorLinkDto,
+  edges: readonly EdgeNatServer[],
+  open: (setup: ManualSetup, returnToId: string | null) => void,
+): void {
+  const server = edgeServerForLink(edges, link);
+  if (!server) return;
+  open({ connector, server, link }, connector.id);
 }
 
 /** The edge a sheet should talk about when the surface itself names none. */
@@ -237,6 +302,7 @@ function ConnectorLinkSheets({
   linkTarget,
   onClosePicker,
   onCloseLink,
+  onLinkedPeerSetup,
   onPeerSetup,
 }: {
   connectors: readonly ConnectorDto[];
@@ -246,6 +312,8 @@ function ConnectorLinkSheets({
   linkTarget: ConnectorLinkTarget | null;
   onClosePicker: (connector: ConnectorDto) => void;
   onCloseLink: (connector: ConnectorDto) => void;
+  /** Where a manual connector goes the moment it is linked to another edge. */
+  onLinkedPeerSetup: (setup: ManualSetup) => void;
   onPeerSetup: (server: EdgeNatServer, connector: ConnectorDto, link: ConnectorLinkDto) => void;
 }) {
   // Re-resolve against the live list so a link sheet reflects the latest
@@ -259,6 +327,7 @@ function ConnectorLinkSheets({
           connector={liveConnector(linkPickerFor)}
           edges={edges}
           onOpenChange={(open) => !open && onClosePicker(linkPickerFor)}
+          onPeerSetup={onLinkedPeerSetup}
         />
       )}
       {linkTarget && (

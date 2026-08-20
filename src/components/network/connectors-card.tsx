@@ -41,6 +41,7 @@ import {
   connectorKindPresentation,
   connectorLastContactAt,
   connectorLinkFor,
+  connectorPeerSettingsAction,
   connectorSshPresentation,
   connectorStatusPresentation,
   connectorTunnelAddressFor,
@@ -56,6 +57,7 @@ import {
   type ConnectorInstallReveal,
   type ConnectorLinkDto,
   type ConnectorPeerConfigDto,
+  type ConnectorPeerHandoff,
   type ConnectorTunnelProvisionedDto,
   type EdgeNatServer,
 } from "./edge-networks-types";
@@ -101,6 +103,25 @@ interface ConnectorSetupState {
   peerConfig?: ConnectorPeerConfigDto | null;
   /** Set when creating the connector also stood this edge's tunnel up. */
   tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
+  /** One edge box to scope a manual connector's peer settings to. */
+  focusIntegrationId?: string | null;
+}
+
+/**
+ * The peer settings for the edge a link just added, opened on the spot.
+ *
+ * `reason` is inert for a manual connector — no token, no install steps — so the
+ * flow reads as "here is what to paste on the far side", not as an install.
+ */
+function peerSetupFromHandoff(handoff: ConnectorPeerHandoff): ConnectorSetupState {
+  return {
+    connector: handoff.connector,
+    reason: "created",
+    reveal: null,
+    peerConfig: handoff.peerConfig,
+    tunnelProvisioned: handoff.tunnelProvisioned,
+    focusIntegrationId: handoff.integrationId,
+  };
 }
 
 /** Which per-connector dialog this edge card currently has open. */
@@ -208,7 +229,13 @@ export function ConnectorsCard({
         onRotate={(connector) => setDialogs({ ...NO_CONNECTOR_DIALOGS, rotating: connector })}
         onDelete={(connector) => setDialogs({ ...NO_CONNECTOR_DIALOGS, deleting: connector })}
         onUnlink={(connector, link) => setDialogs({ ...NO_CONNECTOR_DIALOGS, unlinking: { connector, link } })}
-        onPeerSetup={(connector) => setSetup({ connector, reason: "created", reveal: null })}
+        // Scoped to THIS edge: the row is about this edge box, so its block is.
+        onPeerSetup={(connector) => setSetup({
+          connector,
+          reason: "created",
+          reveal: null,
+          focusIntegrationId: server.id,
+        })}
       />
 
       {isAdmin && (
@@ -235,6 +262,7 @@ export function ConnectorsCard({
             connectors={linkable}
             open={linkDialogOpen}
             onOpenChange={setLinkDialogOpen}
+            onPeerSettings={(handoff) => setSetup(peerSetupFromHandoff(handoff))}
           />
           <ConnectorCardDialogSet dialogs={dialogs} servers={servers} onClose={close} onSetup={setSetup} />
         </>
@@ -242,7 +270,7 @@ export function ConnectorsCard({
 
       {setup && (
         <ConnectorInstallDialog
-          key={setup.reveal?.installToken ?? setup.connector.id}
+          key={setup.reveal?.installToken ?? `${setup.connector.id}:${setup.focusIntegrationId ?? "all"}`}
           open
           onOpenChange={(open) => !open && setSetup(null)}
           reveal={setup.reveal}
@@ -253,6 +281,7 @@ export function ConnectorsCard({
           liveConnector={connectors.find((entry) => entry.id === setup.connector.id)}
           servers={servers}
           contextServer={server}
+          focusIntegrationId={setup.focusIntegrationId}
           onSetupEdgeSsh={onSetupEdgeSsh}
           onLinkEdge={() => setDialogs({ ...NO_CONNECTOR_DIALOGS, linking: setup.connector })}
         />
@@ -310,6 +339,11 @@ function ConnectorCardDialogSet({
           servers={servers}
           open
           onOpenChange={(open) => !open && onClose()}
+          // Ends on the NEW edge's peer block, not on this card's edge.
+          onPeerSettings={(handoff) => {
+            onClose();
+            onSetup(peerSetupFromHandoff(handoff));
+          }}
         />
       )}
       {dialogs.unlinking && (
@@ -490,6 +524,7 @@ function ConnectorRow({
 
       <ConnectorRowManagement
         connector={connector}
+        edgeName={server.name}
         isAdmin={isAdmin}
         manual={manual}
         onPeerSetup={() => onPeerSetup(connector)}
@@ -540,14 +575,16 @@ function ConnectorRowActions({
   onUnlink: () => void;
   onPeerSetup: () => void;
 }) {
+  // Named per edge: with two edge boxes, "peer settings" alone cannot say which.
+  const peerAction = connectorPeerSettingsAction({ connectorName: connector.name, edgeName });
   return (
     <div className="flex shrink-0 gap-1">
       {manual && (
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label={`Show the peer settings for ${connector.name}`}
-          title="Peer settings for the far side"
+          aria-label={peerAction.ariaLabel}
+          title={peerAction.title}
           onClick={onPeerSetup}
         >
           <Waypoints />
@@ -645,17 +682,24 @@ function ConnectorRowFacts({
 /** What sits at the bottom of a row: SSH management, or the manual-peer note. */
 function ConnectorRowManagement({
   connector,
+  edgeName,
   isAdmin,
   manual,
   onPeerSetup,
 }: {
   connector: ConnectorDto;
+  /** The edge this row is on — the edge whose peer settings the button opens. */
+  edgeName: string;
   isAdmin: boolean;
   manual: boolean;
   onPeerSetup: () => void;
 }) {
   const ssh = connectorSshPresentation(connector);
-  if (manual) return <ManualConnectorSummary connector={connector} isAdmin={isAdmin} onPeerSetup={onPeerSetup} />;
+  if (manual) {
+    return (
+      <ManualConnectorSummary connector={connector} edgeName={edgeName} isAdmin={isAdmin} onPeerSetup={onPeerSetup} />
+    );
+  }
   if (isAdmin) return <ConnectorSshPanel connector={connector} />;
   if (!ssh.endpoint) return null;
   return (
@@ -674,14 +718,17 @@ function ConnectorRowManagement({
  */
 function ManualConnectorSummary({
   connector,
+  edgeName,
   isAdmin,
   onPeerSetup,
 }: {
   connector: ConnectorDto;
+  edgeName: string;
   isAdmin: boolean;
   onPeerSetup: () => void;
 }) {
   const kind = connectorKindPresentation(connectorKindOf(connector));
+  const peerAction = connectorPeerSettingsAction({ connectorName: connector.name, edgeName });
   return (
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2">
       <p className="min-w-0 flex-1 text-xs text-muted-foreground">
@@ -690,8 +737,15 @@ function ManualConnectorSummary({
           : <>PolySIEM is waiting for {kind.farSide}&apos;s public key. Until then it is not a tunnel peer and cannot carry a route.</>}
       </p>
       {isAdmin && (
-        <Button type="button" variant="outline" size="sm" onClick={onPeerSetup}>
-          <Waypoints /> {connector.publicKey ? "Peer settings" : "Finish setup"}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label={connector.publicKey ? peerAction.ariaLabel : undefined}
+          title={peerAction.title}
+          onClick={onPeerSetup}
+        >
+          <Waypoints /> {connector.publicKey ? `Peer settings for ${edgeName}` : "Finish setup"}
         </Button>
       )}
     </div>

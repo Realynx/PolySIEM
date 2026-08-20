@@ -23,9 +23,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ConnectorSetupDisclosure } from "./connector-setup-instructions";
 import {
   connectorKindLabel,
-  connectorRouteWarning,
   connectorTunnelAddressFor,
   connectorUnavailableReason,
   EDGE_NETWORKS_QUERY_KEY,
@@ -451,9 +451,9 @@ function NatRuleConnectorField({
     return <NatRuleNoConnectors serverName={server.name} onLinkConnector={onLinkConnector} />;
   }
   // A manual connector (OPNsense, or any hand-configured peer) ends PolySIEM's
-  // reach at the tunnel: it cannot program that side's forwarding.
+  // reach at the tunnel: it cannot program that side's forwarding, so the
+  // operator gets the exact steps — with this rule's own values — instead.
   const selected = connectors.find((connector) => connector.id === form.connectorId);
-  const warning = selected ? connectorRouteWarning(selected, { publicPort: form.publicPort }, server.id) : null;
   const address = selected ? connectorTunnelAddressFor(selected, server.id) : null;
   return (
     <div className="grid gap-1.5">
@@ -472,12 +472,18 @@ function NatRuleConnectorField({
         delivers it — that address is assigned automatically, and the same connector holds a different one on every
         other edge box it serves.
       </p>
-      {warning && (
-        <Alert variant="destructive">
-          <TriangleAlert />
-          <AlertTitle>{warning.title}</AlertTitle>
-          <AlertDescription>{warning.detail}</AlertDescription>
-        </Alert>
+      {selected && (
+        <ConnectorSetupDisclosure
+          connector={selected}
+          rule={{
+            publicPort: form.publicPort,
+            protocol: form.protocol,
+            targetAddress: form.targetAddress,
+            targetPort: form.targetPort,
+          }}
+          integrationId={server.id}
+          className="mt-1"
+        />
       )}
     </div>
   );

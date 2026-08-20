@@ -37,6 +37,7 @@ import {
   connectorKindLabel,
   connectorKindPresentation,
   connectorLinkEdgeName,
+  connectorLinkPeerHandoff,
   connectorLinks,
   connectorLinksUrl,
   connectorLinkUrl,
@@ -57,6 +58,7 @@ import {
   type ConnectorInstallReveal,
   type ConnectorKind,
   type ConnectorLinkDto,
+  type ConnectorPeerHandoff,
   type CreateConnectorResult,
   type EdgeNatServer,
   type LinkConnectorResult,
@@ -566,26 +568,47 @@ export function DeleteConnectorDialog({
   );
 }
 
+interface LinkMutationInput {
+  /** The connector being linked — its kind decides where the flow ends. */
+  connector: ConnectorDto;
+  integrationId: string;
+  message: string;
+}
+
 /**
  * POST a link and report it in the words of whichever side started it.
  *
  * A link may stand the edge's WireGuard tunnel up on the way through. When it
  * does, the response says so and the operator hears about it here — that tunnel
  * still needs an Apply, and nobody should have to go looking for it.
+ *
+ * The response also carries `peerConfig`: the paste-ready block for the edge
+ * just linked. For a MANUAL connector that block is the reason the link was
+ * made, so it is handed to the peer surface instead of being dropped. An agent
+ * connector has nothing to paste anywhere and ends on the toast, as before.
  */
-function useLinkMutation(onDone: () => void) {
+function useLinkMutation(options: {
+  onDone: () => void;
+  onPeerSettings?: (handoff: ConnectorPeerHandoff) => void;
+}) {
   const refresh = useConnectorRefresh();
   return useMutation({
-    mutationFn: (input: { connectorId: string; integrationId: string; message: string }) =>
-      apiFetch<LinkConnectorResult>(connectorLinksUrl(input.connectorId), {
+    mutationFn: (input: LinkMutationInput) =>
+      apiFetch<LinkConnectorResult>(connectorLinksUrl(input.connector.id), {
         method: "POST",
         body: JSON.stringify({ integrationId: input.integrationId }),
       }),
     onSuccess: (result, input) => {
       const tunnel = connectorTunnelProvisioned(result);
+      const handoff = connectorLinkPeerHandoff({
+        connector: input.connector,
+        integrationId: input.integrationId,
+        result,
+      });
       toast.success(input.message, tunnel ? { description: connectorTunnelProvisionedCopy(tunnel).toast } : undefined);
       refresh();
-      onDone();
+      options.onDone();
+      if (handoff) options.onPeerSettings?.(handoff);
     },
     onError: (error: Error) => toast.error(`Could not link the connector: ${error.message}`),
   });
@@ -602,6 +625,7 @@ export function LinkConnectorToEdgeDialog({
   connectors,
   open,
   onOpenChange,
+  onPeerSettings,
 }: {
   server: EdgeNatServer;
   /** Every edge box, so a tunnel PolySIEM has yet to create is described honestly. */
@@ -610,9 +634,11 @@ export function LinkConnectorToEdgeDialog({
   connectors: ConnectorDto[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Hands over the new edge's paste-ready block when a MANUAL connector links. */
+  onPeerSettings?: (handoff: ConnectorPeerHandoff) => void;
 }) {
   const [connectorId, setConnectorId] = useState("");
-  const mutation = useLinkMutation(() => onOpenChange(false));
+  const mutation = useLinkMutation({ onDone: () => onOpenChange(false), onPeerSettings });
   const selected = connectors.find((connector) => connector.id === connectorId) ?? null;
 
   return (
@@ -670,7 +696,7 @@ export function LinkConnectorToEdgeDialog({
             type="button"
             disabled={!connectorId || mutation.isPending}
             onClick={() => selected && mutation.mutate({
-              connectorId: selected.id,
+              connector: selected,
               integrationId: server.id,
               message: `${selected.name} now serves ${server.name}. Apply changes to add its tunnel peer.`,
             })}
@@ -690,15 +716,18 @@ export function LinkEdgeToConnectorDialog({
   servers,
   open,
   onOpenChange,
+  onPeerSettings,
 }: {
   connector: ConnectorDto;
   /** Every edge box; the ones already linked are filtered out here. */
   servers: EdgeNatServer[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Hands over the new edge's paste-ready block when a MANUAL connector links. */
+  onPeerSettings?: (handoff: ConnectorPeerHandoff) => void;
 }) {
   const [integrationId, setIntegrationId] = useState("");
-  const mutation = useLinkMutation(() => onOpenChange(false));
+  const mutation = useLinkMutation({ onDone: () => onOpenChange(false), onPeerSettings });
   const available = edgesAvailableForConnector(connector, servers);
   const selected = available.find((server) => server.id === integrationId) ?? null;
 
@@ -740,6 +769,9 @@ export function LinkEdgeToConnectorDialog({
             <p className="text-xs text-muted-foreground">
               After linking, that edge box can publish routes through {connector.name}. Apply changes there to bring the
               peer up.
+              {isManualConnector(connector)
+                ? ` PolySIEM shows you ${selected ? `${selected.name}'s` : "the new edge box's"} peer settings straight after — one more peer to add on the far side, next to the one it already has.`
+                : ""}
             </p>
             <EdgeTunnelSetupNote server={selected} servers={servers} />
           </div>
@@ -753,7 +785,7 @@ export function LinkEdgeToConnectorDialog({
             type="button"
             disabled={!integrationId || mutation.isPending}
             onClick={() => selected && mutation.mutate({
-              connectorId: connector.id,
+              connector,
               integrationId: selected.id,
               message: `${connector.name} now serves ${selected.name}. Apply changes there to add its tunnel peer.`,
             })}

@@ -49,6 +49,7 @@ Rules that keep this maintainable (SOLID/DRY):
 | `MobileSegmented` | Sibling views (tabs); URL-driven |
 | `MobileStateSegmented` (page-area, `pages/network-edge/mobile-edge-tabs.tsx`) | Sibling views **inside a repeated card**; component state, not the URL |
 | `MobileSummaryLine` (page-area, `pages/network-edge/mobile-edge-tabs.tsx`) | Two or three headline counts on one line, where a `MobileStatStrip` would spend ~64px of the first screen on them |
+| `MobileCollapseCard`/`Head`/`Body` (page-area, `pages/network-edge/mobile-edge-collapse.tsx`) | Collapse a **repeated** card whose identity row doubles as the control |
 | `MobileSearchBar` | URL-synced `q` search (same params as `TableToolbar`) |
 | `BottomSheet` | Filters, row details, pickers — instead of popover/side sheet |
 | `MobileFab` | The page's single primary action; composes with Radix triggers via prop spread |
@@ -80,6 +81,18 @@ type and looser on touch targets:
   lives in component state and each segment carries a compact badge (count,
   "2/3 ready", On/Off) so the tab strip doubles as the summary. Mirror the
   desktop card's tab order so both views describe the same thing.
+- **A screen of repeated cards collapses; a list that can grow scrolls in
+  place.** Once several cards of the same shape share a screen — edge boxes,
+  Cloudflare tunnels — each one collapses, and the *identity row is the control*
+  (a 52px target with the count and a chevron trailing it) because a phone header
+  has no room for a second button. Collapsed must still answer name, state and
+  count. Whether they start open is one decision for the whole screen, taken by
+  `edgeCardsStartExpanded` in `network/cloudflare-presentation.ts` so desktop and
+  phone use the same threshold. Inside a card, a section that has no upper bound
+  (one tunnel can publish 200 hostnames) gets `max-h-* overflow-y-auto
+  overscroll-contain` on a **wrapper** — `MobileList` clips its own corners, and
+  a list that both clips and scrolls can silently swallow rows — plus the shared
+  count sentence, so nothing is ever hidden without saying so.
 - **Show state and consequence, not bookkeeping.** A card's always-visible part
   answers "what is this, can we reach it, is what I configured actually live,
   and what do I press" — for the edge card that is one plain-language sync line
@@ -92,8 +105,12 @@ type and looser on touch targets:
   desktop surface already describes the same thing, mobile imports its wording
   and derives only the phone treatment from it. The edge pages take their sync
   sentence, fact list, route badges, path text and sensitive-port table from
-  `network/edge-sync-presentation.ts` (deliberately React-free) and keep just
-  the tone→colour map, the amber gate and the tap-to-copy split local. Two
+  `network/edge-sync-presentation.ts`, every Cloudflare fact — tunnel cards,
+  route rows, counts, config source, collapse and scroll thresholds — from
+  `network/cloudflare-presentation.ts`, and the far-side setup steps for a manual
+  connector from `connectorSetupInstructions` in `network/edge-networks-types.ts`
+  (all deliberately React-free), and keep just the tone→colour map, the amber
+  gate and the tap-to-copy split local. Two
   copies of a rule like "which ports are risky when unrestricted" drift, and a
   port that warns on desktop while staying silent on a phone is a safety bug,
   not a styling one.

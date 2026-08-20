@@ -26,6 +26,7 @@ import { apiFetch } from "@/components/shared/api-client";
 import { copyText } from "@/components/shared/clipboard";
 import { CopyButton } from "@/components/ssh/copy-button";
 import { CommandBlock, ConnectorInstallCommands } from "./connector-install-commands";
+import { ConnectorSetupDisclosure } from "./connector-setup-instructions";
 import { ConnectorTunnelProvisionedNote } from "./connector-tunnel-notes";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -53,6 +54,7 @@ import {
   connectorLinkEdgeName,
   connectorLinks,
   connectorPeerBlockFor,
+  connectorPeerBlockHeading,
   connectorPeerConfigQueryKey,
   connectorPeerConfigUrl,
   connectorPeerProgress,
@@ -60,6 +62,7 @@ import {
   connectorStatusPresentation,
   connectorTunnelAddressFor,
   connectorUrl,
+  connectorWithFreshestLink,
   edgeInstallStep,
   edgeServerForLink,
   edgeTunnelEndpoint,
@@ -114,6 +117,13 @@ export interface ConnectorInstallDialogProps {
   onSetupEdgeSsh?: () => void;
   /** Opens the "link this connector to an edge box" picker. */
   onLinkEdge?: () => void;
+  /**
+   * ONE edge box to scope a manual connector's peer settings to — the edge just
+   * linked, or the row the operator opened this from. Everything shown is that
+   * edge's; the others are named but not expanded, so a block can never be read
+   * as belonging to the wrong edge.
+   */
+  focusIntegrationId?: string | null;
 }
 
 /**
@@ -493,6 +503,35 @@ function ConnectorEdgeScope({
  * side, and waits for that side's PUBLIC key. No token, no SSH key, no pushed
  * ruleset — and the private key is generated over there and never travels.
  */
+/**
+ * The far-side block for ONE edge box.
+ *
+ * The request and the cache entry both carry the edge: unscoped, the API answers
+ * with the connector's first enabled link, so a connector serving two edges would
+ * hand back the other edge's public key and endpoint — values that look right and
+ * silently belong to the wrong peer.
+ */
+function useScopedPeerConfig({
+  connectorId,
+  edgeId,
+  supplied,
+  enabled,
+}: {
+  connectorId: string;
+  edgeId?: string;
+  supplied?: ConnectorPeerConfigDto | null;
+  enabled: boolean;
+}): ConnectorPeerConfigDto | null {
+  const query = useQuery({
+    queryKey: connectorPeerConfigQueryKey(connectorId, edgeId),
+    queryFn: () => apiFetch<ConnectorPeerConfigDto>(connectorPeerConfigUrl(connectorId, edgeId)),
+    enabled,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  return supplied ?? query.data ?? null;
+}
+
 function ManualPeerDialog({
   open,
   onOpenChange,
@@ -503,24 +542,28 @@ function ManualPeerDialog({
   servers,
   contextServer,
   onLinkEdge,
+  focusIntegrationId,
 }: ConnectorInstallDialogProps) {
-  const current = liveConnector ?? connector;
+  // The polled list can trail the link that opened this; the new edge must not
+  // vanish for a render and take the scoped block with it.
+  const current = connectorWithFreshestLink({ connector, live: liveConnector, integrationId: focusIntegrationId });
   const kind = connectorKindPresentation(connectorKindOf(current));
   const opnsense = kind.kind === "opnsense";
   const linkedServers = useLinkedServers(current, servers);
-  const primary = contextServer ?? linkedServers[0] ?? null;
+  // The scoped edge wins over the card that opened this: after linking a second
+  // edge box, the values on screen must be the NEW edge's.
+  const focused = linkedServers.find((server) => server.id === focusIntegrationId) ?? null;
+  const primary = focused ?? contextServer ?? linkedServers[0] ?? null;
 
-  // Only asked for when the create response did not already carry the block and
-  // there is exactly one edge to describe; with several, each block is derived
-  // from the edge it belongs to.
-  const peerConfigQuery = useQuery({
-    queryKey: connectorPeerConfigQueryKey(current.id),
-    queryFn: () => apiFetch<ConnectorPeerConfigDto>(connectorPeerConfigUrl(current.id)),
+  const suppliedPeerConfig = useScopedPeerConfig({
+    connectorId: current.id,
+    edgeId: primary?.id,
+    supplied: peerConfig,
+    // Only asked for when the create response did not already carry the block
+    // and there is exactly one edge to describe; with several, each block is
+    // derived from the edge it belongs to.
     enabled: open && !peerConfig && linkedServers.length === 1,
-    retry: false,
-    refetchOnWindowFocus: false,
   });
-  const suppliedPeerConfig = peerConfig ?? peerConfigQuery.data ?? null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -530,15 +573,24 @@ function ManualPeerDialog({
             {opnsense ? "Set up the OPNsense side" : "Set up the peer"}
             <span className="text-muted-foreground">—</span>
             {current.name}
+            {focused && <span className="text-muted-foreground">· {focused.name}</span>}
           </DialogTitle>
           <DialogDescription>
-            PolySIEM has reserved this connector&apos;s identity and a tunnel address on every edge box it serves.
-            Enter the values below on {kind.farSide}, then paste its public key back here. Nothing is installed and no
-            token exists — this kind of connector is a plain WireGuard peer.
+            {focused
+              ? `PolySIEM has allocated ${current.name} a tunnel address on ${focused.name}. Enter the values below on ${kind.farSide} to add ${focused.name} as a peer there, then paste that side's public key back here if PolySIEM does not hold it yet.`
+              : `PolySIEM has reserved this connector's identity and a tunnel address on every edge box it serves. Enter the values below on ${kind.farSide}, then paste its public key back here. Nothing is installed and no token exists — this kind of connector is a plain WireGuard peer.`}
           </DialogDescription>
         </DialogHeader>
 
         <ConnectorTunnelProvisionedNote tunnel={tunnelProvisioned} />
+
+        <ManualPeerAdditionalNote
+          connector={current}
+          edge={focused}
+          edgeCount={linkedServers.length}
+          farSide={kind.farSide}
+          opnsense={opnsense}
+        />
 
         <ManualPeerDialHint server={primary} farSide={kind.farSide} opnsense={opnsense} />
 
@@ -547,13 +599,20 @@ function ManualPeerDialog({
             connector={current}
             servers={linkedServers}
             primary={primary}
+            focused={focused}
             peerConfig={suppliedPeerConfig}
             kindValue={kind.kind}
             opnsense={opnsense}
             onLinkEdge={onLinkEdge}
           />
           <ManualPeerKeyStep connector={current} opnsense={opnsense} />
-          <ManualPeerApplyStep connector={current} servers={servers} farSide={kind.farSide} opnsense={opnsense} />
+          <ManualPeerApplyStep
+            connector={current}
+            servers={servers}
+            primary={primary}
+            farSide={kind.farSide}
+            opnsense={opnsense}
+          />
         </div>
 
         <ManualPeerScopePanel farSide={kind.farSide} />
@@ -570,6 +629,42 @@ function ManualPeerDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * The point the whole fix exists for: a second edge box means a second PEER on
+ * the far side, next to the one already there. Neutral — this is expected setup,
+ * so it is stated, not warned about.
+ */
+function ManualPeerAdditionalNote({
+  connector,
+  edge,
+  edgeCount,
+  farSide,
+  opnsense,
+}: {
+  connector: ConnectorDto;
+  /** The edge this dialog is scoped to, when it is scoped to one. */
+  edge: EdgeNatServer | null;
+  edgeCount: number;
+  farSide: string;
+  opnsense: boolean;
+}) {
+  if (!edge || edgeCount < 2) return null;
+  const others = edgeCount - 1;
+  return (
+    <Alert>
+      <Waypoints />
+      <AlertTitle>Add {edge.name} alongside the {others === 1 ? "peer" : "peers"} already on {farSide}</AlertTitle>
+      <AlertDescription>
+        {connector.name} now serves {edgeCount} edge boxes, and each one is its own peer entry with its own tunnel
+        address. Nothing you configured for the other {others === 1 ? "edge box" : "edge boxes"} changes —{" "}
+        {opnsense
+          ? "give the instance you already created this edge's tunnel address as well, and add this edge under Peers next to the existing one."
+          : "keep the interface and keypair you already have, add this edge's tunnel address to it, and add this edge as one more peer."}
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -609,11 +704,27 @@ function ManualPeerDialHint({
   );
 }
 
-/** Step ①: one paste-ready block per edge box this peer serves. */
+/** How step ① opens, in the words of whichever far side this is. */
+function manualPeerValuesIntro(input: { opnsense: boolean; edgeCount: number; focused: boolean }): string {
+  if (input.focused) {
+    return input.opnsense
+      ? "VPN → WireGuard: the local instance keeps its own keypair and gains this edge's tunnel address; this edge goes under Peers with the public key, endpoint, allowed IPs, and keepalive below."
+      : "Keep the WireGuard interface and keypair that device already has, add this edge's tunnel address to it, and add this edge as a peer with the values below.";
+  }
+  const base = input.opnsense
+    ? "VPN → WireGuard → Instances: add a local instance and let OPNsense generate its keypair. Give that one instance the tunnel address for every edge box below, and add each edge under Peers with its own public key, endpoint, allowed IPs, and keepalive."
+    : "Create ONE WireGuard interface, let that device generate its own keypair, then give it the tunnel address for every edge box below and add each edge as a peer.";
+  return input.edgeCount > 1
+    ? `${base} The same keypair is used for all of them — that is what lets one peer serve several edge boxes.`
+    : base;
+}
+
+/** Step ①: the paste-ready block, for the scoped edge or for every edge served. */
 function ManualPeerValuesStep({
   connector,
   servers,
   primary,
+  focused,
   peerConfig,
   kindValue,
   opnsense,
@@ -623,52 +734,89 @@ function ManualPeerValuesStep({
   /** Only the edges this connector is actually linked to. */
   servers: EdgeNatServer[];
   primary: EdgeNatServer | null;
+  /** When set, only this edge's block is shown; the rest are named below it. */
+  focused: EdgeNatServer | null;
   peerConfig: ConnectorPeerConfigDto | null;
   kindValue: ConnectorKind;
   opnsense: boolean;
   onLinkEdge?: () => void;
 }) {
   const title = opnsense ? "Enter these in OPNsense" : "Enter these on the far side";
-  if (servers.length === 0) {
-    return (
-      <InstallStep number="1" title={title} hint={connector.name}>
-        <Alert>
-          <Link2 />
-          <AlertTitle>No edge box to peer with yet</AlertTitle>
-          <AlertDescription>
-            A tunnel address is allocated per edge box, so there is nothing to paste until this connector is linked to
-            one.
-          </AlertDescription>
-        </Alert>
-        {onLinkEdge && (
-          <Button type="button" variant="outline" size="sm" onClick={onLinkEdge}>
-            <Link2 /> Link to an edge box
-          </Button>
-        )}
-      </InstallStep>
-    );
-  }
+  if (servers.length === 0) return <ManualPeerNoEdgeStep title={title} connector={connector} onLinkEdge={onLinkEdge} />;
+  const shown = focused ? servers.filter((server) => server.id === focused.id) : servers;
+  const others = focused ? servers.filter((server) => server.id !== focused.id) : [];
   return (
-    <InstallStep number="1" title={title} hint={connector.name}>
+    <InstallStep number="1" title={title} hint={focused ? `${connector.name} → ${focused.name}` : connector.name}>
       <p className="text-sm text-muted-foreground">
-        {opnsense
-          ? "VPN → WireGuard → Instances: add a local instance and let OPNsense generate its keypair. Give that one instance the tunnel address for every edge box below, and add each edge under Peers with its own public key, endpoint, allowed IPs, and keepalive."
-          : "Create ONE WireGuard interface, let that device generate its own keypair, then give it the tunnel address for every edge box below and add each edge as a peer."}
-        {servers.length > 1 && " The same keypair is used for all of them — that is what lets one peer serve several edge boxes."}
+        {manualPeerValuesIntro({ opnsense, edgeCount: servers.length, focused: Boolean(focused) })}
       </p>
-      {servers.map((server) => (
+      {shown.map((server) => (
         <ManualPeerEdgeBlock
           key={server.id}
           server={server}
           connector={connector}
-          // The create response describes the edge it was created against.
+          // The create/link response describes the edge it was made against.
           peerConfig={primary && server.id === primary.id ? peerConfig : null}
           kindValue={kindValue}
           opnsense={opnsense}
-          labelled={servers.length > 1}
+          edgeCount={servers.length}
+          justLinked={focused?.id === server.id}
         />
       ))}
+      <ManualPeerOtherEdges connector={connector} servers={others} />
     </InstallStep>
+  );
+}
+
+/** Step ① before there is any edge box to allocate an address on. */
+function ManualPeerNoEdgeStep({
+  title,
+  connector,
+  onLinkEdge,
+}: {
+  title: string;
+  connector: ConnectorDto;
+  onLinkEdge?: () => void;
+}) {
+  return (
+    <InstallStep number="1" title={title} hint={connector.name}>
+      <Alert>
+        <Link2 />
+        <AlertTitle>No edge box to peer with yet</AlertTitle>
+        <AlertDescription>
+          A tunnel address is allocated per edge box, so there is nothing to paste until this connector is linked to
+          one.
+        </AlertDescription>
+      </Alert>
+      {onLinkEdge && (
+        <Button type="button" variant="outline" size="sm" onClick={onLinkEdge}>
+          <Link2 /> Link to an edge box
+        </Button>
+      )}
+    </InstallStep>
+  );
+}
+
+/**
+ * The edges this scoped view is NOT showing, so nothing looks lost — each keeps
+ * its own peer entry on the far side, reachable from its own row.
+ */
+function ManualPeerOtherEdges({ connector, servers }: { connector: ConnectorDto; servers: EdgeNatServer[] }) {
+  if (servers.length === 0) return null;
+  return (
+    <p className="flex flex-wrap items-center gap-1.5 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+      <Server className="size-3.5 shrink-0" aria-hidden="true" />
+      Also peered, and untouched by this:
+      {servers.map((server) => (
+        <Badge key={server.id} variant="outline" className="font-normal">
+          {server.name}
+          <code className="ml-1 font-mono text-[0.6875rem]">
+            {connectorTunnelAddressFor(connector, server.id) ?? "—"}
+          </code>
+        </Badge>
+      ))}
+      <span>· open Peer settings on that edge&apos;s row to read its block.</span>
+    </p>
   );
 }
 
@@ -679,26 +827,32 @@ function ManualPeerEdgeBlock({
   peerConfig,
   kindValue,
   opnsense,
-  labelled,
+  edgeCount,
+  justLinked,
 }: {
   server: EdgeNatServer;
   connector: ConnectorDto;
   peerConfig: ConnectorPeerConfigDto | null;
   kindValue: ConnectorKind;
   opnsense: boolean;
-  /** Names the edge above the block, which only helps when there are several. */
-  labelled: boolean;
+  /** Edge boxes this connector serves, which decides the "one more peer" copy. */
+  edgeCount: number;
+  justLinked: boolean;
 }) {
   const block = connectorPeerBlockFor({ server, connector, peerConfig });
   if (!block) return null;
   const snippet = buildConnectorPeerSnippet(block, { kind: kindValue, name: `${connector.name} → ${server.name}` });
+  const heading = connectorPeerBlockHeading({ connector, edgeName: server.name, edgeCount, justLinked });
   return (
     <div className="grid gap-2 rounded-lg border bg-primary/[0.03] p-3">
-      {labelled && (
-        <p className="flex items-center gap-1.5 text-xs font-medium">
-          <Server className="size-3.5 text-primary" aria-hidden="true" /> {server.name}
-        </p>
-      )}
+      {/* Named, always: a block that has to be identified by position is the bug. */}
+      <div className="flex items-start gap-1.5">
+        <Server className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="text-xs font-medium">{heading.title}</p>
+          <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">{heading.detail}</p>
+        </div>
+      </div>
       <PeerField
         label="Tunnel address to assign there"
         value={block.tunnelAddressCidr}
@@ -781,11 +935,14 @@ function ManualPeerKeyStep({ connector, opnsense }: { connector: ConnectorDto; o
 function ManualPeerApplyStep({
   connector,
   servers,
+  primary,
   farSide,
   opnsense,
 }: {
   connector: ConnectorDto;
   servers: EdgeNatServer[];
+  /** The edge in context, whose tunnel address the instructions name. */
+  primary: EdgeNatServer | null;
   farSide: string;
   opnsense: boolean;
 }) {
@@ -821,9 +978,10 @@ function ManualPeerApplyStep({
         {links.length > 0 && (
           <> — {links.map((link) => `${connectorLinkEdgeName(link, servers)} → ${link.tunnelAddress}`).join(", ")}</>
         )}{" "}
-        — and stops there. PolySIEM cannot program {farSide}, so add the matching{" "}
-        {opnsense ? "port forward in OPNsense" : "forwarding rule on that device"} yourself.
+        — and stops there. PolySIEM cannot program {farSide}, so the matching{" "}
+        {opnsense ? "destination NAT rule in OPNsense" : "forwarding rule on that device"} is yours to add.
       </p>
+      {opnsense && <ConnectorSetupDisclosure connector={connector} integrationId={primary?.id ?? null} />}
     </InstallStep>
   );
 }

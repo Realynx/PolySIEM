@@ -20,7 +20,6 @@ import { Button } from "@/components/ui/button";
 import { MobileKeyRow, MobileList, MobileListRow } from "@/components/mobile/ui/mobile-list";
 import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import {
-  connectorRouteWarning,
   EDGE_NETWORKS_QUERY_KEY,
   type ConnectorDto,
   type EdgeNatRule,
@@ -37,6 +36,7 @@ import {
   type EdgeRoutePath,
   type EdgeRouteRowState,
 } from "@/components/network/edge-sync-presentation";
+import { MobileConnectorSetupDisclosure } from "./mobile-connector-instructions";
 import { useConnectorsQuery } from "./mobile-connectors";
 
 /**
@@ -218,12 +218,11 @@ function EdgeRuleFacts({
   const path = edgeRoutePath(rule, connectors, server.id);
   const viaConnector = path.kind === "connector";
   const risk = edgeRouteRisk(rule);
-  // `path.note` is set only for that hand-configured peer; the full sentence
-  // behind it needs the connector itself, which the path does not hand back.
-  const connector = path.note
+  // `path.note` is set only for that hand-configured peer; the steps behind it
+  // need the connector itself, which the path does not hand back.
+  const manualPeer = path.note
     ? connectors.find((entry) => entry.id === rule.connectorId || entry.connectorId === rule.connectorId) ?? null
     : null;
-  const manualPeer = connector ? connectorRouteWarning(connector, { publicPort: rule.publicPort }, server.id) : null;
   return (
     <>
       <div className="divide-y divide-border/60 rounded-xl border bg-card">
@@ -248,7 +247,21 @@ function EdgeRuleFacts({
         {rule.error && <MobileKeyRow label="Last error">{rule.error}</MobileKeyRow>}
       </div>
       {risk && <RuleWarning title={risk.label} detail={risk.detail} />}
-      {manualPeer && <RuleWarning title={manualPeer.title} detail={manualPeer.detail} />}
+      {/* Finishing the path on a hand-configured peer is expected setup, not a
+          fault, so it is neutral and collapsed — and the steps carry this rule's
+          own protocol, ports and addresses. */}
+      {manualPeer && (
+        <MobileConnectorSetupDisclosure
+          connector={manualPeer}
+          rule={{
+            protocol: rule.protocol,
+            publicPort: rule.publicPort,
+            targetAddress: rule.targetAddress,
+            targetPort: rule.targetPort,
+          }}
+          integrationId={server.id}
+        />
+      )}
     </>
   );
 }

@@ -5,6 +5,22 @@ import { assertEdgeBootstrapUsername, edgeBootstrapAuthorizedKey } from "./boots
 export const EDGE_AGENT_PATH = "/usr/local/libexec/polysiem-edge-agent";
 
 /**
+ * Where the edge's WireGuard private key is staged while `wg set` reads it.
+ *
+ * This is deliberately `/etc/wireguard` and NOT `$TMPDIR`: Ubuntu 26.04 ships an
+ * AppArmor profile for wg(8) that permits `/etc/wireguard/**` and denies other
+ * paths, so a key passed from `mktemp` fails with `fopen: Permission denied` and
+ * the apply rolls back with the tunnel never coming up. Verified on a real
+ * 26.04 host: the identical 0600 root-owned file is rejected from /tmp and
+ * accepted from /etc/wireguard. The connector agent has the same constraint.
+ *
+ * The file is written 0600 inside a 0700 directory and removed by the cleanup
+ * trap, so the key is no more exposed than it was in $TMPDIR.
+ */
+export const EDGE_WG_KEY_DIR = "/etc/wireguard";
+export const EDGE_WG_KEY_FILE = `${EDGE_WG_KEY_DIR}/polysiem-edge.key`;
+
+/**
  * Root-owned helper installed on the edge host. It accepts only STATUS/APPLY,
  * validates the wire protocol again, and touches only PolySIEM-owned chains.
  *
@@ -12,6 +28,12 @@ export const EDGE_AGENT_PATH = "/usr/local/libexec/polysiem-edge-agent";
  * iptables-restore --test, and then swaps the three small dispatcher chains.
  * The previous dispatchers remain available for rollback until the new state
  * file has been committed.
+ *
+ * APPLY additionally self-heals a missing wireguard-tools, but only when the
+ * payload actually requests a tunnel: hosts provisioned before the installer
+ * managed dependencies cannot be repaired any other way, because the restricted
+ * forced-command key can run nothing but this agent. STATUS never installs
+ * anything, and a NAT-only APPLY behaves exactly as it always has.
  */
 export const EDGE_AGENT_SCRIPT = `#!/bin/sh
 set -eu
@@ -117,7 +139,14 @@ case "$action" in
     [ "$enable_forward" = 0 ] || [ "$enable_forward" = 1 ] || exit 2
 
     rules="$(mktemp)"; canonical="$(mktemp)"; generation="$(mktemp)"; swap="$(mktemp)"; rollback="$(mktemp)"; request="$(mktemp)"; state="$(mktemp)"
-    wg_key_file="$(mktemp)"; wg_peers_file="$(mktemp)"; chmod 0600 "$wg_key_file"
+    # The private key MUST live under /etc/wireguard, not in \$TMPDIR: Ubuntu 26.04
+    # ships an AppArmor profile for wg(8) that allows /etc/wireguard/** and denies
+    # other paths, so a key handed over from mktemp fails with "fopen: Permission
+    # denied" and the whole apply rolls back. Same constraint as the connector agent.
+    install -d -m 0700 ${EDGE_WG_KEY_DIR}
+    wg_key_file=${EDGE_WG_KEY_FILE}
+    : > "$wg_key_file"; chmod 0600 "$wg_key_file"
+    wg_peers_file="$(mktemp)"
     committed=0; swap_started=0
     cleanup() {
       rc=$?
@@ -187,9 +216,34 @@ case "$action" in
     # outbound-interface existence check, so a freshly created wg interface satisfies
     # it. Only the configured interface name is ever touched, and only when it is
     # (or becomes) an actual WireGuard link. The private key is fed from a 0600
-    # mktemp file and is never echoed or written to the state file.
+    # file under /etc/wireguard (AppArmor requires that path) and is never echoed
+    # or written to the state file.
     state_wg_if=-; state_wg_enabled=0; wg_hash=-
     if [ "$wg_present" -eq 1 ] && [ "$wg_enabled" = 1 ]; then
+      # Self-heal, tunnel-only. A box provisioned before PolySIEM managed edge
+      # dependencies can be missing wireguard-tools outright, and the restricted
+      # forced-command key cannot run anything but this agent to repair that, so the
+      # repair has to happen here. This sits INSIDE the wg_enabled branch on purpose:
+      # a NAT-only edge must never gain a package it does not need, and STATUS never
+      # reaches this code, so it stays fast and side-effect-free.
+      if ! command -v wg >/dev/null 2>&1; then
+        printf 'wg is missing; installing wireguard-tools before bringing up %s\\n' "$wg_if" >&2
+        if command -v timeout >/dev/null 2>&1; then wg_pm='timeout 300'; else wg_pm=''; fi
+        if command -v apt-get >/dev/null 2>&1; then
+          DEBIAN_FRONTEND=noninteractive $wg_pm apt-get update -qq >&2 || true
+          DEBIAN_FRONTEND=noninteractive $wg_pm apt-get install -y -qq wireguard-tools >&2 || true
+        elif command -v dnf >/dev/null 2>&1; then
+          $wg_pm dnf install -y -q wireguard-tools >&2 || true
+        elif command -v yum >/dev/null 2>&1; then
+          $wg_pm yum install -y -q wireguard-tools >&2 || true
+        fi
+        hash -r 2>/dev/null || true
+        command -v wg >/dev/null 2>&1 || {
+          printf 'wireguard-tools is not installed and could not be installed automatically; install it on this host and apply again\\n' >&2
+          exit 3
+        }
+        printf 'wireguard-tools installed\\n' >&2
+      fi
       for wg_bin in wg ip sort; do
         command -v "$wg_bin" >/dev/null 2>&1 || { printf 'missing dependency: %s\\n' "$wg_bin" >&2; exit 3; }
       done
@@ -379,8 +433,49 @@ export function buildEdgeAgentInstallScript(
   return `#!/bin/sh
 set -eu
 [ "$(id -u)" -eq 0 ] || { printf 'Run this installer as root.\\n' >&2; exit 1; }
-for binary in useradd getent install sudo visudo iptables iptables-restore ip awk grep sed cut mktemp sysctl flock sha256sum chmod chown mv rm wc tr; do
-  command -v "$binary" >/dev/null 2>&1 || { printf 'Missing required command: %s\\nInstall sudo, iproute2, iptables, util-linux, and coreutils first.\\n' "$binary" >&2; exit 1; }
+
+# PolySIEM owns the edge's dependencies, exactly like the connector installer does:
+# missing commands are installed rather than demanded of the operator. wg(8) is in
+# REQUIRED and wireguard-tools is in every package list because WireGuard is core to
+# the product now (connectors reach this box down a tunnel): an edge without it is
+# a broken edge, so provisioning either ends with wg present or aborts loudly.
+REQUIRED='useradd getent install sudo visudo iptables iptables-restore ip awk grep sed cut mktemp sysctl flock sha256sum chmod chown mv rm wc tr wg'
+DEP_APT='wireguard-tools iproute2 iptables sudo util-linux coreutils procps passwd gawk grep sed'
+DEP_RPM='wireguard-tools iproute iptables sudo util-linux coreutils procps-ng shadow-utils gawk grep sed'
+DEP_MANUAL='wireguard-tools, iproute2, iptables, sudo, util-linux and coreutils'
+
+missing=''
+for binary in $REQUIRED; do
+  command -v "$binary" >/dev/null 2>&1 || missing="$missing $binary"
+done
+
+if [ -n "$missing" ]; then
+  printf 'Installing missing dependencies:%s\\n' "$missing"
+  dep_status=0
+  if command -v apt-get >/dev/null 2>&1; then
+    # A refresh failure is not fatal on its own: cached lists are often good enough,
+    # and the install attempt below is what decides whether we can continue.
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $DEP_APT || dep_status=1
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q $DEP_RPM || dep_status=1
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q $DEP_RPM || dep_status=1
+  else
+    printf 'No supported package manager (apt-get/dnf/yum) was found.\\nInstall %s by hand, then re-run this installer.\\nStill missing:%s\\n' "$DEP_MANUAL" "$missing" >&2
+    exit 1
+  fi
+  [ "$dep_status" -eq 0 ] || {
+    printf 'Automatic dependency installation failed.\\nInstall %s by hand, then re-run this installer.\\nStill missing:%s\\n' "$DEP_MANUAL" "$missing" >&2
+    exit 1
+  }
+fi
+
+for binary in $REQUIRED; do
+  command -v "$binary" >/dev/null 2>&1 || {
+    printf 'Missing required command after dependency install: %s\\nInstall %s by hand, then re-run this installer.\\n' "$binary" "$DEP_MANUAL" >&2
+    exit 1
+  }
 done
 USER_NAME='${username}'
 if id "$USER_NAME" >/dev/null 2>&1; then

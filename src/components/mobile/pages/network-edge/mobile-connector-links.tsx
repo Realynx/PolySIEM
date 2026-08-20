@@ -15,6 +15,8 @@ import { MobileEmpty, MobileKeyRow, MobileList, MobileListRow } from "@/componen
 import {
   connectorKindLabel,
   connectorLinkEdgeName,
+  connectorLinkFor,
+  connectorLinkPeerHandoff,
   connectorLinkSummary,
   connectorLinkUrl,
   connectorLinks,
@@ -22,6 +24,7 @@ import {
   connectorsAllUrl,
   connectorsAvailableToLink,
   connectorsQueryKey,
+  connectorPeerSettingsAction,
   connectorTunnelProvisioned,
   connectorTunnelProvisionedCopy,
   edgeServerForLink,
@@ -33,11 +36,15 @@ import {
   EDGE_NETWORKS_QUERY_KEY,
   type ConnectorDto,
   type ConnectorLinkDto,
+  type ConnectorTunnelProvisionedDto,
   type EdgeNatServer,
   type LinkConnectorInput,
   type LinkConnectorResult,
 } from "@/components/network/edge-networks-types";
 import { EdgeTunnelSetupNote } from "./mobile-connector-atoms";
+// Type only — erased at build time, so the peer-setup sheet keeps importing the
+// link rows from here without the two modules meeting at runtime.
+import type { ManualSetup } from "./mobile-connector-setup";
 
 /**
  * Connector ↔ edge links, on a phone.
@@ -90,28 +97,91 @@ export function useConnectorInvalidator(): () => void {
   };
 }
 
+/** Which connector is being joined to which edge box — both halves of a link. */
+export interface LinkConnectorTarget {
+  connector: ConnectorDto;
+  server: EdgeNatServer;
+}
+
+/**
+ * The link response carries `peerConfig`: the paste-ready block for the edge
+ * that was JUST linked. For a manual kind that block is the whole reason the
+ * operator linked — it holds that edge's endpoint, its public key, the far
+ * side's AllowedIPs and the address this edge allocated — so the link hands it
+ * straight to the peer-settings sheet, scoped to the new link. An agent kind has
+ * nothing to paste anywhere, so it keeps the toast.
+ *
+ * Reading the response is `connectorLinkPeerHandoff`'s job, shared with desktop:
+ * it decides manual-or-not and folds the new link into the connector so the new
+ * edge's address resolves before the list refetches. Only the packaging — this
+ * phone's sheet takes the edge server object — is done here.
+ */
+function linkedManualSetup(result: LinkConnectorResult, target: LinkConnectorTarget): ManualSetup | null {
+  const handoff = connectorLinkPeerHandoff({
+    connector: target.connector,
+    integrationId: target.server.id,
+    result,
+  });
+  if (!handoff) return null;
+  return {
+    connector: handoff.connector,
+    server: target.server,
+    link: connectorLinkFor(handoff.connector, handoff.integrationId),
+    apiPeerConfig: handoff.peerConfig,
+    tunnelProvisioned: handoff.tunnelProvisioned,
+    justLinked: true,
+  };
+}
+
+/** A tunnel PolySIEM stood up as part of the link, as a toast description. */
+function tunnelToastOptions(tunnel: ConnectorTunnelProvisionedDto | null): { description: string } | undefined {
+  return tunnel ? { description: connectorTunnelProvisionedCopy(tunnel).toast } : undefined;
+}
+
+/**
+ * What the toast says when no peer sheet follows the link.
+ *
+ * A manual kind still has a block to paste — a caller that cannot open a sheet
+ * (the NAT rule form owns its screen) says where that block lives instead of
+ * leaving the operator to hunt for it.
+ */
+function linkedToastMessage(setup: ManualSetup | null, target: LinkConnectorTarget): string {
+  if (!setup) return "Connector linked. Apply that edge to register its peer.";
+  return `Linked to ${target.server.name}. Its peer settings are on that edge's row under Linked edges.`;
+}
+
 /**
  * POST /api/network/connectors/[id]/links — allocates the address on that edge.
  *
  * Linking an edge that has no WireGuard tunnel now provisions one instead of
- * refusing, so the response can report a tunnel that did not exist a moment ago.
- * The sheet closes on success, so that fact rides the toast.
+ * refusing, so the response can report a tunnel that did not exist a moment ago;
+ * that fact rides the toast and, for a manual kind, the sheet it opens.
  */
-export function useLinkConnectorMutation(onDone: () => void) {
+export function useLinkConnectorMutation({
+  onDone,
+  onPeerSetup,
+}: {
+  onDone: () => void;
+  /** Where a manual connector's new peer block goes. Omitted keeps toast-and-close. */
+  onPeerSetup?: (setup: ManualSetup) => void;
+}) {
   const invalidate = useConnectorInvalidator();
   return useMutation({
-    mutationFn: ({ connectorId, integrationId }: LinkConnectorInput & { connectorId: string }) =>
-      apiFetch<LinkConnectorResult>(connectorLinksUrl(connectorId), {
+    mutationFn: ({ connector, server }: LinkConnectorTarget) =>
+      apiFetch<LinkConnectorResult>(connectorLinksUrl(connector.id), {
         method: "POST",
-        body: JSON.stringify({ integrationId } satisfies LinkConnectorInput),
+        body: JSON.stringify({ integrationId: server.id } satisfies LinkConnectorInput),
       }),
-    onSuccess: (result) => {
-      const tunnel = connectorTunnelProvisioned(result);
-      toast.success(
-        "Connector linked. Apply that edge to register its peer.",
-        tunnel ? { description: connectorTunnelProvisionedCopy(tunnel).toast } : undefined,
-      );
+    onSuccess: (result, target) => {
+      const options = tunnelToastOptions(connectorTunnelProvisioned(result));
+      const setup = linkedManualSetup(result, target);
       invalidate();
+      if (setup && onPeerSetup) {
+        toast.success(`Linked to ${target.server.name}. Here are its peer settings.`, options);
+        onPeerSetup(setup);
+        return;
+      }
+      toast.success(linkedToastMessage(setup, target), options);
       onDone();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -191,15 +261,87 @@ export function ConnectorLinkKeyRows({
   );
 }
 
+/**
+ * One linked edge box.
+ *
+ * A manual connector's row carries its OWN peer-settings action, because the
+ * paste-ready block is per edge: endpoint, edge key, AllowedIPs and the address
+ * are all that edge's. One action for the whole connector cannot say which
+ * edge's values it would hand over once two are linked, which is exactly how an
+ * operator ends up pasting the wrong edge's peer into OPNsense. The wording is
+ * `connectorPeerSettingsAction`, so the row and the desktop table say the same.
+ */
+function ConnectorLinkRow({
+  connector,
+  link,
+  edges,
+  onSelect,
+  onPeerSetup,
+}: {
+  connector: ConnectorDto;
+  link: ConnectorLinkDto;
+  edges: readonly EdgeNatServer[];
+  onSelect: () => void;
+  onPeerSetup: (() => void) | null;
+}) {
+  const edgeName = connectorLinkEdgeName(link, edges);
+  const action = connectorPeerSettingsAction({ connectorName: connector.name, edgeName });
+  const row = (
+    <MobileListRow
+      className={onPeerSetup ? "min-w-0 flex-1" : undefined}
+      onClick={onSelect}
+      leading={<Server className="size-4" />}
+      title={
+        <>
+          <span className="truncate">{edgeName}</span>
+          {!isConnectorLinkEnabled(link) && (
+            <Badge variant="outline" className="text-[10px] font-normal">
+              paused
+            </Badge>
+          )}
+        </>
+      }
+      subtitle={
+        <>
+          <span className="font-mono">{link.tunnelAddress}</span>
+          {onPeerSetup && <span> · {handshakeLabel(link)}</span>}
+        </>
+      }
+      // The handshake moves into the subtitle when the action takes the trailing
+      // slot, so nothing is dropped to make room for it.
+      trailing={onPeerSetup ? undefined : <span className="max-w-24 truncate">{handshakeLabel(link)}</span>}
+    />
+  );
+  if (!onPeerSetup) return row;
+  return (
+    <div className="flex items-stretch">
+      {row}
+      <button
+        type="button"
+        onClick={onPeerSetup}
+        aria-label={action.ariaLabel}
+        title={action.title}
+        className="flex min-h-13 shrink-0 flex-col items-center justify-center gap-0.5 border-l px-3 text-[10px] leading-none font-medium text-muted-foreground transition-colors active:bg-muted/70"
+      >
+        <Waypoints className="size-4" aria-hidden="true" />
+        {action.label}
+      </button>
+    </div>
+  );
+}
+
 /** The same links, tappable: one row per edge this connector serves. */
 export function ConnectorLinkList({
   connector,
   edges,
   onSelect,
+  onPeerSetup,
 }: {
   connector: ConnectorDto;
   edges: readonly EdgeNatServer[];
   onSelect: (link: ConnectorLinkDto) => void;
+  /** Manual kinds only: opens THAT edge's paste-ready block. Null hides the action. */
+  onPeerSetup?: ((link: ConnectorLinkDto) => void) | null;
 }) {
   const links = connectorLinks(connector);
   if (links.length === 0) {
@@ -212,22 +354,15 @@ export function ConnectorLinkList({
   return (
     <MobileList>
       {links.map((link) => (
-        <MobileListRow
+        <ConnectorLinkRow
           key={link.id}
-          onClick={() => onSelect(link)}
-          leading={<Server className="size-4" />}
-          title={
-            <>
-              <span className="truncate">{connectorLinkEdgeName(link, edges)}</span>
-              {!isConnectorLinkEnabled(link) && (
-                <Badge variant="outline" className="text-[10px] font-normal">
-                  paused
-                </Badge>
-              )}
-            </>
-          }
-          subtitle={<span className="font-mono">{link.tunnelAddress}</span>}
-          trailing={<span className="max-w-24 truncate">{handshakeLabel(link)}</span>}
+          connector={connector}
+          link={link}
+          edges={edges}
+          onSelect={() => onSelect(link)}
+          // No edge row loaded means no block to show, so the action is not
+          // offered rather than offered and inert.
+          onPeerSetup={onPeerSetup && edgeServerForLink(edges, link) ? () => onPeerSetup(link) : null}
         />
       ))}
     </MobileList>
@@ -251,11 +386,13 @@ function UnlinkRefusal({ reason }: { reason: string }) {
 function ConnectorLinkActions({
   connector,
   link,
+  edgeName,
   onUnlinked,
   onPeerSetup,
 }: {
   connector: ConnectorDto;
   link: ConnectorLinkDto;
+  edgeName: string;
   onUnlinked: () => void;
   onPeerSetup: (() => void) | null;
 }) {
@@ -264,9 +401,11 @@ function ConnectorLinkActions({
   const unlinkMutation = useUnlinkMutation(connector.id, onUnlinked, setRefusal);
   return (
     <>
+      {/* Named, never "this edge": the same button exists on every link, and a
+          block pasted into the wrong far-side peer is the bug being fixed. */}
       {onPeerSetup && (
         <Button variant="outline" className="w-full" onClick={onPeerSetup}>
-          <Waypoints /> Peer settings for this edge
+          <Waypoints /> Peer settings for {edgeName}
         </Button>
       )}
       <div className="flex items-center justify-between gap-4 rounded-xl border p-3">
@@ -324,18 +463,19 @@ export function ConnectorLinkSheet({
   onPeerSetup: (server: EdgeNatServer, link: ConnectorLinkDto) => void;
 }) {
   const server = edgeServerForLink(edges, link);
+  const edgeName = connectorLinkEdgeName(link, edges);
   const manualPeerSetup = isManualConnector(connector) && server ? () => onPeerSetup(server, link) : null;
 
   return (
     <BottomSheet
       open
       onOpenChange={onOpenChange}
-      title={`${connector.name} on ${connectorLinkEdgeName(link, edges)}`}
+      title={`${connector.name} on ${edgeName}`}
       description="One connector serves several edge boxes; this is what it is on this one."
     >
       <div className="flex flex-col gap-3 pb-2">
         <MobileList>
-          <MobileKeyRow label="Edge box">{connectorLinkEdgeName(link, edges)}</MobileKeyRow>
+          <MobileKeyRow label="Edge box">{edgeName}</MobileKeyRow>
           <MobileKeyRow label="Tunnel address here" mono>
             {link.tunnelAddress}
           </MobileKeyRow>
@@ -351,6 +491,7 @@ export function ConnectorLinkSheet({
           <ConnectorLinkActions
             connector={connector}
             link={link}
+            edgeName={edgeName}
             onUnlinked={() => onOpenChange(false)}
             onPeerSetup={manualPeerSetup}
           />
@@ -395,12 +536,15 @@ export function ConnectorEdgePickerSheet({
   connector,
   edges,
   onOpenChange,
+  onPeerSetup,
 }: {
   connector: ConnectorDto;
   edges: readonly EdgeNatServer[];
   onOpenChange: (open: boolean) => void;
+  /** A manual connector lands on the new edge's peer block instead of closing. */
+  onPeerSetup?: (setup: ManualSetup) => void;
 }) {
-  const mutation = useLinkConnectorMutation(() => onOpenChange(false));
+  const mutation = useLinkConnectorMutation({ onDone: () => onOpenChange(false), onPeerSetup });
   const available = edgesAvailableForConnector(connector, edges);
 
   return (
@@ -422,7 +566,7 @@ export function ConnectorEdgePickerSheet({
             {available.map((edge) => (
               <MobileListRow
                 key={edge.id}
-                onClick={() => mutation.mutate({ connectorId: connector.id, integrationId: edge.id })}
+                onClick={() => mutation.mutate({ connector, server: edge })}
                 leading={<Server className="size-4" />}
                 title={<span className="truncate">{edge.name}</span>}
                 subtitle={<EdgePickerSubtitle edge={edge} />}
@@ -451,13 +595,16 @@ export function EdgeConnectorPickerSheet({
   connectors,
   isLoading,
   onOpenChange,
+  onPeerSetup,
 }: {
   server: EdgeNatServer;
   connectors: readonly ConnectorDto[];
   isLoading: boolean;
   onOpenChange: (open: boolean) => void;
+  /** A manual connector lands on THIS edge's peer block instead of closing. */
+  onPeerSetup?: (setup: ManualSetup) => void;
 }) {
-  const mutation = useLinkConnectorMutation(() => onOpenChange(false));
+  const mutation = useLinkConnectorMutation({ onDone: () => onOpenChange(false), onPeerSetup });
   const available = connectorsAvailableToLink(connectors, server.id);
 
   return (
@@ -483,7 +630,7 @@ export function EdgeConnectorPickerSheet({
             {available.map((connector) => (
               <MobileListRow
                 key={connector.id}
-                onClick={() => mutation.mutate({ connectorId: connector.id, integrationId: server.id })}
+                onClick={() => mutation.mutate({ connector, server })}
                 leading={<Cable className="size-4" />}
                 title={<span className="truncate">{connector.name}</span>}
                 subtitle={

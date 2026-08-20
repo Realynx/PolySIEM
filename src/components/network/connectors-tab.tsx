@@ -55,6 +55,7 @@ import {
   type ConnectorInstallReveal,
   type ConnectorLinkDto,
   type ConnectorPeerConfigDto,
+  type ConnectorPeerHandoff,
   type ConnectorTunnelProvisionedDto,
   type EdgeNatServer,
 } from "./edge-networks-types";
@@ -66,6 +67,26 @@ interface ConnectorSetupState {
   peerConfig?: ConnectorPeerConfigDto | null;
   /** Set when creating the connector also stood the edge's tunnel up. */
   tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
+  /** One edge box to scope a manual connector's peer settings to. */
+  focusIntegrationId?: string | null;
+}
+
+/**
+ * The peer settings for the edge a link just added, opened on the spot.
+ *
+ * `reason` is inert for a manual connector — it has no token and no install
+ * steps — so the flow reads as "here is what to paste", not "here is an
+ * install".
+ */
+function peerSetupFromHandoff(handoff: ConnectorPeerHandoff): ConnectorSetupState {
+  return {
+    connector: handoff.connector,
+    reason: "created",
+    reveal: null,
+    peerConfig: handoff.peerConfig,
+    tunnelProvisioned: handoff.tunnelProvisioned,
+    focusIntegrationId: handoff.integrationId,
+  };
 }
 
 interface ConnectorTabDialogs {
@@ -144,6 +165,12 @@ export function ConnectorsTab({ servers, isAdmin }: { servers: EdgeNatServer[]; 
             onLink={() => setDialogs({ ...NO_DIALOGS, linking: connector })}
             onUnlink={(link) => setDialogs({ ...NO_DIALOGS, unlinking: { connector, link } })}
             onSetup={() => setSetup({ connector, reason: "created", reveal: null })}
+            onPeerSettings={(link) => setSetup({
+              connector,
+              reason: "created",
+              reveal: null,
+              focusIntegrationId: link.integrationId,
+            })}
           />
         ))}
       </div>
@@ -175,21 +202,51 @@ export function ConnectorsTab({ servers, isAdmin }: { servers: EdgeNatServer[]; 
       )}
 
       {setup && (
-        <ConnectorInstallDialog
-          key={setup.reveal?.installToken ?? setup.connector.id}
-          open
-          onOpenChange={(open) => !open && setSetup(null)}
-          reveal={setup.reveal}
-          peerConfig={setup.peerConfig}
-          reason={setup.reason}
-          tunnelProvisioned={setup.tunnelProvisioned}
-          connector={setup.connector}
-          liveConnector={connectors.find((entry) => entry.id === setup.connector.id)}
+        <ConnectorSetupHost
+          setup={setup}
+          connectors={connectors}
           servers={servers}
+          onClose={() => setSetup(null)}
           onLinkEdge={() => setDialogs({ ...NO_DIALOGS, linking: setup.connector })}
         />
       )}
     </section>
+  );
+}
+
+/**
+ * The open setup surface — the agent install steps, or a manual connector's peer
+ * settings. Remounted whenever the token or the edge it is scoped to changes, so
+ * a second edge box never inherits the first one's state.
+ */
+function ConnectorSetupHost({
+  setup,
+  connectors,
+  servers,
+  onClose,
+  onLinkEdge,
+}: {
+  setup: ConnectorSetupState;
+  connectors: ConnectorDto[];
+  servers: EdgeNatServer[];
+  onClose: () => void;
+  onLinkEdge: () => void;
+}) {
+  return (
+    <ConnectorInstallDialog
+      key={setup.reveal?.installToken ?? `${setup.connector.id}:${setup.focusIntegrationId ?? "all"}`}
+      open
+      onOpenChange={(open) => !open && onClose()}
+      reveal={setup.reveal}
+      peerConfig={setup.peerConfig}
+      reason={setup.reason}
+      tunnelProvisioned={setup.tunnelProvisioned}
+      connector={setup.connector}
+      liveConnector={connectors.find((entry) => entry.id === setup.connector.id)}
+      servers={servers}
+      focusIntegrationId={setup.focusIntegrationId}
+      onLinkEdge={onLinkEdge}
+    />
   );
 }
 
@@ -241,6 +298,11 @@ function ConnectorTabDialogSet({
           servers={servers}
           open
           onOpenChange={(open) => !open && onClose()}
+          // A manual connector was linked FOR these values; end there, not on a toast.
+          onPeerSettings={(handoff) => {
+            onClose();
+            onSetup(peerSetupFromHandoff(handoff));
+          }}
         />
       )}
       {dialogs.unlinking && (
@@ -338,6 +400,7 @@ function ConnectorCard({
   onLink,
   onUnlink,
   onSetup,
+  onPeerSettings,
 }: {
   connector: ConnectorDto;
   servers: EdgeNatServer[];
@@ -348,6 +411,8 @@ function ConnectorCard({
   onLink: () => void;
   onUnlink: (link: ConnectorLinkDto) => void;
   onSetup: () => void;
+  /** Peer settings for ONE of the edges this connector serves. */
+  onPeerSettings: (link: ConnectorLinkDto) => void;
 }) {
   const manual = isManualConnector(connector);
   const links = connectorLinkSummary(connector);
@@ -388,6 +453,7 @@ function ConnectorCard({
           isAdmin={isAdmin}
           onLink={onLink}
           onUnlink={onUnlink}
+          onPeerSettings={onPeerSettings}
         />
         {manual ? (
           <ManualConnectorNote connector={connector} isAdmin={isAdmin} onSetup={onSetup} />
@@ -432,6 +498,15 @@ function ConnectorCardIdentity({
   );
 }
 
+/**
+ * The whole-connector action. Once a connector serves several edge boxes it
+ * covers all of them at once, and the per-edge blocks live on the rows — so it
+ * says which it is rather than competing with them.
+ */
+function peerSettingsLabel(connector: ConnectorDto): string {
+  return connectorLinkSummary(connector).total > 1 ? "Peer settings (all edges)" : "Peer settings";
+}
+
 function ConnectorCardActions({
   connector,
   manual,
@@ -458,8 +533,9 @@ function ConnectorCardActions({
           <Link2 /> Link to an edge box
         </Button>
       )}
+      {/* The per-edge blocks live on the rows below; this one shows every edge. */}
       <Button variant="outline" size="sm" onClick={onSetup}>
-        {manual ? <Waypoints /> : <Terminal />} {manual ? "Peer settings" : "Setup steps"}
+        {manual ? <Waypoints /> : <Terminal />} {manual ? peerSettingsLabel(connector) : "Setup steps"}
       </Button>
       {!manual && (
         <Button variant="outline" size="icon-sm" aria-label={`Rotate install token for ${connector.name}`} onClick={onRotate}>
@@ -560,8 +636,14 @@ function ManualConnectorNote({
           : <>PolySIEM is waiting for {kind.farSide}&apos;s public key. Until then it is not a tunnel peer anywhere and cannot carry a route.</>}
       </p>
       {isAdmin && (
-        <Button type="button" variant="outline" size="sm" onClick={onSetup}>
-          <Waypoints /> {connector.publicKey ? "Peer settings" : "Finish setup"}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          title="Every edge box this connector serves, each with its own block"
+          onClick={onSetup}
+        >
+          <Waypoints /> {connector.publicKey ? peerSettingsLabel(connector) : "Finish setup"}
         </Button>
       )}
     </div>

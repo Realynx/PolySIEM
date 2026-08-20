@@ -168,7 +168,7 @@ describe("route path", () => {
     expect(path.label).toBe("via OPNsense Firewall");
     expect(path.address).toBe("10.9.9.3");
     expect(path.note).toBe("peer forwards it on");
-    expect(path.noteDetail).toContain("port forward");
+    expect(path.noteDetail).toContain("destination NAT rule");
   });
 
   it("leaves an agent-managed hop without a manual-peer note", () => {

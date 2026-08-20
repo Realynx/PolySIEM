@@ -1263,12 +1263,29 @@ export function connectorStatusUrl(id: string): string {
  * when the endpoint is unavailable the UI derives the same values locally from
  * the edge server it is already showing (see `resolveConnectorPeerBlock`).
  */
-export function connectorPeerConfigUrl(id: string): string {
-  return `${connectorUrl(id)}/peer-config`;
+/**
+ * Peer settings for one connector ON ONE EDGE.
+ *
+ * `integrationId` is what makes the answer per-edge. Without it the API falls
+ * back to the connector's FIRST enabled link, so a connector serving several
+ * edges would answer with some other edge's public key, endpoint and tunnel
+ * address — values an operator would paste into the wrong peer. Always pass the
+ * edge whose block is being shown; the parameter is optional only so a
+ * single-linked connector keeps working unchanged.
+ */
+export function connectorPeerConfigUrl(id: string, integrationId?: string | null): string {
+  const base = `${connectorUrl(id)}/peer-config`;
+  return integrationId ? `${base}?integrationId=${encodeURIComponent(integrationId)}` : base;
 }
 
-export function connectorPeerConfigQueryKey(id: string) {
-  return [CONNECTORS_QUERY_KEY, "peer-config", id] as const;
+/**
+ * Keyed by edge as well as connector: one cache entry per connector would make
+ * two edges share — and overwrite — each other's peer settings. The shared
+ * prefix is kept first so existing invalidation by connector still reaches every
+ * edge's entry.
+ */
+export function connectorPeerConfigQueryKey(id: string, integrationId?: string | null) {
+  return [CONNECTORS_QUERY_KEY, "peer-config", id, integrationId ?? null] as const;
 }
 
 export function connectorStatusQueryKey(id: string) {
@@ -1895,6 +1912,155 @@ export function buildConnectorPeerSnippet(
 }
 
 // ---------------------------------------------------------------------------
+// Linking a manual connector to ANOTHER edge box.
+//
+// A link allocates a fresh tunnel address on the edge it was made against, and
+// the far side then needs ONE MORE peer entry — the peer it already has for
+// another edge stays exactly as it is. The link response carries the paste-ready
+// block for the edge just linked, so the success path hands it straight to the
+// peer surface instead of leaving the operator to go looking for it.
+//
+// Shared with mobile: both shells consume `connectorLinkPeerHandoff` and label
+// every block with `connectorPeerBlockHeading`, so neither can drift into
+// showing an unnamed block or the wrong edge's values.
+// ---------------------------------------------------------------------------
+
+/**
+ * What a link hands to the peer-settings surface. Null for an `agent` kind:
+ * nothing is pasted anywhere for one, so linking it stays a toast.
+ */
+export interface ConnectorPeerHandoff {
+  /** The connector INCLUDING the new link, so its address resolves at once. */
+  connector: ConnectorDto;
+  /** The edge just linked — the block shown must carry ITS values, not the first edge's. */
+  integrationId: string;
+  /** Paste-ready block for that edge, straight off the link response. */
+  peerConfig: ConnectorPeerConfigDto | null;
+  /** Set when the link had to stand that edge's tunnel up on the way through. */
+  tunnelProvisioned: ConnectorTunnelProvisionedDto | null;
+}
+
+/**
+ * The connector with `link` folded in, replacing any link it already had to the
+ * same edge. Lets a surface render the new edge's address before the list that
+ * feeds it has refetched.
+ */
+export function connectorWithLink(
+  connector: ConnectorDto,
+  link: ConnectorLinkDto | null | undefined,
+): ConnectorDto {
+  if (!link?.integrationId) return connector;
+  const others = connectorLinks(connector).filter((entry) => entry.integrationId !== link.integrationId);
+  return { ...connector, links: [...others, link] };
+}
+
+/**
+ * Read the peer block out of a link response, for the edge that was just
+ * linked. Returns null for an agent connector, whose link is complete once the
+ * toast is shown.
+ *
+ * `result.peerConfig` is the whole reason a manual connector gets linked, so
+ * dropping it here is the regression this guards against.
+ */
+export function connectorLinkPeerHandoff(input: {
+  /** The connector as the caller knew it — its kind survives a thin response. */
+  connector: ConnectorDto;
+  /** The edge the link was requested for. */
+  integrationId: string;
+  result: LinkConnectorResult;
+}): ConnectorPeerHandoff | null {
+  const linked = connectorWithLink({ ...input.connector, ...input.result.connector }, input.result.link);
+  if (!isManualConnector(linked)) return null;
+  return {
+    connector: linked,
+    integrationId: input.result.link?.integrationId ?? input.integrationId,
+    peerConfig: input.result.peerConfig ?? null,
+    tunnelProvisioned: connectorTunnelProvisioned(input.result),
+  };
+}
+
+/**
+ * The freshest connector that still knows about `integrationId`.
+ *
+ * A polled connector list can be a beat behind a link that was just made, and
+ * preferring it blindly would show the FIRST edge's block on the very screen
+ * that exists to show the new edge's. Shared so mobile cannot regress into that
+ * race either.
+ */
+export function connectorWithFreshestLink(input: {
+  /** The connector as the surface was opened with — carries the new link. */
+  connector: ConnectorDto;
+  /** The polled row, when the list has one. */
+  live?: ConnectorDto | null;
+  /** The edge whose link must survive the merge. */
+  integrationId?: string | null;
+}): ConnectorDto {
+  const live = input.live ?? input.connector;
+  if (!input.integrationId || connectorLinkFor(live, input.integrationId)) return live;
+  return connectorWithLink(live, connectorLinkFor(input.connector, input.integrationId));
+}
+
+/** Names the edge a peer block belongs to, and says what it sits next to. */
+export interface ConnectorPeerBlockHeading {
+  /** Always names the edge: a block must never be identified by position alone. */
+  title: string;
+  /** Whether this is an addition to the far side, or its first peer. */
+  detail: string;
+}
+
+/**
+ * The heading for ONE edge's peer block.
+ *
+ * With more than one edge in play the copy has one job: this is an ADDITIONAL
+ * peer on the far side, alongside whatever is already configured there — never
+ * a replacement for it. That mix-up is what makes a second edge box confusing.
+ */
+export function connectorPeerBlockHeading(input: {
+  connector: Pick<ConnectorDto, "name"> & Partial<Pick<ConnectorDto, "kind" | "isManual">>;
+  edgeName: string;
+  /** Edge boxes this connector serves in total, this one included. */
+  edgeCount: number;
+  /** True for the block belonging to the edge that was just linked. */
+  justLinked?: boolean;
+}): ConnectorPeerBlockHeading {
+  const farSide = connectorKindPresentation(connectorKindOf(input.connector)).farSide;
+  const title = input.justLinked
+    ? `Peer settings for ${input.edgeName} — the edge box you just linked`
+    : `Peer settings for ${input.edgeName}`;
+  const others = Math.max(0, input.edgeCount - 1);
+  if (others === 0) {
+    return {
+      title,
+      detail: `These are ${input.connector.name}'s values on ${input.edgeName}. Link it to another edge box later and `
+        + `that edge gets a peer entry of its own here, next to this one.`,
+    };
+  }
+  const them = others === 1 ? "it" : "them";
+  const peers = others === 1 ? "the peer" : `the ${others} peers`;
+  const boxes = others === 1 ? "the other edge box" : `the other ${others} edge boxes`;
+  return {
+    title,
+    detail: `Add this on ${farSide} as one more peer, alongside ${peers} already configured for ${boxes} — it does `
+      + `not replace ${them}. One interface, one keypair, one peer entry per edge box.`,
+  };
+}
+
+/** Wording for a per-edge "Peer settings" action on a linked-edge row. */
+export function connectorPeerSettingsAction(input: { connectorName: string; edgeName: string }): {
+  /** Button text. The row already names the edge, so this stays short. */
+  label: string;
+  /** Read out of context by a screen reader, so it names both ends. */
+  ariaLabel: string;
+  title: string;
+} {
+  return {
+    label: "Peer settings",
+    ariaLabel: `Peer settings for ${input.connectorName} on ${input.edgeName}`,
+    title: `The values to enter on the far side for ${input.edgeName}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // SSH management — PolySIEM manages BOTH ends the same way. The edge already
 // has a `polysiem-edge` account whose key can only run the edge agent; a
 // connector gets the identical treatment through `polysiem-connector`.
@@ -2195,27 +2361,283 @@ export function edgeTunnelEndpoint(server: EdgeNatServer): { host: string | null
   return { host, port, label: host ? `${host}:${port}/udp` : `the edge public IP on UDP ${port}` };
 }
 
+// ---------------------------------------------------------------------------
+// Far-side setup instructions
+//
+// PolySIEM stops at the tunnel for a hand-configured connector: it DNATs the
+// public port to that peer's tunnel address and cannot program the other end.
+// Finishing the path is ordinary setup, not a failure — so the copy below is
+// written as instructions, and it carries the ACTUAL values of the rule rather
+// than a generic sentence. Pure and React-free on purpose: desktop and mobile
+// render the same words from one source instead of drifting apart.
+// ---------------------------------------------------------------------------
+
+/**
+ * The half of a NAT rule these instructions need. Every field is optional so a
+ * half-filled form — or no rule at all, in the connector install dialog — still
+ * produces usable steps with honest placeholders.
+ */
+export interface ConnectorRouteRule {
+  publicPort?: number | string | null;
+  protocol?: NatProtocol | string | null;
+  targetAddress?: string | null;
+  targetPort?: number | string | null;
+}
+
+export interface ConnectorSetupField {
+  /** The far side's own field label, verbatim — e.g. "Redirect target IP". */
+  label: string;
+  /** What to enter, resolved to this rule's real value where one is known. */
+  value: string;
+  /** True when the value is a literal address or port, not a menu choice. */
+  mono?: boolean;
+  /** Set only where a field is easy to get wrong. */
+  note?: string;
+}
+
+export interface ConnectorSetupStep {
+  /** Stable key, for React lists and for tests that pin one step's fields. */
+  id: string;
+  title: string;
+  /** Where to go in the far side's UI, e.g. "Firewall → NAT → Port Forward → +". */
+  path: string | null;
+  detail: string | null;
+  fields: ConnectorSetupField[];
+  /** Closing instruction, e.g. "Save, then Apply changes." */
+  footnote: string | null;
+  /** True for a step that only applies on one branch of the previous one. */
+  conditional?: boolean;
+}
+
+export interface ConnectorSetupInstructions {
+  kind: ConnectorKind;
+  /** Action-first heading. This is expected setup, so it is not a warning. */
+  title: string;
+  /** The one-line gist — what the single sentence said before steps existed. */
+  summary: string;
+  /** Disclosure trigger label, e.g. "OPNsense steps". */
+  stepsLabel: string;
+  /** What must already be true, or the steps have nothing to select. */
+  prerequisite: ConnectorSetupStep | null;
+  /** Empty for kinds PolySIEM has no vendor-specific navigation for. */
+  steps: ConnectorSetupStep[];
+  /** Short closing clarifications, one sentence each. */
+  notes: string[];
+}
+
+/** A resolved value plus whether it is real, so placeholders are never styled as literals. */
+interface SetupValue {
+  text: string;
+  known: boolean;
+}
+
+function setupValue(raw: string | number | null | undefined, fallback: string): SetupValue {
+  const text = raw === null || raw === undefined ? "" : String(raw).trim();
+  return text ? { text, known: true } : { text: fallback, known: false };
+}
+
+/** OPNsense asks for a port RANGE even for one port; both ends are the same. */
+function setupPortRange(port: SetupValue): SetupValue {
+  return port.known
+    ? { text: `${port.text} to ${port.text}`, known: true }
+    : { text: `${port.text}, from and to`, known: false };
+}
+
+interface ConnectorSetupValues {
+  name: string;
+  /** The connector's tunnel address ON THIS EDGE — what the NAT rule matches. */
+  address: SetupValue;
+  /** Which edge that address belongs to; a shared peer holds one per edge. */
+  edge: SetupValue;
+  protocol: SetupValue;
+  publicPort: SetupValue;
+  targetAddress: SetupValue;
+  targetPort: SetupValue;
+}
+
+function connectorSetupValues(
+  connector: ConnectorDto,
+  rule: ConnectorRouteRule | undefined,
+  integrationId: string | null | undefined,
+): ConnectorSetupValues {
+  const protocol = rule?.protocol ? String(rule.protocol).trim().toUpperCase() : null;
+  return {
+    name: connector.name,
+    address: setupValue(connectorTunnelAddressFor(connector, integrationId), "its tunnel address on this edge"),
+    edge: setupValue(connectorLinkFor(connector, integrationId)?.edgeName, "this edge"),
+    protocol: setupValue(protocol, "the rule's protocol"),
+    publicPort: setupValue(rule?.publicPort, "the published port"),
+    targetAddress: setupValue(rule?.targetAddress, "the internal service address"),
+    targetPort: setupValue(rule?.targetPort, "the service port"),
+  };
+}
+
+/** "UDP 8211", "8211", or a phrase when the rule is not known yet. */
+function setupListener(values: ConnectorSetupValues): string {
+  if (!values.publicPort.known) return "the port you publish";
+  return values.protocol.known ? `${values.protocol.text} ${values.publicPort.text}` : values.publicPort.text;
+}
+
+function connectorSetupSummary(kind: ConnectorKind, values: ConnectorSetupValues): string {
+  const listener = setupListener(values);
+  const lead = values.publicPort.known
+    ? `The edge forwards this port to ${values.address.text} over the tunnel.`
+    : `The edge forwards every port you publish through this connector to ${values.address.text} over the tunnel.`;
+  return kind === "opnsense"
+    ? `${lead} Finish the path with a destination NAT rule on ${values.name}, from its WireGuard interface on ${listener} to the service on your LAN.`
+    : `${lead} ${values.name} must forward ${listener} onward to the service itself — PolySIEM only manages the edge end.`;
+}
+
+/**
+ * Not a step you perform per rule, but the one thing that makes the rest
+ * possible: an unassigned instance is absent from every interface picker.
+ */
+const OPNSENSE_PREREQUISITE: ConnectorSetupStep = {
+  id: "assign",
+  title: "The WireGuard instance must be assigned as an interface",
+  path: "Interfaces → Assignments",
+  detail: "Pick the wgX device, assign it, and enable it. Until it is assigned it does not appear in the NAT or firewall interface lists at all, so there is nothing to select below.",
+  fields: [],
+  footnote: null,
+};
+
+const OPNSENSE_SETUP_NOTES: readonly string[] = [
+  "This is destination NAT. Firewall → NAT → Outbound is source NAT and is not what this needs.",
+  "Nothing here touches WAN: the traffic reaches OPNsense through the tunnel, already inside your network.",
+];
+
+/** Step 1 — the redirect itself. */
+function opnsenseNatStep(values: ConnectorSetupValues): ConnectorSetupStep {
+  const range = setupPortRange(values.publicPort);
+  return {
+    id: "nat",
+    title: "Create the destination NAT rule",
+    path: "Firewall → NAT → Port Forward → +",
+    detail: null,
+    fields: [
+      {
+        label: "Interface",
+        value: "the assigned WireGuard interface",
+        note: "The packet arrives over the tunnel, so this is the wgX interface — not WAN.",
+      },
+      { label: "TCP/IP version", value: "IPv4" },
+      { label: "Protocol", value: values.protocol.text, note: "Match the published rule exactly." },
+      { label: "Source", value: "any" },
+      {
+        label: "Destination",
+        value: values.address.text,
+        mono: values.address.known,
+        note: `Set the type to Single host or Network and enter the tunnel address this connector holds on ${values.edge.text}. Not "WAN address", and not the internal target — the packet arrives on the WireGuard interface already addressed to the tunnel IP.`,
+      },
+      {
+        label: "Destination port range",
+        value: range.text,
+        mono: range.known,
+        note: "From and to are both the published port.",
+      },
+      { label: "Redirect target IP", value: values.targetAddress.text, mono: values.targetAddress.known },
+      { label: "Redirect target port", value: values.targetPort.text, mono: values.targetPort.known },
+      {
+        label: "Filter rule association",
+        value: "Add associated filter rule",
+        note: "OPNsense then writes the matching pass rule for you — the easiest correct choice, and it makes the next step unnecessary.",
+      },
+    ],
+    footnote: "Save, then Apply changes.",
+  };
+}
+
+/** Step 2 — only for the "Filter rule association: None" branch. */
+function opnsenseFilterStep(values: ConnectorSetupValues): ConnectorSetupStep {
+  const range = setupPortRange(values.targetPort);
+  return {
+    id: "filter",
+    title: "Add the pass rule yourself",
+    path: "Firewall → Rules → the WireGuard interface → +",
+    detail: "Only needed if you set Filter rule association to None above.",
+    conditional: true,
+    fields: [
+      { label: "Action", value: "Pass" },
+      { label: "Direction", value: "in" },
+      { label: "TCP/IP version", value: "IPv4" },
+      { label: "Protocol", value: values.protocol.text, note: "The same protocol as the NAT rule." },
+      {
+        label: "Destination",
+        value: values.targetAddress.text,
+        mono: values.targetAddress.known,
+        note: "The redirect target, NOT the tunnel address — OPNsense filters after NAT has already rewritten the destination. Pointing this at the tunnel address is why a rule that looks right still drops the traffic.",
+      },
+      {
+        label: "Destination port range",
+        value: range.text,
+        mono: range.known,
+        note: "The service port, not the published one — NAT has already translated it.",
+      },
+    ],
+    footnote: "Save, then Apply changes.",
+  };
+}
+
+/**
+ * Step-by-step setup for the far side of a MANUAL connector, with this rule's
+ * real values filled in. Returns null for agent connectors, which PolySIEM
+ * programs end to end and which therefore have nothing to hand over.
+ *
+ * Only `opnsense` gets vendor navigation; any other hand-configured peer keeps
+ * the vendor-neutral summary and an empty step list.
+ */
+export function connectorSetupInstructions(
+  connector: ConnectorDto,
+  rule?: ConnectorRouteRule,
+  /** The edge publishing the rule; its link supplies the tunnel address. */
+  integrationId?: string | null,
+): ConnectorSetupInstructions | null {
+  if (!isManualConnector({ kind: connector.kind, isManual: connector.isManual })) return null;
+  const kind = connectorKindOf(connector);
+  const values = connectorSetupValues(connector, rule, integrationId);
+  const summary = connectorSetupSummary(kind, values);
+  if (kind !== "opnsense") {
+    return {
+      kind,
+      title: `Finish the path on ${connectorKindPresentation(kind).farSide}`,
+      summary,
+      stepsLabel: "setup steps",
+      prerequisite: null,
+      steps: [],
+      notes: [],
+    };
+  }
+  return {
+    kind,
+    title: "Finish the path in OPNsense",
+    summary,
+    stepsLabel: "OPNsense steps",
+    prerequisite: OPNSENSE_PREREQUISITE,
+    steps: [opnsenseNatStep(values), opnsenseFilterStep(values)],
+    notes: [...OPNSENSE_SETUP_NOTES],
+  };
+}
+
 /**
  * A connector-mode rule may target a MANUAL connector, but PolySIEM stops at the
  * tunnel: it DNATs the public port to that peer's tunnel address and cannot
  * program the far side. Returns null for agent connectors, which PolySIEM does
  * program end to end.
+ *
+ * The one-line summary here and the step list above come from the same source,
+ * so the headline can never say something the steps contradict.
  */
 export function connectorRouteWarning(
   connector: ConnectorDto,
-  rule?: { publicPort?: number | string | null },
+  rule?: ConnectorRouteRule,
   /** The edge publishing the rule; its link supplies the tunnel address. */
   integrationId?: string | null,
 ): { title: string; detail: string } | null {
-  if (!isManualConnector({ kind: connector.kind, isManual: connector.isManual })) return null;
-  const kind = connectorKindPresentation(connectorKindOf(connector));
-  const port = rule?.publicPort ? String(rule.publicPort) : "the same port";
-  const address = connectorTunnelAddressFor(connector, integrationId) ?? "its tunnel address on this edge";
+  const instructions = connectorSetupInstructions(connector, rule, integrationId);
+  if (!instructions) return null;
   return {
-    title: `PolySIEM cannot program ${kind.farSide}`,
-    detail: kind.kind === "opnsense"
-      ? `The edge forwards this port to ${address} over the tunnel. Finish the path with a port forward on ${connector.name} from its WireGuard interface on ${port} to the service you are publishing.`
-      : `The edge forwards this port to ${address} over the tunnel. ${connector.name} must forward ${port} onward to the service itself — PolySIEM only manages the edge end.`,
+    title: `PolySIEM cannot program ${connectorKindPresentation(instructions.kind).farSide}`,
+    detail: instructions.summary,
   };
 }
 

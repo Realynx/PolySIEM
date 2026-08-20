@@ -8,6 +8,8 @@ import {
   canonicalWireguardConfig,
   desiredEdgeRulesetHash,
   restrictedAuthorizedKey,
+  EDGE_WG_KEY_DIR,
+  EDGE_WG_KEY_FILE,
   type EdgeApplyRule,
   type EdgeWireguardConfig,
 } from "./agent";
@@ -305,5 +307,150 @@ describe("Edge NAT WireGuard wire protocol", () => {
     expect(install).toContain("Restore PolySIEM Edge NAT rules and WireGuard tunnel");
     // After=network-online.target is retained so the tunnel can bind on boot.
     expect(install).toContain("After=network-online.target");
+  });
+});
+
+describe("edge WireGuard key location (Ubuntu 26.04 AppArmor)", () => {
+  // Verified on a real 26.04 edge host: wg(8) runs under an AppArmor profile that
+  // permits /etc/wireguard/** and denies other paths. The identical 0600 root-owned
+  // key file was REJECTED from /tmp ("fopen: Permission denied") and ACCEPTED from
+  // /etc/wireguard. Staging the key in $TMPDIR made every apply with a tunnel fail
+  // and roll back, so the tunnel never reached the host.
+  it("stages the private key under /etc/wireguard, never in a temp dir", () => {
+    expect(EDGE_WG_KEY_DIR).toBe("/etc/wireguard");
+    expect(EDGE_WG_KEY_FILE.startsWith("/etc/wireguard/")).toBe(true);
+    expect(EDGE_AGENT_SCRIPT).toContain(`wg_key_file=${EDGE_WG_KEY_FILE}`);
+    expect(EDGE_AGENT_SCRIPT).not.toContain('wg_key_file="$(mktemp)"');
+  });
+
+  it("creates the key directory 0700 before writing the key", () => {
+    const mkdir = EDGE_AGENT_SCRIPT.indexOf(`install -d -m 0700 ${EDGE_WG_KEY_DIR}`);
+    const assign = EDGE_AGENT_SCRIPT.indexOf(`wg_key_file=${EDGE_WG_KEY_FILE}`);
+    expect(mkdir).toBeGreaterThan(-1);
+    expect(mkdir).toBeLessThan(assign);
+  });
+
+  it("still removes the key in the cleanup trap and keeps it 0600", () => {
+    expect(EDGE_AGENT_SCRIPT).toContain('chmod 0600 "$wg_key_file"');
+    expect(EDGE_AGENT_SCRIPT).toContain('rm -f "$rules"');
+    expect(EDGE_AGENT_SCRIPT).toMatch(/rm -f "\$rules"[^\n]*\$wg_key_file/);
+  });
+});
+
+describe("edge dependency management (PolySIEM installs wireguard-tools)", () => {
+  const publicKey = generateEd25519Keypair("edge-deps@test").publicKeyLine;
+  const install = buildEdgeAgentInstallScript(publicKey);
+
+  // Section boundaries of the forced-command agent, used to prove WHERE things live.
+  const STATUS_AT = EDGE_AGENT_SCRIPT.indexOf("  STATUS)");
+  const APPLY_AT = EDGE_AGENT_SCRIPT.indexOf("  APPLY)");
+  const WG_ON_AT = EDGE_AGENT_SCRIPT.indexOf('if [ "$wg_present" -eq 1 ] && [ "$wg_enabled" = 1 ]; then');
+  const WG_ON_END = EDGE_AGENT_SCRIPT.indexOf('elif [ "$wg_present" -eq 1 ] && [ "$wg_enabled" = 0 ]');
+  const PACKAGE_CALLS = ["apt-get update", "apt-get install", "dnf install", "yum install", "wireguard-tools"];
+
+  function occurrences(haystack: string, needle: string): number[] {
+    const found: number[] = [];
+    for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) found.push(at);
+    return found;
+  }
+
+  it("installs wireguard-tools at provision time instead of demanding the operator do it", () => {
+    expect(install).toContain("DEP_APT='wireguard-tools");
+    expect(install).toContain("DEP_RPM='wireguard-tools");
+    // wg is a hard requirement now: it is checked before and re-checked after installing.
+    expect(install).toMatch(/REQUIRED='[^']*\bwg\b[^']*'/);
+    expect(occurrences(install, 'for binary in $REQUIRED; do').length).toBe(2);
+    expect(install).not.toContain("Install sudo, iproute2, iptables, util-linux, and coreutils first.");
+  });
+
+  it("detects apt-get, dnf and yum and installs non-interactively", () => {
+    expect(install).toContain("if command -v apt-get >/dev/null 2>&1; then");
+    expect(install).toContain("DEBIAN_FRONTEND=noninteractive apt-get update -qq");
+    expect(install).toContain("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $DEP_APT");
+    expect(install).toContain("elif command -v dnf >/dev/null 2>&1; then");
+    expect(install).toContain("dnf install -y -q $DEP_RPM");
+    expect(install).toContain("elif command -v yum >/dev/null 2>&1; then");
+    expect(install).toContain("yum install -y -q $DEP_RPM");
+    // Other missing dependencies are installed too, not just WireGuard.
+    for (const pkg of ["iproute2", "iptables", "sudo", "util-linux", "coreutils"]) {
+      expect(install).toContain(pkg);
+    }
+  });
+
+  it("aborts with an actionable message when there is no package manager or the install fails", () => {
+    expect(install).toContain("DEP_MANUAL='wireguard-tools, iproute2, iptables, sudo, util-linux and coreutils'");
+    for (const marker of [
+      "No supported package manager (apt-get/dnf/yum) was found.",
+      "Automatic dependency installation failed.",
+      "Missing required command after dependency install: %s",
+    ]) {
+      const at = install.indexOf(marker);
+      expect(at).toBeGreaterThan(-1);
+      // Never continue into a broken state: every failure path names the fix and exits.
+      expect(install.slice(at, at + 400)).toContain("Install %s by hand, then re-run this installer.");
+      expect(install.slice(at, at + 400)).toContain("exit 1");
+    }
+  });
+
+  it("self-heals a missing wg only inside the wg-enabled APPLY branch", () => {
+    expect(STATUS_AT).toBeGreaterThan(-1);
+    expect(APPLY_AT).toBeGreaterThan(STATUS_AT);
+    expect(WG_ON_AT).toBeGreaterThan(APPLY_AT);
+    expect(WG_ON_END).toBeGreaterThan(WG_ON_AT);
+    // The install is guarded twice: by the tunnel request, then by wg actually missing.
+    expect(EDGE_AGENT_SCRIPT).toContain("if ! command -v wg >/dev/null 2>&1; then");
+    expect(EDGE_AGENT_SCRIPT.indexOf("if ! command -v wg >/dev/null 2>&1; then")).toBeGreaterThan(WG_ON_AT);
+    // Every package-manager call in the whole agent lives in that one branch, so a
+    // NAT-only edge (and every unconditional path) never installs anything.
+    for (const snippet of PACKAGE_CALLS) {
+      const hits = occurrences(EDGE_AGENT_SCRIPT, snippet);
+      expect(hits.length).toBeGreaterThan(0);
+      for (const at of hits) {
+        expect(at).toBeGreaterThan(WG_ON_AT);
+        expect(at).toBeLessThan(WG_ON_END);
+      }
+    }
+    // The unconditional APPLY preflight still only checks, never installs.
+    const preflight = EDGE_AGENT_SCRIPT.slice(APPLY_AT, WG_ON_AT);
+    expect(preflight).toContain("for binary in iptables iptables-restore ip awk");
+    expect(preflight).not.toMatch(/for binary in [^\n]*\bwg\b/);
+  });
+
+  it("bounds the self-heal, logs one line on stderr, and fails with a precise message", () => {
+    expect(EDGE_AGENT_SCRIPT).toContain("if command -v timeout >/dev/null 2>&1; then wg_pm='timeout 300'");
+    // stdout stays the machine-readable APPLY protocol; the notice goes to stderr.
+    expect(EDGE_AGENT_SCRIPT).toMatch(/installing wireguard-tools before bringing up %s\\n' "\$wg_if" >&2/);
+    expect(EDGE_AGENT_SCRIPT).toContain(
+      "wireguard-tools is not installed and could not be installed automatically; install it on this host and apply again",
+    );
+    // That precise message replaces the bare "missing dependency: wg" for this case.
+    expect(EDGE_AGENT_SCRIPT.indexOf("could not be installed automatically")).toBeLessThan(
+      EDGE_AGENT_SCRIPT.indexOf("for wg_bin in wg ip sort"),
+    );
+  });
+
+  it("keeps STATUS fast and side-effect-free", () => {
+    const status = EDGE_AGENT_SCRIPT.slice(STATUS_AT, APPLY_AT);
+    for (const snippet of [...PACKAGE_CALLS, "apt-get", "install -y", "timeout 300"]) {
+      expect(status).not.toContain(snippet);
+    }
+    // It still degrades gracefully on a box that has no wg binary at all.
+    expect(status).toContain("command -v wg >/dev/null 2>&1 && ip link show dev");
+  });
+
+  it("leaves the AppArmor key staging and the tunnel bring-up order intact", () => {
+    expect(EDGE_AGENT_SCRIPT).toContain(`wg_key_file=${EDGE_WG_KEY_FILE}`);
+    expect(EDGE_WG_KEY_DIR).toBe("/etc/wireguard");
+    // Self-heal runs before anything touches the key or the interface.
+    expect(EDGE_AGENT_SCRIPT.indexOf("could not be installed automatically")).toBeLessThan(
+      EDGE_AGENT_SCRIPT.indexOf('private-key "$wg_key_file"'),
+    );
+    expect(EDGE_AGENT_SCRIPT.indexOf("could not be installed automatically")).toBeLessThan(
+      EDGE_AGENT_SCRIPT.indexOf('ip link add dev "$wg_if" type wireguard'),
+    );
+    // And the surrounding safety net is untouched.
+    expect(EDGE_AGENT_SCRIPT).toContain("flock -n 9");
+    expect(EDGE_AGENT_SCRIPT).toContain("iptables-restore --test --noflush");
+    expect(EDGE_AGENT_SCRIPT).toContain("trap cleanup EXIT HUP INT TERM");
   });
 });

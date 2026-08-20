@@ -40,7 +40,10 @@ describe("automatic Edge NAT provisioning", () => {
       expect(args.at(-1)).toBe("polysiem-edge-bootstrap");
       expect(input).toContain("ADMIN_NAME='ubuntu'");
       expect(input).toContain("grep -Fvx -- \"$BOOTSTRAP_KEY\"");
-      expect(timeout).toBe(90_000);
+      // The installer installs missing dependencies (wireguard-tools and friends)
+      // through the host package manager, so the budget has to cover an apt/dnf
+      // run. Timing out mid-install would leave the box half-provisioned.
+      expect(timeout).toBe(300_000);
       return { stdout: "PolySIEM Edge NAT helper installed.\n", stderr: "", code: 0 };
     };
 

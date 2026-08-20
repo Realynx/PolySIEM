@@ -21,7 +21,7 @@ import {
   type EdgeNatServer,
 } from "@/components/network/edge-networks-types";
 import { ConnectorKindBadge, ConnectorStatusBadge, connectorKindIcon, contactLabel } from "./mobile-connector-atoms";
-import { EdgeConnectorPickerSheet, connectorPendingPoll, useAllConnectorsQuery } from "./mobile-connector-links";
+import { connectorPendingPoll } from "./mobile-connector-links";
 import { ConnectorSheetHost } from "./mobile-connector-sheets";
 
 /**
@@ -164,9 +164,6 @@ export function MobileConnectorsBlock({
 
   const connectorsQuery = useConnectorsQuery(server.id, { enabled: server.enabled });
   const connectors = connectorsQuery.data ?? [];
-  // Only fetched while the picker is open: linking is the one action that needs
-  // to see connectors this edge does not have.
-  const allConnectors = useAllConnectorsQuery({ enabled: linkOpen });
   const edges = servers && servers.length > 0 ? servers : [server];
 
   return (
@@ -193,6 +190,8 @@ export function MobileConnectorsBlock({
         One connector can serve several edge boxes; each link gets its own tunnel address here.
       </p>
 
+      {/* Every sheet this list opens — including the link picker, because a
+          manual link ends at that edge's peer settings — lives in the host. */}
       <ConnectorSheetHost
         connectors={connectors}
         edges={edges}
@@ -202,16 +201,9 @@ export function MobileConnectorsBlock({
         onSelectedIdChange={setSelectedId}
         createOpen={createOpen}
         onCreateOpenChange={setCreateOpen}
+        linkOpen={linkOpen}
+        onLinkOpenChange={setLinkOpen}
       />
-
-      {linkOpen && (
-        <EdgeConnectorPickerSheet
-          server={server}
-          connectors={allConnectors.data ?? []}
-          isLoading={allConnectors.isLoading}
-          onOpenChange={setLinkOpen}
-        />
-      )}
     </div>
   );
 }

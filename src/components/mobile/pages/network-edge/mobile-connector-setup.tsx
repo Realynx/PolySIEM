@@ -2,7 +2,7 @@
 
 import { type FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, Terminal, TriangleAlert } from "lucide-react";
+import { Check, Layers, Loader2, Terminal, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { buildEdgeBootstrapCommand } from "@/lib/integrations/edge-nat/bootstrap";
@@ -20,12 +20,15 @@ import {
   connectorInstallCommandView,
   connectorInstallProgress,
   connectorKindOf,
+  connectorLinks,
   connectorPeerBlockFor,
+  connectorPeerBlockHeading,
   connectorPeerConfigQueryKey,
   connectorPeerConfigUrl,
   connectorPeerProgress,
   connectorTunnelAddressFor,
   connectorUrl,
+  connectorWithFreshestLink,
   edgeInstallStep,
   edgeTunnelEndpoint,
   isWireguardPublicKey,
@@ -36,6 +39,7 @@ import {
   type ConnectorInstallCommandView,
   type ConnectorInstallReason,
   type ConnectorInstallReveal,
+  type ConnectorKind,
   type ConnectorLinkDto,
   type ConnectorPeerBlock,
   type ConnectorPeerConfigDto,
@@ -53,6 +57,7 @@ import {
   TunnelProvisionedNote,
   elide,
 } from "./mobile-connector-atoms";
+import { MobileConnectorSetupDisclosure } from "./mobile-connector-instructions";
 import { ConnectorLinkKeyRows } from "./mobile-connector-links";
 
 /**
@@ -80,6 +85,10 @@ export interface InstallReveal extends ConnectorInstallReveal {
  * Manual-kind setup for ONE edge: no token, no command — the peer block and a
  * key to paste back. The block is per-link because the tunnel address is: the
  * far side holds a different address on each edge it peers with.
+ *
+ * Reached three ways, always scoped to one link: creating a manual connector on
+ * an edge, LINKING one to another edge (the response's `peerConfig` is that new
+ * edge's block), and the per-edge action on the connector's linked-edge list.
  */
 export interface ManualSetup {
   connector: ConnectorDto;
@@ -90,6 +99,8 @@ export interface ManualSetup {
   apiPeerConfig?: ConnectorPeerConfigDto | null;
   /** Set when linking this connector also brought that edge's tunnel up. */
   tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
+  /** True when the operator arrived straight from linking THIS edge, so the block says so. */
+  justLinked?: boolean;
 }
 
 /** The edge's existing bootstrap one-liner; empty when no key has been generated. */
@@ -275,6 +286,69 @@ export function ConnectorInstallSheet({
   );
 }
 
+/** How many edge boxes this connector serves, and how many are not this one. */
+interface PeerBlockScope {
+  edgeCount: number;
+  /** Above zero, the far side already has a peer that this block must not replace. */
+  otherEdges: number;
+}
+
+function peerBlockScope(connector: ConnectorDto, server: EdgeNatServer): PeerBlockScope {
+  const links = connectorLinks(connector);
+  return {
+    edgeCount: links.length,
+    otherEdges: links.filter((link) => link.integrationId !== server.id).length,
+  };
+}
+
+/**
+ * Which edge box these values belong to, said over the block itself — and, once
+ * this far end serves another edge, that the block is one MORE peer rather than
+ * a replacement for the one already configured there.
+ *
+ * Both sentences come from `connectorPeerBlockHeading`, so a phone and the
+ * desktop dialog cannot end up describing the same block differently. The phone
+ * decides only the treatment: a caption while this is the far side's first and
+ * only peer, a card once mistaking it for a replacement becomes possible.
+ */
+function PeerBlockHeading({
+  connector,
+  server,
+  scope,
+  justLinked,
+}: {
+  connector: ConnectorDto;
+  server: EdgeNatServer;
+  scope: PeerBlockScope;
+  justLinked: boolean;
+}) {
+  const heading = connectorPeerBlockHeading({
+    connector,
+    edgeName: server.name,
+    edgeCount: scope.edgeCount,
+    justLinked,
+  });
+  if (scope.otherEdges === 0) {
+    return (
+      <div className="px-0.5">
+        <p className="font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
+          {heading.title}
+        </p>
+        <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{heading.detail}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border bg-card px-3 py-2.5">
+      <p className="flex items-start gap-1.5 text-[13px] leading-tight font-medium">
+        <Layers className="mt-px size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        {heading.title}
+      </p>
+      <p className="mt-1 text-xs leading-snug text-muted-foreground">{heading.detail}</p>
+    </div>
+  );
+}
+
 /** The paste-ready values for the far side, each on its own tap-to-copy row. */
 function PeerConfigRows({ block, opnsense }: { block: ConnectorPeerBlock; opnsense: boolean }) {
   return (
@@ -294,36 +368,70 @@ function PeerConfigRows({ block, opnsense }: { block: ConnectorPeerBlock; opnsen
   );
 }
 
-/** The three steps to run on the far side, phrased for OPNsense or a plain peer. */
-function PeerInstructions({ opnsense, keepalive }: { opnsense: boolean; keepalive: number }) {
+/** What the far side is asked to do, per kind and per "is there already a peer". */
+interface PeerInstructionInput {
+  opnsense: boolean;
+  /** True when this far end already peers with another edge box. */
+  additional: boolean;
+  edgeName: string;
+  keepalive: number;
+}
+
+/**
+ * The three far-side steps.
+ *
+ * `additional` is the case this flow kept getting wrong: a far end that already
+ * serves another edge box has its interface and its first peer already, so step
+ * one is to EXTEND that interface, and step two adds a peer beside the existing
+ * one rather than editing it. Same three steps either way, so the shape of the
+ * job never changes under the operator.
+ */
+function peerInstructionSteps(input: PeerInstructionInput): string[] {
+  const { opnsense, additional, edgeName, keepalive } = input;
+  const peerFields = `the edge public key, the endpoint above, ${
+    opnsense ? "those Allowed IPs" : "those AllowedIPs"
+  }, and keepalive ${keepalive}`;
   if (opnsense) {
-    return (
-      <ol className="flex flex-col gap-2 rounded-xl border bg-card p-3 text-xs">
-        <InstallStep index={1}>
-          In OPNsense open VPN → WireGuard → Instances, add a local instance and set its address to the tunnel address
-          above. Let OPNsense generate its own keypair.
-        </InstallStep>
-        <InstallStep index={2}>
-          Add a peer for this edge: the edge public key, the endpoint above, those Allowed IPs, and keepalive{" "}
-          {keepalive}.
-        </InstallStep>
-        <InstallStep index={3}>
-          Enable the instance, then copy OPNsense&apos;s own public key back into the field below.
-        </InstallStep>
-      </ol>
-    );
+    return [
+      additional
+        ? "In OPNsense open VPN → WireGuard → Instances and edit the instance this far end already uses. Add the tunnel"
+          + " address above to its Tunnel Address list, keeping the address it already holds."
+        : "In OPNsense open VPN → WireGuard → Instances, add a local instance and set its address to the tunnel address"
+          + " above. Let OPNsense generate its own keypair.",
+      additional
+        ? `Add a SECOND peer, for ${edgeName}: ${peerFields}. Leave the peer that is already there untouched.`
+        : `Add a peer for ${edgeName}: ${peerFields}.`,
+      additional
+        ? `Save and apply. OPNsense keeps the same public key, which PolySIEM already holds — the field below only`
+          + " needs it again if you regenerated it."
+        : "Enable the instance, then copy OPNsense's own public key back into the field below.",
+    ];
   }
+  return [
+    additional
+      ? "On the far side, add the tunnel address above to the WireGuard interface it already runs. It keeps the same"
+        + " private key and the same public key."
+      : "On the far side create a WireGuard interface with the tunnel address above. It generates and keeps its own"
+        + " private key.",
+    additional
+      ? `Add ${edgeName} as an ADDITIONAL peer on that interface: ${peerFields}. The existing peer stays as it is.`
+      : `Add ${edgeName} as its peer: ${peerFields}.`,
+    additional
+      ? "Bring the interface back up. PolySIEM already holds this far end's public key — the field below only needs it"
+        + " again if you regenerated it."
+      : "Bring it up, then paste its public key back into the field below.",
+  ];
+}
+
+/** The three steps to run on the far side, phrased for OPNsense or a plain peer. */
+function PeerInstructions(input: PeerInstructionInput) {
   return (
     <ol className="flex flex-col gap-2 rounded-xl border bg-card p-3 text-xs">
-      <InstallStep index={1}>
-        On the far side create a WireGuard interface with the tunnel address above. It generates and keeps its own
-        private key.
-      </InstallStep>
-      <InstallStep index={2}>
-        Add this edge as its peer: the edge public key, the endpoint above, those AllowedIPs, and keepalive{" "}
-        {keepalive}.
-      </InstallStep>
-      <InstallStep index={3}>Bring it up, then paste its public key back into the field below.</InstallStep>
+      {peerInstructionSteps(input).map((step, index) => (
+        <InstallStep key={step} index={index + 1}>
+          {step}
+        </InstallStep>
+      ))}
     </ol>
   );
 }
@@ -385,6 +493,107 @@ function PeerKeyForm({ connector, opnsense }: { connector: ConnectorDto; opnsens
   );
 }
 
+/** The resolved block for one edge, plus what is still missing to show it. */
+interface PeerBlockView {
+  block: ConnectorPeerBlock;
+  /** The connector's address on THIS edge; empty until the link allocates one. */
+  tunnelAddress: string;
+  isLoading: boolean;
+}
+
+/**
+ * The far-side block for ONE edge box.
+ *
+ * `?integrationId=` is what makes this per-edge: without it the API answers with
+ * the connector's FIRST enabled link, so a connector that serves two edges would
+ * show edge one's endpoint and key while claiming to be edge two's block. The
+ * query key carries the edge for the same reason — two edges, two cache entries,
+ * still under the shared peer-config prefix so existing invalidation reaches
+ * both. When the endpoint is absent or fails, the shared resolver derives the
+ * same values from the edge server this sheet was opened from.
+ */
+function usePeerBlockForEdge(setup: ManualSetup, connector: ConnectorDto): PeerBlockView {
+  const { server } = setup;
+  // The address belongs to the LINK, so it is re-read from the live connector:
+  // this same far end holds a different address on every other edge it serves.
+  const tunnelAddress = connectorTunnelAddressFor(connector, server.id) ?? setup.link?.tunnelAddress ?? "";
+  const peerConfigQuery = useQuery({
+    queryKey: connectorPeerConfigQueryKey(connector.id, server.id),
+    queryFn: () => apiFetch<ConnectorPeerConfigDto>(connectorPeerConfigUrl(connector.id, server.id)),
+    enabled: server.enabled,
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: 30_000,
+  });
+  // The explicit fallback covers a link created a moment ago and not yet in the
+  // cached connector — the link response carried that edge's block with it.
+  const peerConfig = peerConfigQuery.data ?? setup.apiPeerConfig ?? null;
+  const block =
+    connectorPeerBlockFor({ server, connector, peerConfig }) ??
+    resolveConnectorPeerBlock({ server, connector: { tunnelAddress }, peerConfig });
+  return { block, tunnelAddress, isLoading: peerConfigQuery.isLoading };
+}
+
+/** The two things that can make a block incomplete, each naming its edge. */
+function PeerBlockNotices({ view, server }: { view: PeerBlockView; server: EdgeNatServer }) {
+  return (
+    <>
+      {view.isLoading && <Skeleton className="h-16 rounded-xl" />}
+      {!view.tunnelAddress && (
+        <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          This connector is not linked to {server.name} yet, so it holds no address on that edge. Link it first — the
+          address is allocated by the link.
+        </p>
+      )}
+      {/* Amber means something is wrong, so it waits for the fetched block:
+          a tunnel PolySIEM provisioned a moment ago already has a key, and
+          the cached edge simply has not caught up yet. */}
+      {!view.block.edgePublicKey && !view.isLoading && (
+        <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          {server.name} has no WireGuard key yet. Generate it in that edge&apos;s tunnel settings before configuring
+          this peer.
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * Copy-all for the far side. The block itself comes from the shared builder; the
+ * only thing added here is the line naming the edge box it configures, so a
+ * snippet pasted into a text file days later still says which peer it is.
+ */
+function PeerSnippetButton({
+  block,
+  kind,
+  connector,
+  server,
+}: {
+  block: ConnectorPeerBlock;
+  kind: ConnectorKind;
+  connector: ConnectorDto;
+  server: EdgeNatServer;
+}) {
+  const copyAll = async () => {
+    const snippet = `# PolySIEM edge box: ${server.name}\n${
+      buildConnectorPeerSnippet(block, { kind, name: connector.name })
+    }`;
+    try {
+      await copyText(snippet);
+      toast.success(`Peer config for ${server.name} copied`);
+    } catch {
+      toast.error("Clipboard unavailable — copy manually");
+    }
+  };
+  return (
+    <Button type="button" variant="outline" className="w-full" onClick={copyAll}>
+      <Terminal /> Copy the full peer config
+    </Button>
+  );
+}
+
 /**
  * Manual-kind setup — the sheet that replaced the old "manual OPNsense peer"
  * box. There is no install command and no token here by design: PolySIEM only
@@ -392,6 +601,10 @@ function PeerKeyForm({ connector, opnsense }: { connector: ConnectorDto; opnsens
  * block (edge endpoint, edge public key, the far side's AllowedIPs, the tunnel
  * address PolySIEM allocated for it, and the keepalive) and takes the far
  * side's public key back.
+ *
+ * Always scoped to ONE edge box, and it says which: this is where an operator
+ * who linked the connector to a second edge lands, and the block for edge two
+ * differs from edge one in every value while looking identical in shape.
  */
 export function ConnectorPeerSetupSheet({
   setup,
@@ -402,43 +615,21 @@ export function ConnectorPeerSetupSheet({
   live: ConnectorDto | undefined;
   onOpenChange: (open: boolean) => void;
 }) {
-  const connector = live ?? setup.connector;
+  // The polled list can be a beat behind a link made moments ago, and preferring
+  // it blindly would show the FIRST edge's address on the screen that exists to
+  // show the new edge's. The shared merge keeps whichever knows this edge.
+  const connector = connectorWithFreshestLink({
+    connector: setup.connector,
+    live,
+    integrationId: setup.server.id,
+  });
   const server = setup.server;
   const kind = connectorKindOf(connector);
   const opnsense = kind === "opnsense";
   const progress = connectorPeerProgress(connector);
-  // The address belongs to the LINK, so it is re-read from the live connector:
-  // this same far end holds a different address on every other edge it serves.
-  const tunnelAddress = connectorTunnelAddressFor(connector, server.id) ?? setup.link?.tunnelAddress ?? "";
-
-  // The API may serve a ready-made block per connector; when that endpoint is
-  // absent or fails, the shared resolver derives the same values from the edge
-  // server this sheet was opened from, so the flow is never blocked.
-  const peerConfigQuery = useQuery({
-    queryKey: connectorPeerConfigQueryKey(connector.id),
-    queryFn: () => apiFetch<ConnectorPeerConfigDto>(connectorPeerConfigUrl(connector.id)),
-    enabled: server.enabled,
-    refetchOnWindowFocus: false,
-    retry: false,
-    staleTime: 30_000,
-  });
-  // The shared resolver answers "what does the far side need on THIS edge",
-  // reading the address from that edge's link; the explicit fallback covers a
-  // link created a moment ago and not yet in the cached connector.
-  const peerConfig = peerConfigQuery.data ?? setup.apiPeerConfig ?? null;
-  const block =
-    connectorPeerBlockFor({ server, connector, peerConfig }) ??
-    resolveConnectorPeerBlock({ server, connector: { tunnelAddress }, peerConfig });
-  const snippet = buildConnectorPeerSnippet(block, { kind, name: connector.name });
-
-  const copyAll = async () => {
-    try {
-      await copyText(snippet);
-      toast.success("Peer config copied");
-    } catch {
-      toast.error("Clipboard unavailable — copy manually");
-    }
-  };
+  const view = usePeerBlockForEdge(setup, connector);
+  const block = view.block;
+  const scope = peerBlockScope(connector, server);
 
   return (
     <BottomSheet
@@ -447,8 +638,8 @@ export function ConnectorPeerSetupSheet({
       title={`Set up ${connector.name} on ${server.name}`}
       description={
         opnsense
-          ? "Paste these into OPNsense, then bring its public key back here."
-          : "Paste these into the far side, then bring its public key back here."
+          ? `Paste these into OPNsense as ${server.name}'s peer, then bring its public key back here.`
+          : `Paste these into the far side as ${server.name}'s peer, then bring its public key back here.`
       }
     >
       <div className="flex flex-col gap-3 pb-2">
@@ -459,31 +650,24 @@ export function ConnectorPeerSetupSheet({
 
         <TunnelProvisionedNote tunnel={setup.tunnelProvisioned} />
 
-        {peerConfigQuery.isLoading && <Skeleton className="h-16 rounded-xl" />}
-        {!tunnelAddress && (
-          <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
-            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-            This connector is not linked to {server.name} yet, so it holds no address on that edge. Link it first — the
-            address is allocated by the link.
-          </p>
-        )}
-        {/* Amber means something is wrong, so it waits for the fetched block:
-            a tunnel PolySIEM provisioned a moment ago already has a key, and
-            the cached edge simply has not caught up yet. */}
-        {!block.edgePublicKey && !peerConfigQuery.isLoading && (
-          <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
-            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-            The edge has no WireGuard key yet. Generate it in the tunnel settings above before configuring this peer.
-          </p>
-        )}
+        <PeerBlockHeading
+          connector={connector}
+          server={server}
+          scope={scope}
+          justLinked={setup.justLinked === true}
+        />
+        <PeerBlockNotices view={view} server={server} />
 
         <PeerConfigRows block={block} opnsense={opnsense} />
 
-        <Button type="button" variant="outline" className="w-full" onClick={copyAll}>
-          <Terminal /> Copy the full peer config
-        </Button>
+        <PeerSnippetButton block={block} kind={kind} connector={connector} server={server} />
 
-        <PeerInstructions opnsense={opnsense} keepalive={block.persistentKeepalive} />
+        <PeerInstructions
+          opnsense={opnsense}
+          additional={scope.otherEdges > 0}
+          edgeName={server.name}
+          keepalive={block.persistentKeepalive}
+        />
 
         <PeerKeyForm connector={connector} opnsense={opnsense} />
 
@@ -498,7 +682,7 @@ export function ConnectorPeerSetupSheet({
             {connector.connectorId}
           </MobileKeyRow>
           <MobileKeyRow label={`Address on ${server.name}`} mono>
-            {tunnelAddress || "Not linked"}
+            {view.tunnelAddress || "Not linked"}
           </MobileKeyRow>
         </MobileList>
 
@@ -512,10 +696,14 @@ export function ConnectorPeerSetupSheet({
         >
           {progress.detail}
         </p>
+        {/* The other half of the job. Routes published through this peer stop at
+            its tunnel address on this edge; the steps behind this disclosure say
+            exactly what to add on the far side to carry them the rest of the way. */}
+        <MobileConnectorSetupDisclosure connector={connector} integrationId={server.id} />
+
         <p className="px-0.5 text-[11px] text-muted-foreground">
-          Routes published through this peer stop at its tunnel address on this edge — the far side forwards them
-          onward to the service itself. Linking the same far end to another edge gives it a second address there, on
-          the same WireGuard interface.
+          Linking the same far end to another edge gives it a second address there, on the same WireGuard interface —
+          and its own peer settings, reachable from that edge&apos;s row under Linked edges.
         </p>
 
         <Button variant="outline" className="w-full" onClick={() => onOpenChange(false)}>

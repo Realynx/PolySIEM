@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   buildConnectorPeerSnippet,
@@ -22,8 +23,14 @@ import {
   connectorLinks,
   connectorLinksUrl,
   connectorLinkUrl,
+  connectorLinkPeerHandoff,
   connectorPeerBlockFor,
+  connectorPeerConfigUrl,
+  connectorPeerConfigQueryKey,
+  connectorPeerBlockHeading,
+  connectorPeerSettingsAction,
   connectorRouteWarning,
+  connectorSetupInstructions,
   connectorSshEndpoint,
   connectorSshPresentation,
   connectorSshUsername,
@@ -38,6 +45,8 @@ import {
   connectorsAvailableToLink,
   connectorsLinkedTo,
   connectorsQueryKey,
+  connectorWithFreshestLink,
+  connectorWithLink,
   deriveConnectorPeerBlock,
   edgeInstallStep,
   edgeServerForLink,
@@ -81,7 +90,10 @@ import {
   WIREGUARD_INTERFACE_CHOICES,
   type ConnectorDto,
   type ConnectorLinkDto,
+  type ConnectorSetupField,
+  type ConnectorSetupStep,
   type EdgeNatServer,
+  type LinkConnectorResult,
   type WireguardFormState,
   type WireguardTunnelDto,
 } from "./edge-networks-types";
@@ -272,6 +284,19 @@ const connector = (overrides: Partial<ConnectorDto> = {}): ConnectorDto => ({
   hasSshCredentials: true,
   ...overrides,
 });
+
+/**
+ * One field of one setup step, so a wrong value can be pinned by name. Total on
+ * purpose: a missing field reads as an empty value and fails the assertion that
+ * asked for it, rather than making every caller optional-chain.
+ */
+const setupField = (
+  steps: readonly ConnectorSetupStep[],
+  stepId: string,
+  label: string,
+): ConnectorSetupField =>
+  steps.find((step) => step.id === stepId)?.fields.find((field) => field.label === label)
+  ?? { label, value: "" };
 
 describe("connector presentation helpers", () => {
   it("tones each status and only offers enrolled, non-disabled connectors for routes", () => {
@@ -516,6 +541,79 @@ describe("connector kinds", () => {
     expect(connectorRouteWarning(shared, { publicPort: 443 }, "edge-2")?.detail).toContain("10.9.10.5");
     expect(connectorRouteWarning(shared, { publicPort: 443 }, "edge-9")?.detail)
       .toContain("its tunnel address on this edge");
+  });
+
+  it("hands the OPNsense operator the real NAT rule, destined for the tunnel address", () => {
+    expect(connectorSetupInstructions(connector({ kind: "agent" }), undefined, "edge-1")).toBeNull();
+    const instructions = connectorSetupInstructions(
+      connector({ kind: "opnsense", name: "Home OPNsense" }),
+      { publicPort: 8211, protocol: "udp", targetAddress: "10.0.3.20", targetPort: 8211 },
+      "edge-1",
+    );
+    const steps = instructions?.steps ?? [];
+    expect(instructions?.kind).toBe("opnsense");
+    // Without the assignment the interface is absent from every picker below.
+    expect(instructions?.prerequisite?.path).toBe("Interfaces → Assignments");
+    expect(steps.map((step) => step.id)).toEqual(["nat", "filter"]);
+    expect(steps[0].path).toBe("Firewall → NAT → Port Forward → +");
+
+    // The correction that matters: the packet arrives on the WireGuard
+    // interface addressed to the TUNNEL address, so that — not "WAN address",
+    // and not the internal target — is what the NAT rule matches on.
+    const destination = setupField(steps, "nat", "Destination");
+    expect(destination.value).toBe("10.9.9.3");
+    expect(destination.value).not.toBe("10.0.3.20");
+    expect(destination.note).toContain("WAN address");
+    // A shared peer holds one address per edge, so the note names which edge.
+    expect(destination.note).toContain("Edge one");
+    expect(setupField(steps, "nat", "Protocol").value).toBe("UDP");
+    expect(setupField(steps, "nat", "Destination port range").value).toBe("8211 to 8211");
+    expect(setupField(steps, "nat", "Redirect target IP").value).toBe("10.0.3.20");
+    expect(setupField(steps, "nat", "Redirect target port").value).toBe("8211");
+    expect(setupField(steps, "nat", "Filter rule association").value).toBe("Add associated filter rule");
+    // Destination NAT, not the Outbound (source NAT) page people land on first.
+    expect(instructions?.notes.join(" ")).toContain("Outbound");
+  });
+
+  it("points a hand-written filter rule at the redirect target, because OPNsense filters after NAT", () => {
+    const instructions = connectorSetupInstructions(
+      connector({ kind: "opnsense" }),
+      { publicPort: 8211, protocol: "udp", targetAddress: "10.0.3.20", targetPort: 25565 },
+      "edge-1",
+    );
+    const steps = instructions?.steps ?? [];
+    const filter = steps.find((step) => step.id === "filter");
+    expect(filter?.conditional).toBe(true);
+    expect(filter?.path).toContain("Firewall → Rules");
+    // The classic gotcha: NAT has already rewritten the destination by the time
+    // the filter runs, so the pass rule matches the target, not the tunnel IP.
+    const destination = setupField(steps, "filter", "Destination");
+    expect(destination.value).toBe("10.0.3.20");
+    expect(destination.value).not.toBe("10.9.9.3");
+    expect(destination.note).toContain("after NAT");
+    expect(setupField(steps, "filter", "Destination port range").value).toBe("25565 to 25565");
+  });
+
+  it("keeps generic peers vendor-neutral and degrades to honest placeholders", () => {
+    const peer = connectorSetupInstructions(connector({ kind: "peer", name: "Mikrotik" }), undefined, "edge-1");
+    expect(peer?.steps).toEqual([]);
+    expect(peer?.prerequisite).toBeNull();
+    expect(peer?.summary).toContain("must forward");
+
+    // No rule yet (the install dialog) and an edge this peer does not serve.
+    const bare = connectorSetupInstructions(connector({ kind: "opnsense" }), undefined, "edge-9");
+    const steps = bare?.steps ?? [];
+    expect(setupField(steps, "nat", "Destination").value).toBe("its tunnel address on this edge");
+    expect(setupField(steps, "nat", "Destination").mono).toBe(false);
+    expect(setupField(steps, "nat", "Redirect target IP").value).toBe("the internal service address");
+    expect(setupField(steps, "nat", "Protocol").value).toBe("the rule's protocol");
+  });
+
+  it("draws the collapsed headline from the same source as the steps", () => {
+    const manual = connector({ kind: "opnsense", name: "Home OPNsense" });
+    const rule = { publicPort: 8211, protocol: "udp" } as const;
+    expect(connectorRouteWarning(manual, rule, "edge-1")?.detail)
+      .toBe(connectorSetupInstructions(manual, rule, "edge-1")?.summary);
   });
 
   it("reads the one-time reveal only when the API actually minted one", () => {
@@ -811,6 +909,176 @@ describe("manual connector peer block", () => {
   });
 });
 
+/**
+ * Linking a manual connector to a SECOND edge box exists to produce that edge's
+ * peer block. The link response carries it; dropping it is the regression these
+ * tests exist to catch.
+ */
+describe("linking a manual connector hands over the new edge's peer settings", () => {
+  const edgeOne = server({
+    id: "edge-1",
+    name: "Edge one",
+    baseUrl: "ssh://23.94.251.183:22",
+    settings: {
+      publicIp: "23.94.251.183",
+      wireguard: {
+        enabled: true, interfaceName: "wg0", address: "10.9.9.1/24", listenPort: 51820,
+        publicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=", hasPrivateKey: true,
+        peer: null, appliedConfigHash: null,
+      },
+    },
+  });
+  const edgeTwo = server({
+    id: "edge-2",
+    name: "Edge two",
+    baseUrl: "ssh://198.51.100.7:22",
+    settings: {
+      publicIp: "198.51.100.7",
+      wireguard: {
+        enabled: true, interfaceName: "wg0", address: "10.9.10.1/24", listenPort: 51821,
+        publicKey: "6Xy2n2gkZQ0Q7oJxV3bTfF1sJ5dQxTUJ0N2f9m1qE1c=", hasPrivateKey: true,
+        peer: null, appliedConfigHash: null,
+      },
+    },
+  });
+  const opnsense = connector({
+    name: "Home OPNsense",
+    kind: "opnsense",
+    isManual: true,
+    links: [link({ id: "l1", integrationId: "edge-1", edgeName: "Edge one", tunnelAddress: "10.9.9.4" })],
+  });
+  const newLink: ConnectorLinkDto = {
+    id: "l2", integrationId: "edge-2", edgeName: "Edge two", tunnelAddress: "10.9.10.7", enabled: true,
+  };
+  const result: LinkConnectorResult = {
+    link: newLink,
+    peerConfig: {
+      kind: "opnsense",
+      edgeEndpoint: "198.51.100.7:51821",
+      edgePublicKey: "6Xy2n2gkZQ0Q7oJxV3bTfF1sJ5dQxTUJ0N2f9m1qE1c=",
+      allowedIps: ["10.9.10.1/32"],
+      tunnelAddress: "10.9.10.7",
+      tunnelAddressCidr: "10.9.10.7/24",
+    },
+  };
+
+  const handoffFor = (input: { connector: ConnectorDto; integrationId: string; result: LinkConnectorResult }) => {
+    const handoff = connectorLinkPeerHandoff(input);
+    if (!handoff) throw new Error("expected a peer handoff for a manual connector");
+    return handoff;
+  };
+
+  it("consumes the link response's peerConfig rather than dropping it on the floor", () => {
+    const handoff = handoffFor({ connector: opnsense, integrationId: "edge-2", result });
+    expect(handoff.peerConfig).toBe(result.peerConfig);
+    expect(handoff.integrationId).toBe("edge-2");
+    // The values reaching the paste block are the NEW edge's, not the first one's.
+    expect(connectorPeerBlockFor({ server: edgeTwo, connector: handoff.connector, peerConfig: handoff.peerConfig }))
+      .toMatchObject({
+        tunnelAddress: "10.9.10.7",
+        tunnelAddressCidr: "10.9.10.7/24",
+        edgeEndpoint: "198.51.100.7:51821",
+        allowedIps: ["10.9.10.1/32"],
+      });
+  });
+
+  it("leaves the edge box it already served exactly as it was", () => {
+    const handoff = handoffFor({ connector: opnsense, integrationId: "edge-2", result });
+    expect(connectorLinks(handoff.connector)).toHaveLength(2);
+    expect(connectorPeerBlockFor({ server: edgeOne, connector: handoff.connector })).toMatchObject({
+      tunnelAddress: "10.9.9.4",
+      edgeEndpoint: "23.94.251.183:51820",
+    });
+  });
+
+  it("carries the new edge's link even when the response omits the connector", () => {
+    const handoff = handoffFor({ connector: opnsense, integrationId: "edge-2", result: { link: newLink } });
+    expect(connectorTunnelAddressFor(handoff.connector, "edge-2")).toBe("10.9.10.7");
+    expect(handoff.peerConfig).toBeNull();
+    expect(handoff.tunnelProvisioned).toBeNull();
+    // A thin response must not downgrade the kind and lose the paste-ready flow.
+    expect(isManualConnector(handoff.connector)).toBe(true);
+  });
+
+  it("surfaces a tunnel the link had to stand up on the way through", () => {
+    const provisioned = handoffFor({
+      connector: opnsense,
+      integrationId: "edge-2",
+      result: {
+        ...result,
+        tunnelProvisioned: {
+          integrationId: "edge-2", edgeName: "Edge two", interfaceName: "wg0",
+          address: "10.9.10.1/24", listenPort: 51821,
+        },
+      },
+    });
+    expect(provisioned.tunnelProvisioned).toMatchObject({ edgeName: "Edge two", listenPort: 51821 });
+  });
+
+  it("keeps an agent connector on toast-and-close: nothing is pasted anywhere for one", () => {
+    expect(connectorLinkPeerHandoff({
+      connector: connector({ kind: "agent", isManual: false }),
+      integrationId: "edge-2",
+      result,
+    })).toBeNull();
+  });
+
+  it("replaces a link to the same edge instead of listing it twice", () => {
+    const relinked = connectorWithLink(opnsense, { ...newLink, integrationId: "edge-1", tunnelAddress: "10.9.9.9" });
+    expect(connectorLinks(relinked)).toHaveLength(1);
+    expect(connectorTunnelAddressFor(relinked, "edge-1")).toBe("10.9.9.9");
+    expect(connectorWithLink(opnsense, null)).toBe(opnsense);
+  });
+
+  it("prefers the polled row but never lets it drop the link just made", () => {
+    const stale = { ...opnsense, name: "Home OPNsense (renamed)" };
+    const fresh = connectorWithLink(opnsense, newLink);
+    const merged = connectorWithFreshestLink({ connector: fresh, live: stale, integrationId: "edge-2" });
+    expect(merged.name).toBe("Home OPNsense (renamed)");
+    expect(connectorTunnelAddressFor(merged, "edge-2")).toBe("10.9.10.7");
+    // Once the list has caught up, the polled row is used untouched.
+    expect(connectorWithFreshestLink({ connector: fresh, live: fresh, integrationId: "edge-2" })).toBe(fresh);
+    expect(connectorWithFreshestLink({ connector: fresh, live: stale, integrationId: null })).toBe(stale);
+  });
+
+  it("names the edge in every heading and calls the second peer an addition", () => {
+    const only = connectorPeerBlockHeading({ connector: opnsense, edgeName: "Edge one", edgeCount: 1 });
+    expect(only.title).toBe("Peer settings for Edge one");
+    expect(only.detail).toContain("Link it to another edge box later");
+
+    const second = connectorPeerBlockHeading({
+      connector: opnsense, edgeName: "Edge two", edgeCount: 2, justLinked: true,
+    });
+    expect(second.title).toBe("Peer settings for Edge two — the edge box you just linked");
+    expect(second.detail).toContain("one more peer");
+    expect(second.detail).toContain("does not replace it");
+    expect(second.detail).toContain("your OPNsense box");
+
+    const third = connectorPeerBlockHeading({ connector: opnsense, edgeName: "Edge three", edgeCount: 3 });
+    expect(third.detail).toContain("the 2 peers already configured for the other 2 edge boxes");
+    expect(third.detail).toContain("does not replace them");
+  });
+
+  /**
+   * The reported bug was not a wrong value — it was the link success handler
+   * throwing `result.peerConfig` away and closing. The helper above can be
+   * perfect and the bug still return, so the wiring itself is pinned here.
+   */
+  it("keeps the link success path wired to the handoff", async () => {
+    const source = await readFile(new URL("./connector-dialogs.tsx", import.meta.url), "utf8");
+    expect(source).toContain("connectorLinkPeerHandoff");
+    expect(source).toContain("onPeerSettings");
+  });
+
+  it("labels a per-edge peer settings action so it reads out of context", () => {
+    expect(connectorPeerSettingsAction({ connectorName: "Home OPNsense", edgeName: "Edge two" })).toEqual({
+      label: "Peer settings",
+      ariaLabel: "Peer settings for Home OPNsense on Edge two",
+      title: "The values to enter on the far side for Edge two",
+    });
+  });
+});
+
 describe("connector ↔ edge links", () => {
   const edgeA = server({ id: "edge-1", name: "Edge one" });
   const edgeB = server({ id: "edge-2", name: "Edge two" });
@@ -1003,5 +1271,31 @@ describe("wireguard form without a peer editor", () => {
       keepalive: 15,
     });
     expect(toWireguardConfigInput(wgForm(), { ...tunnel, hasPrivateKey: false }, false).regenerateKey).toBe(true);
+  });
+});
+
+describe("peer config is fetched and cached per edge", () => {
+  // Unscoped, the API answers with the connector's FIRST enabled link. For a
+  // connector serving two edges that is a different edge's public key and
+  // endpoint — values an operator would paste into the wrong peer entry.
+  it("scopes the request to the edge whose block is shown", () => {
+    expect(connectorPeerConfigUrl("cx1", "edge-2")).toContain("integrationId=edge-2");
+    expect(connectorPeerConfigUrl("cx1", "edge-2")).not.toBe(connectorPeerConfigUrl("cx1", "edge-1"));
+  });
+
+  it("still works unscoped for a connector linked to a single edge", () => {
+    expect(connectorPeerConfigUrl("cx1")).not.toContain("integrationId");
+  });
+
+  it("url-encodes the edge id rather than concatenating it raw", () => {
+    expect(connectorPeerConfigUrl("cx1", "edge/2 3")).toContain(encodeURIComponent("edge/2 3"));
+  });
+
+  it("gives each edge its own cache entry so one cannot overwrite the other", () => {
+    const a = connectorPeerConfigQueryKey("cx1", "edge-1");
+    const b = connectorPeerConfigQueryKey("cx1", "edge-2");
+    expect(a).not.toEqual(b);
+    // ...while staying under the shared prefix so invalidation by connector reaches both.
+    expect(a.slice(0, 3)).toEqual(b.slice(0, 3));
   });
 });

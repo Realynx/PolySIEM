@@ -9,7 +9,7 @@ import { apiFetch } from "@/components/shared/api-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MobileSection } from "@/components/mobile/ui/mobile-page";
-import { MobileList, MobileListRow } from "@/components/mobile/ui/mobile-list";
+import { MobileList } from "@/components/mobile/ui/mobile-list";
 import {
   edgeInterfaceOptions,
   edgeServerState,
@@ -22,6 +22,7 @@ import {
 } from "@/components/network/edge-networks-types";
 import { edgeSyncSummary, type EdgeSyncSummary } from "@/components/network/edge-sync-presentation";
 import { MobileConnectorsBlock, connectorsTabBadge, useConnectorsQuery } from "./mobile-connectors";
+import { MobileCollapseBody, MobileCollapseCard, MobileCollapseHead } from "./mobile-edge-collapse";
 import { EdgeInterfacesPanel } from "./mobile-edge-interfaces";
 import { EdgeRoutesPanel } from "./mobile-edge-routes";
 import {
@@ -142,38 +143,45 @@ function EdgeApplyActions({
 }
 
 /**
- * Tier 1 — the part that never changes as the tabs switch: which edge this is,
- * whether PolySIEM can reach it, whether what is configured is actually live,
- * and the single action that changes that.
+ * Tier 1 — the part that never changes as the tabs switch, and the part a
+ * collapsed card still has to answer: which edge this is, whether PolySIEM can
+ * reach it, whether what is configured is actually live, how many routes it
+ * publishes, and the single action that changes any of that.
+ *
+ * The identity row doubles as the collapse control, the way the desktop card
+ * hangs the route count off its collapse trigger.
  */
 function EdgeServerOverview({
   server,
   summary,
   isAdmin,
+  expanded,
   onAddRule,
 }: {
   server: EdgeNatServer;
   summary: EdgeSyncSummary;
   isAdmin: boolean;
+  expanded: boolean;
   onAddRule: () => void;
 }) {
   const [sheet, setSheet] = useState<"none" | "more" | "details">("none");
   return (
     <>
       <MobileList>
-        <MobileListRow
-          title={
+        <MobileCollapseHead
+          expanded={expanded}
+          name={server.name}
+          badge={<ServerStateBadge state={edgeServerState(server)} />}
+          subtitle={
             <>
-              <span className="truncate">{server.name}</span>
-              <ServerStateBadge state={edgeServerState(server)} />
+              <span className="font-mono">ssh://{sshEndpoint(server.baseUrl)}</span>
+              <span className="mx-1 text-muted-foreground/50" aria-hidden="true">
+                ·
+              </span>
+              {server.lastSyncAt ? `checked ${formatRelative(server.lastSyncAt)}` : "never checked"}
             </>
           }
-          subtitle={<span className="font-mono">ssh://{sshEndpoint(server.baseUrl)}</span>}
-          trailing={
-            <span className="text-[11px]">
-              {server.lastSyncAt ? `checked ${formatRelative(server.lastSyncAt)}` : "never checked"}
-            </span>
-          }
+          count={server.rules.length}
         />
         <EdgeSyncRow summary={summary} onOpenDetails={() => setSheet("details")} />
       </MobileList>
@@ -261,20 +269,29 @@ function EdgeServerTabContent({
 }
 
 /**
- * One edge server on a phone. Identity, the sync line and the primary action
- * stay pinned; Routes / Connectors / Tunnel / Interfaces switch below them in
- * the same order as the desktop card, and only the selected one renders.
+ * One edge server on a phone. Identity, the sync line, the alerts and the
+ * primary action stay pinned; Routes / Connectors / Tunnel / Interfaces switch
+ * below them in the same order as the desktop card, and only the selected one
+ * renders.
+ *
+ * The tab strip and its panel sit behind the same collapse the Cloudflare tunnel
+ * cards use, from the same shared default, so a fleet of edge boxes fits on one
+ * screen and the two tabs feel like one feature.
  */
 export function MobileEdgeServerSection({
   server,
   servers,
   isAdmin,
+  defaultExpanded,
 }: {
   server: EdgeNatServer;
   /** Every edge box, so a connector here can be linked onward to another one. */
   servers?: readonly EdgeNatServer[];
   isAdmin: boolean;
+  /** `edgeCardsStartExpanded` on the number of edge boxes this screen shows. */
+  defaultExpanded: boolean;
 }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [tab, setTab] = useState<EdgeServerTab>(EDGE_SERVER_TABS[0]);
   const [ruleForm, setRuleForm] = useState<{ open: boolean; rule: EdgeNatRule | null }>({ open: false, rule: null });
   const summary = edgeSyncSummary(server);
@@ -282,31 +299,44 @@ export function MobileEdgeServerSection({
   // even while another tab is showing.
   const connectors = useConnectorsQuery(server.id, { enabled: server.enabled }).data ?? [];
   const openRuleForm = (rule: EdgeNatRule | null) => {
+    // Editing a route from a collapsed card should leave it open on the list the
+    // edit lands in, not back where it started.
+    setExpanded(true);
     setTab("routes");
     setRuleForm({ open: true, rule });
   };
 
   return (
     <MobileSection title={server.name}>
-      <EdgeServerOverview server={server} summary={summary} isAdmin={isAdmin} onAddRule={() => openRuleForm(null)} />
-
-      <MobileStateSegmented
-        idBase={`edge-${server.id}`}
-        ariaLabel={`${server.name} sections`}
-        tabs={edgeServerTabs(server, connectors)}
-        value={tab}
-        onChange={setTab}
-        className="mt-0.5"
-      />
-      <MobileTabPanel idBase={`edge-${server.id}`} tab={tab}>
-        <EdgeServerTabContent
-          tab={tab}
+      <MobileCollapseCard open={expanded} onOpenChange={setExpanded}>
+        <EdgeServerOverview
           server={server}
-          servers={servers}
+          summary={summary}
           isAdmin={isAdmin}
-          onEditRule={openRuleForm}
+          expanded={expanded}
+          onAddRule={() => openRuleForm(null)}
         />
-      </MobileTabPanel>
+
+        <MobileCollapseBody>
+          <MobileStateSegmented
+            idBase={`edge-${server.id}`}
+            ariaLabel={`${server.name} sections`}
+            tabs={edgeServerTabs(server, connectors)}
+            value={tab}
+            onChange={setTab}
+            className="mt-0.5"
+          />
+          <MobileTabPanel idBase={`edge-${server.id}`} tab={tab}>
+            <EdgeServerTabContent
+              tab={tab}
+              server={server}
+              servers={servers}
+              isAdmin={isAdmin}
+              onEditRule={openRuleForm}
+            />
+          </MobileTabPanel>
+        </MobileCollapseBody>
+      </MobileCollapseCard>
 
       {ruleForm.open && (
         <MobileNatRuleSheet

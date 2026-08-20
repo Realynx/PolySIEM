@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Cloud, Copy, ExternalLink, Loader2, LockKeyhole, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowRight, Cloud, Copy, ExternalLink, Loader2, LockKeyhole, Plus, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { apiFetch } from "@/components/shared/api-client";
 import { copyText } from "@/components/shared/clipboard";
@@ -11,56 +11,227 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { OtherEdgeNetwork } from "./edge-networks-types";
-import { cloudflareZoneForHostname } from "./edge-network-utils";
+import {
+  cloudflareIntegrationSummary,
+  cloudflarePublishedCountLabel,
+  cloudflareTunnelCards,
+  cloudflareTunnelCountLabel,
+  cloudflareZoneWorthShowing,
+  edgeCardsStartExpanded,
+  type CloudflareIntegrationSummary,
+  type CloudflareRouteRow,
+} from "./cloudflare-presentation";
+import { CloudflareTunnelCard } from "./edge-cloudflare-tunnel-card";
 
-interface PublishedRouteRow {
-  integrationId: string;
-  tunnelId: string;
-  tunnelName: string;
-  hostname: string;
-  service: string;
-  path: string;
-  zoneId: string | null;
+interface AddRouteTarget {
+  integration: OtherEdgeNetwork;
+  /** Preselected tunnel when Add route was pressed on a tunnel card. */
+  tunnelId: string | null;
 }
 
-function publishedRouteRows(integration: OtherEdgeNetwork | undefined): PublishedRouteRow[] {
-  if (!integration || !Array.isArray(integration.tunnels)) return [];
-  return integration.tunnels.flatMap((tunnel) => (tunnel.ingress ?? []).flatMap((ingress) => {
-    if (!tunnel.id || !ingress.hostname) return [];
-    return [{
-      integrationId: integration.id, tunnelId: tunnel.id, tunnelName: tunnel.name,
-      hostname: ingress.hostname, service: ingress.service, path: ingress.path ?? "",
-      zoneId: cloudflareZoneForHostname(integration, ingress.hostname)?.id ?? null,
-    }];
-  }));
-}
-
+/**
+ * The Cloudflare tab.
+ *
+ * It is deliberately the SSH edge tab with different nouns: a tunnel is the card
+ * that publishes things — the Cloudflare "connector" — and its ingress entries
+ * are the routes table beneath it. Integrations group their own tunnels, so an
+ * account with two Cloudflare credentials reads as two groups rather than a
+ * dropdown that hides one of them.
+ */
 export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrations: OtherEdgeNetwork[]; isAdmin: boolean }) {
-  const queryClient = useQueryClient();
-  const [selectedIntegrationId, setSelectedIntegrationId] = useState(integrations[0]?.id ?? "");
-  const [addFor, setAddFor] = useState<OtherEdgeNetwork | null>(null);
+  const [addFor, setAddFor] = useState<AddRouteTarget | null>(null);
   const [upgradeFor, setUpgradeFor] = useState<OtherEdgeNetwork | null>(null);
-  const [removeRoute, setRemoveRoute] = useState<PublishedRouteRow | null>(null);
-  const selectedIntegration = integrations.find((network) => network.id === selectedIntegrationId) ?? integrations[0];
-  const tunnels = selectedIntegration && Array.isArray(selectedIntegration.tunnels) ? selectedIntegration.tunnels : [];
-  const editableTunnels = tunnels.filter((tunnel) => tunnel.configSource === "cloudflare");
-  const rows = publishedRouteRows(selectedIntegration);
-  const removeMutation = useMutation({
-    mutationFn: (route: PublishedRouteRow) => apiFetch<{ warning?: string | null }>(`/api/network/edge-networks/cloudflare/${route.integrationId}/routes`, {
+  const [removeRoute, setRemoveRoute] = useState<CloudflareRouteRow | null>(null);
+  const removeMutation = useRemoveRouteMutation(() => setRemoveRoute(null));
+  // One decision for the whole tab: a page showing a handful of tunnels opens
+  // them, a page showing a dozen does not.
+  const tunnelCount = integrations.reduce((total, integration) => total + cloudflareTunnelCards(integration).length, 0);
+  const startExpanded = edgeCardsStartExpanded(tunnelCount);
+
+  return (
+    <section className="space-y-5" aria-labelledby="cloudflare-routes-heading">
+      <div>
+        <h2 id="cloudflare-routes-heading" className="flex items-center gap-2 text-lg font-semibold">
+          <Cloud className="size-5" />Cloudflare tunnels
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Each tunnel publishes hostnames the way an edge box publishes ports. Routes edited here also become evidence
+          for the Services catalog.
+        </p>
+      </div>
+
+      {integrations.map((integration) => (
+        <CloudflareIntegrationSection
+          key={integration.id}
+          integration={integration}
+          isAdmin={isAdmin}
+          startExpanded={startExpanded}
+          onAddRoute={(tunnelId) => setAddFor({ integration, tunnelId })}
+          onUpgradeToken={() => setUpgradeFor(integration)}
+          onRemoveRoute={setRemoveRoute}
+        />
+      ))}
+
+      {addFor && (
+        <CloudflareRouteDialog
+          integration={addFor.integration}
+          initialTunnelId={addFor.tunnelId}
+          open
+          onOpenChange={(open) => !open && setAddFor(null)}
+        />
+      )}
+      {upgradeFor && (
+        <CloudflareTokenUpgradeDialog integration={upgradeFor} open onOpenChange={(open) => !open && setUpgradeFor(null)} />
+      )}
+      <CloudflareRemoveRouteDialog
+        route={removeRoute}
+        pending={removeMutation.isPending}
+        onOpenChange={(open) => !open && setRemoveRoute(null)}
+        onConfirm={() => removeRoute?.removable && removeMutation.mutate(removeRoute)}
+      />
+    </section>
+  );
+}
+
+/** One Cloudflare account: its strip of state, then a card per tunnel. */
+function CloudflareIntegrationSection({
+  integration,
+  isAdmin,
+  startExpanded,
+  onAddRoute,
+  onUpgradeToken,
+  onRemoveRoute,
+}: {
+  integration: OtherEdgeNetwork;
+  isAdmin: boolean;
+  startExpanded: boolean;
+  onAddRoute: (tunnelId: string | null) => void;
+  onUpgradeToken: () => void;
+  onRemoveRoute: (route: CloudflareRouteRow) => void;
+}) {
+  const summary = cloudflareIntegrationSummary(integration);
+  const cards = cloudflareTunnelCards(integration);
+  const showZone = cloudflareZoneWorthShowing(integration);
+  return (
+    <section className="space-y-3" aria-label={`${integration.name} tunnels`}>
+      <CloudflareIntegrationStrip
+        summary={summary}
+        isAdmin={isAdmin}
+        onAddRoute={() => onAddRoute(null)}
+        onUpgradeToken={onUpgradeToken}
+      />
+
+      {/* Amber is spent here and nowhere else on this tab: a denied capability is
+          the one state that stops a route change from ever succeeding. */}
+      {isAdmin && summary.capability === "denied" && (
+        <Alert className="border-warning/50 bg-warning/10">
+          <LockKeyhole className="text-warning" />
+          <AlertTitle>Route changes need an edit-capable Cloudflare token</AlertTitle>
+          <AlertDescription>
+            The Read All Resources policy is enough for discovery. To add or remove routes, use a token scoped to <strong>Cloudflare Tunnel Edit</strong>, <strong>Zone Read</strong>, and <strong>DNS Edit</strong> for this account and its zones.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {cards.length === 0 ? (
+        <CloudflareNoTunnels summary={summary} />
+      ) : (
+        cards.map((card) => (
+          <CloudflareTunnelCard
+            key={card.key}
+            card={card}
+            isAdmin={isAdmin}
+            showZone={showZone}
+            defaultExpanded={startExpanded}
+            onAddRoute={() => onAddRoute(card.tunnelId)}
+            onRemoveRoute={onRemoveRoute}
+          />
+        ))
+      )}
+    </section>
+  );
+}
+
+/** Compact account state, mirroring the fleet strip above the SSH edge cards. */
+function CloudflareIntegrationStrip({
+  summary,
+  isAdmin,
+  onAddRoute,
+  onUpgradeToken,
+}: {
+  summary: CloudflareIntegrationSummary;
+  isAdmin: boolean;
+  onAddRoute: () => void;
+  onUpgradeToken: () => void;
+}) {
+  return (
+    <div className="rounded-lg border bg-muted/20">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 py-2">
+        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-sm">
+          <Cloud className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="font-medium">{summary.name}</span>
+          <StripDot />
+          <span className="text-muted-foreground">{summary.accountName}</span>
+          <StripDot />
+          <span className="text-muted-foreground tabular-nums">{cloudflareTunnelCountLabel(summary.tunnelCount)}</span>
+          <StripDot />
+          <span className="text-muted-foreground tabular-nums">{cloudflarePublishedCountLabel(summary.routeCount)}</span>
+        </p>
+        {isAdmin && (
+          <div className="flex shrink-0 items-center gap-2">
+            {summary.capability === "denied" && (
+              <Button variant="outline" size="sm" onClick={onUpgradeToken}><LockKeyhole />Upgrade token</Button>
+            )}
+            <Button size="sm" disabled={!summary.canAddRoute} onClick={onAddRoute}><Plus />Add route</Button>
+          </div>
+        )}
+      </div>
+      {/* A disabled button explains itself rather than leaving the operator guessing. */}
+      {isAdmin && summary.addRouteBlockedReason && (
+        <p className="border-t px-3 py-2 text-xs text-muted-foreground">{summary.addRouteBlockedReason}</p>
+      )}
+    </div>
+  );
+}
+
+function StripDot() {
+  return <span className="text-muted-foreground/50" aria-hidden="true">·</span>;
+}
+
+/** Nothing to draw a card from: either no tunnels, or a count-only payload. */
+function CloudflareNoTunnels({ summary }: { summary: CloudflareIntegrationSummary }) {
+  return (
+    <div className="rounded-lg border border-dashed p-6 text-center">
+      <p className="font-medium">
+        {summary.countOnly
+          ? `${cloudflareTunnelCountLabel(summary.tunnelCount)} reported, without their routes`
+          : "No tunnels were found in the latest sync"}
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        {summary.countOnly
+          ? "This integration last synced before PolySIEM recorded tunnel ingress. Re-sync it to list and edit published hostnames here."
+          : "Create a tunnel in Cloudflare, or run cloudflared where it can register, then refresh this page."}
+      </p>
+    </div>
+  );
+}
+
+function useRemoveRouteMutation(onRemoved: () => void) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (route: CloudflareRouteRow) => apiFetch<{ warning?: string | null }>(`/api/network/edge-networks/cloudflare/${route.integrationId}/routes`, {
       method: "DELETE",
       body: JSON.stringify({ tunnelId: route.tunnelId, zoneId: route.zoneId, hostname: route.hostname }),
     }),
     onSuccess: (result: { warning?: string | null }) => {
       toast.success("Cloudflare published route removed");
       if (result.warning) toast.warning(result.warning);
-      setRemoveRoute(null);
+      onRemoved();
       void queryClient.invalidateQueries({ queryKey: ["edge-networks"] });
     },
     onError: (error: Error) => {
@@ -68,91 +239,41 @@ export function CloudflarePublishedRoutes({ integrations, isAdmin }: { integrati
       void queryClient.invalidateQueries({ queryKey: ["edge-networks"] });
     },
   });
+}
 
-  const section = () => (
-    <section className="space-y-3" aria-labelledby="cloudflare-routes-heading">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 id="cloudflare-routes-heading" className="flex items-center gap-2 text-lg font-semibold"><Cloud className="size-5" />Cloudflare published routes</h2>
-          <p className="text-sm text-muted-foreground">Manage public hostnames here; each observed route also becomes evidence for the Services catalog.</p>
-        </div>
-        {(() => integrations.length > 1 && (
-          <div className="grid min-w-64 gap-1.5">
-            <Label htmlFor="cloudflare-integration" className="text-xs text-muted-foreground">Cloudflare integration</Label>
-            <Select value={selectedIntegration?.id} onValueChange={setSelectedIntegrationId}>
-              <SelectTrigger id="cloudflare-integration" className="w-full bg-background">
-                <SelectValue placeholder="Choose an integration" />
-              </SelectTrigger>
-              <SelectContent>
-                {integrations.map((network) => (
-                  <SelectItem key={network.id} value={network.id}>
-                    {network.name}{network.account?.name && network.account.name !== network.name ? ` · ${network.account.name}` : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        ))()}
-      </div>
-      {(() => isAdmin && selectedIntegration?.routeManagementCapability?.status === "denied" && (
-        <Alert className="border-warning/50 bg-warning/10">
-          <LockKeyhole className="text-warning" />
-          <AlertTitle>Route changes need an edit-capable Cloudflare token</AlertTitle>
-          <AlertDescription>
-            The Read All Resources policy is enough for discovery. To add or remove routes, use a token scoped to <strong>Cloudflare Tunnel Edit</strong>, <strong>Zone Read</strong>, and <strong>DNS Edit</strong> for the selected account and zones.
-          </AlertDescription>
-        </Alert>
-      ))()}
-      {(() => selectedIntegration && (
-        <Card size="sm">
-          <CardHeader className="pb-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <CardTitle>{selectedIntegration.name}</CardTitle>
-                <CardDescription>{selectedIntegration.account?.name ?? "Cloudflare account"} · {tunnels.length} tunnel{tunnels.length === 1 ? "" : "s"} · {rows.length} published hostname{rows.length === 1 ? "" : "s"}</CardDescription>
-              </div>
-              {isAdmin && <div className="flex flex-wrap justify-end gap-2">
-                {selectedIntegration.routeManagementCapability?.status === "denied" && <Button variant="outline" size="sm" onClick={() => setUpgradeFor(selectedIntegration)}><LockKeyhole />Upgrade token</Button>}
-                <Button size="sm" disabled={editableTunnels.length === 0 || !(selectedIntegration.zones?.length)} onClick={() => setAddFor(selectedIntegration)}><Plus />Add route</Button>
-              </div>}
-            </div>
-          </CardHeader>
-          <CardContent>
-            {tunnels.length > 0 ? (
-              <div className="grid gap-2 sm:grid-cols-2">
-                {tunnels.map((tunnel) => <div key={tunnel.id ?? tunnel.name} className="flex min-w-0 items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"><span className="truncate font-medium">{tunnel.name}</span><div className="flex shrink-0 items-center gap-2"><Badge variant="outline">{tunnel.status ?? "unknown"}</Badge><Badge variant={tunnel.configSource === "cloudflare" ? "secondary" : "outline"}>{tunnel.configSource === "cloudflare" ? "remote" : "local"}</Badge></div></div>)}
-              </div>
-            ) : <p className="text-sm text-muted-foreground">No tunnels were found in the latest sync.</p>}
-            {tunnels.length > 0 && editableTunnels.length === 0 && <p className="mt-2 text-xs text-warning">Local YAML tunnel configurations are read-only here; move the tunnel to remote configuration before editing routes.</p>}
-          </CardContent>
-        </Card>
-      ))()}
-      {(() => (<div className="overflow-hidden rounded-lg border bg-card">
-        <Table>
-          <TableHeader><TableRow><TableHead>Hostname</TableHead><TableHead>Tunnel</TableHead><TableHead>Origin service</TableHead>{isAdmin && <TableHead className="w-20"><span className="sr-only">Actions</span></TableHead>}</TableRow></TableHeader>
-          <TableBody>
-            {rows.length === 0 ? <TableRow><TableCell colSpan={isAdmin ? 4 : 3} className="py-8 text-center text-muted-foreground">No published hostname routes found.</TableCell></TableRow> : rows.map((route) => (
-              <TableRow key={`${route.integrationId}:${route.tunnelId}:${route.hostname}`}>
-                <TableCell className="font-medium">{route.hostname}{route.path && <span className="font-normal text-muted-foreground">{route.path}</span>}</TableCell>
-                <TableCell>{route.tunnelName}</TableCell>
-                <TableCell className="font-mono text-xs">{route.service}</TableCell>
-                {isAdmin && <TableCell><Button variant="ghost" size="icon-sm" className="text-destructive hover:text-destructive" disabled={!route.zoneId} aria-label={`Remove ${route.hostname}`} onClick={() => setRemoveRoute(route)}><Trash2 /></Button></TableCell>}
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>))()}
-      {(() => addFor && <CloudflareRouteDialog integration={addFor} open onOpenChange={(open) => !open && setAddFor(null)} />)()}
-      {(() => upgradeFor && <CloudflareTokenUpgradeDialog integration={upgradeFor} open onOpenChange={(open) => !open && setUpgradeFor(null)} />)()}
-      <AlertDialog open={removeRoute !== null} onOpenChange={(open) => !open && setRemoveRoute(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Remove {removeRoute?.hostname}?</AlertDialogTitle><AlertDialogDescription>This removes the tunnel ingress rule and its matching CNAME record from Cloudflare. Other tunnel routes and DNS records are preserved.</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={removeMutation.isPending || !removeRoute?.zoneId} onClick={(event) => { event.preventDefault(); if (removeRoute?.zoneId) removeMutation.mutate(removeRoute); }}>{removeMutation.isPending && <Loader2 className="animate-spin" />}Remove route</AlertDialogAction></AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </section>
+function CloudflareRemoveRouteDialog({
+  route,
+  pending,
+  onOpenChange,
+  onConfirm,
+}: {
+  route: CloudflareRouteRow | null;
+  pending: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <AlertDialog open={route !== null} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Remove {route?.hostname}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This removes the ingress rule from {route?.tunnelName ?? "the tunnel"} and its matching CNAME record from Cloudflare. Other tunnel routes and DNS records are preserved.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={pending || !route?.removable}
+            onClick={(event) => { event.preventDefault(); onConfirm(); }}
+          >
+            {pending && <Loader2 className="animate-spin" />}Remove route
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
-  return section();
 }
 
 const CLOUDFLARE_ROUTE_PERMISSION_TEXT = [
@@ -234,11 +355,22 @@ function CloudflareTokenUpgradeDialog({ integration, open, onOpenChange }: { int
   );
 }
 
-function CloudflareRouteDialog({ integration, open, onOpenChange }: { integration: OtherEdgeNetwork; open: boolean; onOpenChange: (open: boolean) => void }) {
+function CloudflareRouteDialog({
+  integration,
+  initialTunnelId,
+  open,
+  onOpenChange,
+}: {
+  integration: OtherEdgeNetwork;
+  /** The tunnel whose card opened this dialog, when one did. */
+  initialTunnelId: string | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const queryClient = useQueryClient();
-  const tunnels = Array.isArray(integration.tunnels) ? integration.tunnels.filter((tunnel) => tunnel.id && tunnel.configSource === "cloudflare") : [];
+  const tunnels = cloudflareTunnelCards(integration).filter((card) => card.config.editable && card.tunnelId);
   const zones = integration.zones ?? [];
-  const [tunnelId, setTunnelId] = useState(tunnels[0]?.id ?? "");
+  const [tunnelId, setTunnelId] = useState(initialTunnelId ?? tunnels[0]?.tunnelId ?? "");
   const [zoneId, setZoneId] = useState(zones[0]?.id ?? "");
   const [hostname, setHostname] = useState("");
   const [service, setService] = useState("http://");
@@ -266,7 +398,7 @@ function CloudflareRouteDialog({ integration, open, onOpenChange }: { integratio
         <form onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}>
           <DialogHeader><DialogTitle>Add a Cloudflare hostname route</DialogTitle><DialogDescription>PolySIEM adds the tunnel ingress rule and a proxied CNAME pointing to the selected tunnel.</DialogDescription></DialogHeader>
           <div className="space-y-4 py-5">
-            <div className="grid gap-2"><Label htmlFor="cf-route-tunnel">Tunnel</Label><Select value={tunnelId} onValueChange={setTunnelId}><SelectTrigger id="cf-route-tunnel"><SelectValue placeholder="Choose a remotely managed tunnel" /></SelectTrigger><SelectContent>{tunnels.map((tunnel) => <SelectItem key={tunnel.id} value={tunnel.id!}>{tunnel.name}</SelectItem>)}</SelectContent></Select></div>
+            <div className="grid gap-2"><Label htmlFor="cf-route-tunnel">Tunnel</Label><Select value={tunnelId} onValueChange={setTunnelId}><SelectTrigger id="cf-route-tunnel"><SelectValue placeholder="Choose a remotely managed tunnel" /></SelectTrigger><SelectContent>{tunnels.map((tunnel) => <SelectItem key={tunnel.key} value={tunnel.tunnelId!}>{tunnel.name}</SelectItem>)}</SelectContent></Select></div>
             <div className="grid gap-2"><Label htmlFor="cf-route-zone">DNS zone</Label><Select value={zoneId} onValueChange={setZoneId}><SelectTrigger id="cf-route-zone"><SelectValue placeholder="Choose a zone" /></SelectTrigger><SelectContent>{zones.map((zone) => <SelectItem key={zone.id} value={zone.id}>{zone.name}</SelectItem>)}</SelectContent></Select></div>
             <div className="grid gap-2"><Label htmlFor="cf-route-hostname">Published hostname</Label><Input id="cf-route-hostname" value={hostname} onChange={(event) => setHostname(event.target.value)} placeholder={selectedZone ? `app.${selectedZone.name}` : "app.example.com"} required /><p className="text-xs text-muted-foreground">Enter the complete hostname in the selected zone.</p></div>
             <div className="grid gap-2"><Label htmlFor="cf-route-service">Origin service</Label><Input id="cf-route-service" value={service} onChange={(event) => setService(event.target.value)} placeholder="http://10.0.3.20:8080" required /><p className="text-xs text-muted-foreground">The address cloudflared can reach inside the lab.</p></div>

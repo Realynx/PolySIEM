@@ -3,30 +3,18 @@
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cloud, ExternalLink, Loader2, Plus, RefreshCw, Router, Server, Share2, Trash2 } from "lucide-react";
-import { toast } from "sonner";
+import { useQuery } from "@tanstack/react-query";
+import { ExternalLink, Plus, RefreshCw, Router, Server, Share2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
 import { EmptyState } from "@/components/shared/empty-state";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MobilePage, MobileSection } from "@/components/mobile/ui/mobile-page";
 import { MobilePageHeader } from "@/components/mobile/ui/mobile-page-header";
-import { MobileKeyRow, MobileList, MobileListRow } from "@/components/mobile/ui/mobile-list";
+import { MobileKeyRow, MobileList } from "@/components/mobile/ui/mobile-list";
 import { MobileSegmented } from "@/components/mobile/ui/mobile-segmented";
-import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import { MobileFab } from "@/components/mobile/ui/mobile-fab";
 import {
   edgeOverviewPresentation,
@@ -38,7 +26,8 @@ import {
   type EdgeNetworksOverview,
   type OtherEdgeNetwork,
 } from "@/components/network/edge-networks-types";
-import { cloudflareZoneForHostname } from "@/components/network/edge-network-utils";
+import { edgeCardsStartExpanded } from "@/components/network/cloudflare-presentation";
+import { MobileCloudflarePanel } from "./mobile-cloudflare";
 import { MobileAllConnectorsPanel } from "./mobile-connectors-all";
 import { MobileEdgeServerSection } from "./mobile-edge-server";
 import { MobileSummaryLine, type MobileSummaryItem } from "./mobile-edge-tabs";
@@ -214,7 +203,7 @@ function EdgeNetworksBody({
   }
   if (tab === "edge") return <EdgeServersPanel overview={overview} counts={counts} isAdmin={isAdmin} />;
   if (tab === "tailscale") return <TailscalePanel networks={overview.tailscale} />;
-  return <CloudflarePanel networks={cloudflare} isAdmin={isAdmin} />;
+  return <MobileCloudflarePanel networks={cloudflare} isAdmin={isAdmin} />;
 }
 
 function EdgeServersPanel({
@@ -243,6 +232,8 @@ function EdgeServersPanel({
           server={server}
           servers={overview.edgeServers}
           isAdmin={isAdmin}
+          // Same rule as the Cloudflare tunnels: a few cards open, a fleet does not.
+          defaultExpanded={edgeCardsStartExpanded(overview.edgeServers.length)}
         />
       ))}
     </>
@@ -282,25 +273,6 @@ function TailscalePanel({ networks }: { networks: EdgeNetworksOverview["tailscal
     <>
       {networks.map((network, index) => (
         <MobileTailscaleSection key={network.id ?? network.integrationId ?? index} network={network} />
-      ))}
-    </>
-  );
-}
-
-function CloudflarePanel({ networks, isAdmin }: { networks: OtherEdgeNetwork[]; isAdmin: boolean }) {
-  if (networks.length === 0) {
-    return (
-      <EmptyState
-        icon={Cloud}
-        title="No Cloudflare integration"
-        description="Connect a Cloudflare account to document and manage published tunnel routes."
-      />
-    );
-  }
-  return (
-    <>
-      {networks.map((network) => (
-        <MobileCloudflareSection key={network.id} network={network} isAdmin={isAdmin} />
       ))}
     </>
   );
@@ -354,248 +326,6 @@ function MobileTailscaleSection({ network }: { network: EdgeNetworksOverview["ta
           </div>
         </div>
       )}
-    </MobileSection>
-  );
-}
-
-interface MobileCloudflareRoute {
-  tunnelId: string;
-  tunnelName: string;
-  hostname: string;
-  service: string;
-  path: string;
-  zoneId: string | null;
-}
-
-/** Every tunnel ingress that actually publishes a hostname. */
-function cloudflareRoutes(network: OtherEdgeNetwork): MobileCloudflareRoute[] {
-  const tunnels = Array.isArray(network.tunnels) ? network.tunnels : [];
-  return tunnels.flatMap((tunnel) =>
-    (tunnel.ingress ?? []).flatMap((ingress) => {
-      if (!tunnel.id || !ingress.hostname) return [];
-      return [
-        {
-          tunnelId: tunnel.id,
-          tunnelName: tunnel.name,
-          hostname: ingress.hostname,
-          service: ingress.service,
-          path: ingress.path ?? "",
-          zoneId: cloudflareZoneForHostname(network, ingress.hostname)?.id ?? null,
-        },
-      ];
-    }),
-  );
-}
-
-function CloudflareTunnelList({ network }: { network: OtherEdgeNetwork }) {
-  const tunnels = Array.isArray(network.tunnels) ? network.tunnels : [];
-  if (tunnels.length === 0) return null;
-  return (
-    <MobileList>
-      {tunnels.map((tunnel) => (
-        <MobileListRow
-          key={tunnel.id ?? tunnel.name}
-          title={<span className="truncate">{tunnel.name}</span>}
-          trailing={
-            <>
-              <Badge variant="outline" className="text-[10px]">
-                {tunnel.status ?? "unknown"}
-              </Badge>
-              <Badge variant={tunnel.configSource === "cloudflare" ? "secondary" : "outline"} className="text-[10px]">
-                {tunnel.configSource === "cloudflare" ? "remote" : "local"}
-              </Badge>
-            </>
-          }
-        />
-      ))}
-    </MobileList>
-  );
-}
-
-function CloudflareRouteList({
-  routes,
-  onSelect,
-}: {
-  routes: MobileCloudflareRoute[];
-  onSelect: (route: MobileCloudflareRoute) => void;
-}) {
-  if (routes.length === 0) {
-    return (
-      <p className="rounded-xl border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
-        No published hostname routes found.
-      </p>
-    );
-  }
-  return (
-    <MobileList>
-      {routes.map((route) => (
-        <MobileListRow
-          key={`${route.tunnelId}:${route.hostname}`}
-          onClick={() => onSelect(route)}
-          title={<span className="truncate">{route.hostname}</span>}
-          subtitle={
-            <span className="font-mono">
-              {route.service}
-              {route.path && ` ${route.path}`}
-            </span>
-          }
-          trailing={<span className="max-w-24 truncate">{route.tunnelName}</span>}
-        />
-      ))}
-    </MobileList>
-  );
-}
-
-function CloudflareRouteSheet({
-  route,
-  networkName,
-  isAdmin,
-  onOpenChange,
-  onRemove,
-}: {
-  route: MobileCloudflareRoute | null;
-  networkName: string;
-  isAdmin: boolean;
-  onOpenChange: (open: boolean) => void;
-  onRemove: (route: MobileCloudflareRoute) => void;
-}) {
-  return (
-    <BottomSheet
-      open={route !== null}
-      onOpenChange={onOpenChange}
-      title={route?.hostname ?? "Published route"}
-      description={`Tunnel ingress on ${networkName}`}
-    >
-      {route && (
-        <div className="flex flex-col gap-3 pb-2">
-          <div className="divide-y divide-border/60 rounded-xl border bg-card">
-            <MobileKeyRow label="Hostname" mono>
-              {route.hostname}
-            </MobileKeyRow>
-            <MobileKeyRow label="Tunnel">{route.tunnelName}</MobileKeyRow>
-            <MobileKeyRow label="Origin service" mono>
-              {route.service}
-            </MobileKeyRow>
-            {route.path && (
-              <MobileKeyRow label="Path" mono>
-                {route.path}
-              </MobileKeyRow>
-            )}
-          </div>
-          {isAdmin && (
-            <Button
-              variant="destructive"
-              className="w-full"
-              disabled={!route.zoneId}
-              onClick={() => onRemove(route)}
-            >
-              <Trash2 /> Remove route
-            </Button>
-          )}
-        </div>
-      )}
-    </BottomSheet>
-  );
-}
-
-function CloudflareRemoveDialog({
-  route,
-  isPending,
-  onOpenChange,
-  onConfirm,
-}: {
-  route: MobileCloudflareRoute | null;
-  isPending: boolean;
-  onOpenChange: (open: boolean) => void;
-  onConfirm: (route: MobileCloudflareRoute) => void;
-}) {
-  return (
-    <AlertDialog open={route !== null} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Remove {route?.hostname}?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This removes the tunnel ingress rule and its matching CNAME record from Cloudflare. Other tunnel routes and
-            DNS records are preserved.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
-            disabled={isPending || !route?.zoneId}
-            onClick={(event) => {
-              event.preventDefault();
-              if (route?.zoneId) onConfirm(route);
-            }}
-          >
-            {isPending && <Loader2 className="animate-spin" />}
-            Remove route
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
-}
-
-function MobileCloudflareSection({ network, isAdmin }: { network: OtherEdgeNetwork; isAdmin: boolean }) {
-  const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<MobileCloudflareRoute | null>(null);
-  const [confirmRemove, setConfirmRemove] = useState<MobileCloudflareRoute | null>(null);
-  const tunnelCount = Array.isArray(network.tunnels) ? network.tunnels.length : 0;
-  const routes = cloudflareRoutes(network);
-
-  const removeMutation = useMutation({
-    mutationFn: (route: MobileCloudflareRoute) =>
-      apiFetch<{ warning?: string | null }>(`/api/network/edge-networks/cloudflare/${network.id}/routes`, {
-        method: "DELETE",
-        body: JSON.stringify({ tunnelId: route.tunnelId, zoneId: route.zoneId, hostname: route.hostname }),
-      }),
-    onSuccess: (result) => {
-      toast.success("Cloudflare published route removed");
-      if (result.warning) toast.warning(result.warning);
-      setConfirmRemove(null);
-      setSelected(null);
-      void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
-    },
-    onError: (error: Error) => {
-      toast.error(error.message);
-      void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
-    },
-  });
-
-  return (
-    <MobileSection title={network.name}>
-      <MobileList>
-        <MobileKeyRow label="Account">{network.account?.name ?? "Cloudflare account"}</MobileKeyRow>
-        <MobileKeyRow label="Tunnels">{tunnelCount}</MobileKeyRow>
-        <MobileKeyRow label="Published hostnames">{routes.length}</MobileKeyRow>
-      </MobileList>
-
-      {isAdmin && network.routeManagementCapability?.status === "denied" && (
-        <p className="rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
-          Route changes need an edit-capable Cloudflare token. Upgrade it from the desktop view under Settings →
-          Integrations.
-        </p>
-      )}
-
-      <CloudflareTunnelList network={network} />
-      <CloudflareRouteList routes={routes} onSelect={setSelected} />
-
-      <CloudflareRouteSheet
-        route={selected}
-        networkName={network.name}
-        isAdmin={isAdmin}
-        onOpenChange={(open) => !open && setSelected(null)}
-        onRemove={setConfirmRemove}
-      />
-
-      <CloudflareRemoveDialog
-        route={confirmRemove}
-        isPending={removeMutation.isPending}
-        onOpenChange={(open) => !open && setConfirmRemove(null)}
-        onConfirm={(route) => removeMutation.mutate(route)}
-      />
     </MobileSection>
   );
 }
