@@ -44,6 +44,7 @@ import {
   connectorSshPresentation,
   connectorStatusPresentation,
   connectorTunnelAddressFor,
+  connectorTunnelProvisioned,
   connectorsAllUrl,
   connectorsAvailableToLink,
   connectorsListUrl,
@@ -55,6 +56,7 @@ import {
   type ConnectorInstallReveal,
   type ConnectorLinkDto,
   type ConnectorPeerConfigDto,
+  type ConnectorTunnelProvisionedDto,
   type EdgeNatServer,
 } from "./edge-networks-types";
 
@@ -97,6 +99,8 @@ interface ConnectorSetupState {
   reason: ConnectorInstallReason;
   reveal: ConnectorInstallReveal | null;
   peerConfig?: ConnectorPeerConfigDto | null;
+  /** Set when creating the connector also stood this edge's tunnel up. */
+  tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
 }
 
 /** Which per-connector dialog this edge card currently has open. */
@@ -221,11 +225,13 @@ export function ConnectorsCard({
                 reason: "created",
                 reveal: connectorInstallReveal(result),
                 peerConfig: result.peerConfig ?? null,
+                tunnelProvisioned: connectorTunnelProvisioned(result),
               });
             }}
           />
           <LinkConnectorToEdgeDialog
             server={server}
+            servers={servers}
             connectors={linkable}
             open={linkDialogOpen}
             onOpenChange={setLinkDialogOpen}
@@ -242,6 +248,7 @@ export function ConnectorsCard({
           reveal={setup.reveal}
           peerConfig={setup.peerConfig}
           reason={setup.reason}
+          tunnelProvisioned={setup.tunnelProvisioned}
           connector={setup.connector}
           liveConnector={connectors.find((entry) => entry.id === setup.connector.id)}
           servers={servers}

@@ -25,6 +25,8 @@ import { buildEdgeBootstrapCommand } from "@/lib/integrations/edge-nat/bootstrap
 import { apiFetch } from "@/components/shared/api-client";
 import { copyText } from "@/components/shared/clipboard";
 import { CopyButton } from "@/components/ssh/copy-button";
+import { CommandBlock, ConnectorInstallCommands } from "./connector-install-commands";
+import { ConnectorTunnelProvisionedNote } from "./connector-tunnel-notes";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,6 +44,7 @@ import { Label } from "@/components/ui/label";
 import {
   buildConnectorPeerSnippet,
   connectorAgentSummary,
+  connectorInstallCommandView,
   connectorInstallProgress,
   connectorInterfaceName,
   connectorKindOf,
@@ -73,6 +76,7 @@ import {
   type ConnectorKind,
   type ConnectorPeerConfigDto,
   type ConnectorPeerState,
+  type ConnectorTunnelProvisionedDto,
   type EdgeNatServer,
   type UpdateConnectorInput,
 } from "./edge-networks-types";
@@ -89,6 +93,11 @@ export interface ConnectorInstallDialogProps {
   peerConfig?: ConnectorPeerConfigDto | null;
   /** Why the dialog is open: a brand-new connector, or a re-issued token. */
   reason: ConnectorInstallReason;
+  /**
+   * Set when creating or linking this connector also stood the edge's WireGuard
+   * tunnel up. Optional: an API that does not report it renders nothing extra.
+   */
+  tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
   /** The connector as returned when the dialog was opened (never changes). */
   connector: ConnectorDto;
   /** Freshest row from the polling connectors list; drives the live status. */
@@ -144,6 +153,7 @@ function AgentInstallDialog({
   onOpenChange,
   reveal,
   reason,
+  tunnelProvisioned,
   connector,
   liveConnector,
   servers,
@@ -185,6 +195,7 @@ function AgentInstallDialog({
         </DialogHeader>
 
         {reveal && <TokenOnceNotice />}
+        <ConnectorTunnelProvisionedNote tunnel={tunnelProvisioned} />
 
         <div className="space-y-5">
           {primary
@@ -331,6 +342,8 @@ function AgentConnectorStep({
   edgeEndpointLabel: string;
 }) {
   const sshUsername = connectorSshUsername(connector);
+  // Null only when there is genuinely no command to show — never an empty block.
+  const commands = connectorInstallCommandView(reveal);
   return (
     <InstallStep number="2" title="On your connector" hint={connector.name}>
       <p className="text-sm text-muted-foreground">
@@ -338,8 +351,8 @@ function AgentConnectorStep({
         you want to publish. It needs outbound access to <code className="font-mono text-xs">{edgeEndpointLabel}</code>,
         and nothing has to be opened inbound.
       </p>
-      {reveal ? (
-        <CommandBlock command={reveal.installCommand} caption="Run as root" copyLabel="Copy connector command" />
+      {commands ? (
+        <ConnectorInstallCommands view={commands} />
       ) : (
         <p className="flex items-start gap-1.5 text-xs text-warning">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
@@ -484,6 +497,7 @@ function ManualPeerDialog({
   open,
   onOpenChange,
   peerConfig,
+  tunnelProvisioned,
   connector,
   liveConnector,
   servers,
@@ -523,6 +537,8 @@ function ManualPeerDialog({
             token exists — this kind of connector is a plain WireGuard peer.
           </DialogDescription>
         </DialogHeader>
+
+        <ConnectorTunnelProvisionedNote tunnel={tunnelProvisioned} />
 
         <ManualPeerDialHint server={primary} farSide={kind.farSide} opnsense={opnsense} />
 
@@ -960,36 +976,6 @@ function SnippetBlock({ snippet }: { snippet: string }) {
       </div>
       <pre className="max-h-56 overflow-auto p-3 text-xs leading-relaxed">
         <code className="break-all whitespace-pre-wrap">{snippet}</code>
-      </pre>
-    </div>
-  );
-}
-
-/** The copy-paste centerpiece: prominent, monospace, one obvious copy action. */
-function CommandBlock({ command, caption, copyLabel }: { command: string; caption: string; copyLabel: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await copyText(command);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toast.error("Clipboard unavailable — copy manually");
-    }
-  };
-  return (
-    <div className="overflow-hidden rounded-lg border border-primary/30 bg-muted">
-      <div className="flex items-center justify-between gap-2 border-b border-primary/20 bg-primary/[0.06] px-3 py-1.5">
-        <span className="flex items-center gap-1.5 text-xs font-medium">
-          <Terminal className="size-3.5 text-primary" aria-hidden="true" /> {caption}
-        </span>
-        <Button type="button" variant="ghost" size="sm" className="h-7" onClick={copy} aria-label={copyLabel}>
-          {copied ? <Check className="text-success" /> : <Clipboard />}
-          {copied ? "Copied" : "Copy command"}
-        </Button>
-      </div>
-      <pre className="max-h-40 overflow-auto p-3 text-xs leading-relaxed">
-        <code className="break-all whitespace-pre-wrap">{command}</code>
       </pre>
     </div>
   );

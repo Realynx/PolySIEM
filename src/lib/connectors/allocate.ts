@@ -145,6 +145,89 @@ export function allocateTunnelAddress(cidr: string, edgeHost: string, taken: str
   );
 }
 
+// ---------------------------------------------------------------------------
+// Tunnel subnet allocation, per EDGE
+//
+// Everything above hands out ONE address inside an edge's subnet. This part
+// picks the SUBNET itself, for an edge whose tunnel PolySIEM is provisioning on
+// the operator's behalf when they link their first connector.
+//
+// It has to be collision-free across edges: a connector carries one address per
+// linked edge on a SINGLE WireGuard interface, so two edges both sitting on
+// 10.9.9.0/24 would give that connector two addresses in one prefix and break
+// its routing. Hence the sweep below skips any block another edge overlaps —
+// overlap, not equality, because an edge configured by hand may hold a /16 that
+// swallows several of the candidates.
+// ---------------------------------------------------------------------------
+
+/** First candidate, and the address the zod tunnel default already carries. */
+export const DEFAULT_EDGE_TUNNEL_ADDRESS = "10.9.9.1/24";
+
+/** Every candidate is a /24, so one edge can serve 253 connectors. */
+const EDGE_TUNNEL_PREFIX = 24;
+
+/** The sweep runs 10.9.9.0/24 → 10.9.10.0/24 → … → 10.255.255.0/24. */
+const EDGE_TUNNEL_FIRST_NETWORK = "10.9.9.0";
+const EDGE_TUNNEL_LAST_NETWORK = "10.255.255.0";
+
+interface Ipv4Range {
+  start: number;
+  end: number;
+}
+
+/** Inclusive address range covered by a CIDR (or by a bare host, as its /24). */
+function subnetRange(value: string): Ipv4Range {
+  const subnet = tunnelSubnetFrom(value);
+  const start = parseIpv4(hostPart(subnet.cidr));
+  return { start, end: start + Math.pow(2, 32 - subnet.prefix) - 1 };
+}
+
+/** Ranges of the subnets already spoken for. Unparsable entries cannot collide. */
+function reservedRanges(taken: readonly string[]): Ipv4Range[] {
+  const ranges: Ipv4Range[] = [];
+  for (const entry of taken) {
+    if (typeof entry !== "string" || entry.trim() === "") continue;
+    try {
+      ranges.push(subnetRange(entry));
+    } catch {
+      // Junk (IPv6, a half-typed address) reserves nothing.
+    }
+  }
+  return ranges;
+}
+
+function rangesOverlap(a: Ipv4Range, b: Ipv4Range): boolean {
+  return a.start <= b.end && b.start <= a.end;
+}
+
+/**
+ * Pick a tunnel address for an edge server whose tunnel is being provisioned.
+ *
+ * `taken` is the WireGuard address of every OTHER edge server (in whatever form
+ * it is stored — "10.9.9.1/24" or a bare host). The first candidate that
+ * overlaps none of them wins, so a fresh instance always lands on the documented
+ * default `10.9.9.1/24` and each further edge steps to 10.9.10.1/24,
+ * 10.9.11.1/24, … The edge always takes host `.1` of the block it gets.
+ *
+ * @returns the edge's own address in CIDR form, ready for `settings.wireguard`.
+ * @throws TunnelAllocationError("exhausted") when the whole sweep is occupied.
+ */
+export function allocateEdgeTunnelAddress(taken: readonly string[] = []): string {
+  const reserved = reservedRanges(taken);
+  const size = Math.pow(2, 32 - EDGE_TUNNEL_PREFIX);
+  const last = parseIpv4(EDGE_TUNNEL_LAST_NETWORK);
+  for (let network = parseIpv4(EDGE_TUNNEL_FIRST_NETWORK); network <= last; network += size) {
+    const candidate: Ipv4Range = { start: network, end: network + size - 1 };
+    if (!reserved.some((range) => rangesOverlap(candidate, range))) {
+      return `${formatIpv4(network + 1)}/${EDGE_TUNNEL_PREFIX}`;
+    }
+  }
+  throw new TunnelAllocationError(
+    "exhausted",
+    `Every connector tunnel subnet from ${EDGE_TUNNEL_FIRST_NETWORK}/${EDGE_TUNNEL_PREFIX} to ${EDGE_TUNNEL_LAST_NETWORK}/${EDGE_TUNNEL_PREFIX} is already used by another edge server`,
+  );
+}
+
 /** Count of assignable connector addresses in a subnet (excludes network/broadcast). */
 export function tunnelSubnetCapacity(prefix: number): number {
   if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) invalid(`"${prefix}" is not an IPv4 prefix length`);

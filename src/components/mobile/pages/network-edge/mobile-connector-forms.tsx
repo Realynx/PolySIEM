@@ -36,7 +36,7 @@ import {
   type EdgeNatServer,
   type UpdateConnectorInput,
 } from "@/components/network/edge-networks-types";
-import { connectorKindIcon } from "./mobile-connector-atoms";
+import { EdgeTunnelSetupNote, connectorKindIcon } from "./mobile-connector-atoms";
 import { ConnectorLinkKeyRows, useConnectorInvalidator } from "./mobile-connector-links";
 import { MobileOptionCard } from "./mobile-form-controls";
 
@@ -60,6 +60,9 @@ function ConnectorEdgeField({
   onChange: (value: string) => void;
 }) {
   if (edges.length === 0) return null;
+  // Linking is what brings an edge's WireGuard tunnel up, so if this one has no
+  // tunnel yet the operator hears it here rather than after the fact.
+  const selected = edges.find((edge) => edge.id === value) ?? null;
   return (
     <div className="grid gap-1.5">
       <Label>Link it to an edge box</Label>
@@ -80,6 +83,7 @@ function ConnectorEdgeField({
         A connector is not owned by one edge. This just creates its first link — you can link it to more edge boxes
         afterwards, and it holds a separate tunnel address on each.
       </p>
+      <EdgeTunnelSetupNote server={selected} servers={edges} />
     </div>
   );
 }

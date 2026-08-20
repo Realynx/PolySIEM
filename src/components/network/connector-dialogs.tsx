@@ -32,6 +32,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { EdgeTunnelSetupNote } from "./connector-tunnel-notes";
 import {
   connectorKindLabel,
   connectorKindPresentation,
@@ -41,6 +42,8 @@ import {
   connectorLinkUrl,
   connectorRotateTokenUrl,
   connectorStatusPresentation,
+  connectorTunnelProvisioned,
+  connectorTunnelProvisionedCopy,
   connectorUrl,
   connectorsAllUrl,
   edgesAvailableForConnector,
@@ -56,6 +59,7 @@ import {
   type ConnectorLinkDto,
   type CreateConnectorResult,
   type EdgeNatServer,
+  type LinkConnectorResult,
   type UpdateConnectorInput,
 } from "./edge-networks-types";
 
@@ -116,10 +120,12 @@ export function CreateConnectorDialog({
         }),
       }),
     onSuccess: (result) => {
+      const tunnel = connectorTunnelProvisioned(result);
       toast.success(
         isManualConnector(result.connector)
           ? `${result.connector.name} created. Paste its settings into ${kindCopy.farSide}.`
           : `${result.connector.name} created. Run the install command to bring it online.`,
+        tunnel ? { description: connectorTunnelProvisionedCopy(tunnel).toast } : undefined,
       );
       refresh();
       onCreated(result);
@@ -232,7 +238,13 @@ function ConnectorKindField({ kind, onSelect }: { kind: ConnectorKind; onSelect:
   );
 }
 
-/** Optional first link. A connector with no link is valid — just not routing yet. */
+/**
+ * Optional first link. A connector with no link is valid — just not routing yet.
+ *
+ * An edge with no WireGuard tunnel is still a perfectly good choice: PolySIEM
+ * stands the tunnel up as part of the link. That used to be refused, so the
+ * ordering is stated here rather than left for the operator to discover.
+ */
 function CreateConnectorEdgeField({
   servers,
   value,
@@ -243,6 +255,7 @@ function CreateConnectorEdgeField({
   onChange: (value: string) => void;
 }) {
   if (servers.length === 0) return null;
+  const selected = servers.find((server) => server.id === value) ?? null;
   return (
     <div className="grid gap-1.5">
       <Label htmlFor="connector-edge">Start serving an edge box</Label>
@@ -262,6 +275,7 @@ function CreateConnectorEdgeField({
       <p className="text-xs text-muted-foreground">
         You can link the same connector to more edge boxes at any time; each one gives it its own tunnel address.
       </p>
+      <EdgeTunnelSetupNote server={selected} servers={servers} />
     </div>
   );
 }
@@ -552,17 +566,24 @@ export function DeleteConnectorDialog({
   );
 }
 
-/** POST a link and report it in the words of whichever side started it. */
+/**
+ * POST a link and report it in the words of whichever side started it.
+ *
+ * A link may stand the edge's WireGuard tunnel up on the way through. When it
+ * does, the response says so and the operator hears about it here — that tunnel
+ * still needs an Apply, and nobody should have to go looking for it.
+ */
 function useLinkMutation(onDone: () => void) {
   const refresh = useConnectorRefresh();
   return useMutation({
     mutationFn: (input: { connectorId: string; integrationId: string; message: string }) =>
-      apiFetch<ConnectorLinkDto>(connectorLinksUrl(input.connectorId), {
+      apiFetch<LinkConnectorResult>(connectorLinksUrl(input.connectorId), {
         method: "POST",
         body: JSON.stringify({ integrationId: input.integrationId }),
       }),
-    onSuccess: (_result, input) => {
-      toast.success(input.message);
+    onSuccess: (result, input) => {
+      const tunnel = connectorTunnelProvisioned(result);
+      toast.success(input.message, tunnel ? { description: connectorTunnelProvisionedCopy(tunnel).toast } : undefined);
       refresh();
       onDone();
     },
@@ -577,11 +598,14 @@ function useLinkMutation(onDone: () => void) {
  */
 export function LinkConnectorToEdgeDialog({
   server,
+  servers,
   connectors,
   open,
   onOpenChange,
 }: {
   server: EdgeNatServer;
+  /** Every edge box, so a tunnel PolySIEM has yet to create is described honestly. */
+  servers?: EdgeNatServer[];
   /** Connectors that do NOT serve this edge yet. */
   connectors: ConnectorDto[];
   open: boolean;
@@ -634,6 +658,7 @@ export function LinkConnectorToEdgeDialog({
                 ? `${selected.name} keeps its identity and its own WireGuard key — it simply adds ${server.name} as one more peer on its single tunnel interface.`
                 : CONNECTOR_INDEPENDENCE_COPY}
             </p>
+            <EdgeTunnelSetupNote server={server} servers={servers} />
           </div>
         )}
 
@@ -716,6 +741,7 @@ export function LinkEdgeToConnectorDialog({
               After linking, that edge box can publish routes through {connector.name}. Apply changes there to bring the
               peer up.
             </p>
+            <EdgeTunnelSetupNote server={selected} servers={servers} />
           </div>
         )}
 

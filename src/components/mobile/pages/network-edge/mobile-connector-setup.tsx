@@ -17,6 +17,7 @@ import { BottomSheet } from "@/components/mobile/ui/bottom-sheet";
 import { MobileKeyRow, MobileList } from "@/components/mobile/ui/mobile-list";
 import {
   buildConnectorPeerSnippet,
+  connectorInstallCommandView,
   connectorInstallProgress,
   connectorKindOf,
   connectorPeerBlockFor,
@@ -32,25 +33,34 @@ import {
   CONNECTORS_QUERY_PREFIX,
   EDGE_NETWORKS_QUERY_KEY,
   type ConnectorDto,
+  type ConnectorInstallCommandView,
   type ConnectorInstallReason,
   type ConnectorInstallReveal,
   type ConnectorLinkDto,
   type ConnectorPeerBlock,
   type ConnectorPeerConfigDto,
+  type ConnectorTunnelProvisionedDto,
   type EdgeNatServer,
 } from "@/components/network/edge-networks-types";
 import {
   CommandBlock,
+  ConnectorInstallCommands,
   ConnectorKindBadge,
   ConnectorStatusBadge,
   InstallEnd,
   InstallStep,
   MobileCopyRow,
+  TunnelProvisionedNote,
   elide,
 } from "./mobile-connector-atoms";
 import { ConnectorLinkKeyRows } from "./mobile-connector-links";
 
-/** The one-time reveal plus the context the install sheet needs to track progress. */
+/**
+ * The one-time reveal plus the context the install sheet needs to track
+ * progress. `ConnectorInstallReveal` carries the TLS variants, so the command
+ * that actually works on a self-signed instance survives the trip from the
+ * create/rotate response into this sheet.
+ */
 export interface InstallReveal extends ConnectorInstallReveal {
   connector: ConnectorDto;
   reason: ConnectorInstallReason;
@@ -62,6 +72,8 @@ export interface InstallReveal extends ConnectorInstallReveal {
    * linked to any edge yet.
    */
   server: EdgeNatServer | null;
+  /** Set when creating/linking also brought that edge's WireGuard tunnel up. */
+  tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
 }
 
 /**
@@ -76,6 +88,8 @@ export interface ManualSetup {
   link: ConnectorLinkDto | null;
   /** The paste-ready peer config the create response carried, when it had one. */
   apiPeerConfig?: ConnectorPeerConfigDto | null;
+  /** Set when linking this connector also brought that edge's tunnel up. */
+  tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
 }
 
 /** The edge's existing bootstrap one-liner; empty when no key has been generated. */
@@ -133,22 +147,14 @@ function EdgeBootstrapHint({ command }: { command: string }) {
 function ConnectorInstallEnd({
   name,
   serverName,
-  command,
+  view,
   connected,
 }: {
   name: string;
   serverName: string;
-  command: string;
+  view: ConnectorInstallCommandView | null;
   connected: boolean;
 }) {
-  const copyCommand = async () => {
-    try {
-      await copyText(command);
-      toast.success("Install command copied");
-    } catch {
-      toast.error("Clipboard unavailable — copy manually");
-    }
-  };
   return (
     <InstallEnd
       index="2"
@@ -161,10 +167,7 @@ function ConnectorInstallEnd({
       }
       satisfied={connected}
     >
-      <CommandBlock label="Run as root on the connector" command={command} highlight />
-      <Button type="button" className="w-full" onClick={copyCommand}>
-        <Terminal /> Copy install command
-      </Button>
+      <ConnectorInstallCommands view={view} />
       <ol className="flex flex-col gap-2 rounded-xl border bg-card p-3 text-xs">
         <InstallStep index={1}>
           It installs WireGuard tools, the connector agent, and a PolySIEM-managed SSH key restricted to running that
@@ -206,6 +209,9 @@ export function ConnectorInstallSheet({
     baselineLastSeenAt: reveal.baselineLastSeenAt,
   });
   const connected = progress.state === "connected";
+  // Which one-liner actually works against THIS instance. On a default install
+  // PolySIEM serves a self-signed certificate, so the plain curl fails.
+  const view = connectorInstallCommandView(reveal);
 
   return (
     <BottomSheet
@@ -222,10 +228,11 @@ export function ConnectorInstallSheet({
         </p>
 
         {server && <EdgeInstallEnd server={server} />}
+        <TunnelProvisionedNote tunnel={reveal.tunnelProvisioned} />
         <ConnectorInstallEnd
           name={reveal.connector.name}
           serverName={server?.name ?? "the edge"}
-          command={reveal.installCommand}
+          view={view}
           connected={connected}
         />
 
@@ -450,6 +457,8 @@ export function ConnectorPeerSetupSheet({
           token and no SSH key for this kind — it just registers the peer.
         </p>
 
+        <TunnelProvisionedNote tunnel={setup.tunnelProvisioned} />
+
         {peerConfigQuery.isLoading && <Skeleton className="h-16 rounded-xl" />}
         {!tunnelAddress && (
           <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
@@ -458,7 +467,10 @@ export function ConnectorPeerSetupSheet({
             address is allocated by the link.
           </p>
         )}
-        {!block.edgePublicKey && (
+        {/* Amber means something is wrong, so it waits for the fetched block:
+            a tunnel PolySIEM provisioned a moment ago already has a key, and
+            the cached edge simply has not caught up yet. */}
+        {!block.edgePublicKey && !peerConfigQuery.isLoading && (
           <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
             <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
             The edge has no WireGuard key yet. Generate it in the tunnel settings above before configuring this peer.

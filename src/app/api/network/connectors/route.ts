@@ -12,9 +12,13 @@ import { toJsonSafe } from "@/lib/serialize";
  *        (used by an edge card and by the NAT rule editor's connector picker).
  * POST — create a connector. `integrationId` is optional: when present the
  *        connector is linked to that edge in the same transaction, allocating
- *        its tunnel address there. The response carries the one-time plaintext
- *        install token and the paste-ready one-liner; it is the ONLY place
- *        either exists.
+ *        its tunnel address there — and provisioning that edge's own WireGuard
+ *        tunnel first if it has none, reported as `tunnelProvisioned`. The
+ *        response carries the one-time plaintext install token and the
+ *        paste-ready one-liner; it is the ONLY place either exists.
+ *        `recommendedInstallCommand` is the one to show first: the `-k` variant
+ *        only when `tlsSelfSigned`, i.e. when this instance is serving a
+ *        certificate it generated for itself and curl would refuse the download.
  */
 export const GET = handleApi(async (req: NextRequest) => {
   await requireUser();

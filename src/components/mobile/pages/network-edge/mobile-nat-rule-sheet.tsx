@@ -17,6 +17,7 @@ import {
   connectorRouteWarning,
   connectorTunnelAddressFor,
   connectorsAvailableToLink,
+  edgeTunnelSetupNotice,
   isConnectorSelectableFor,
   natRuleRouting,
   natRuleTargetCopy,
@@ -208,6 +209,8 @@ function NatRuleLinkConnectorField({ server }: { server: EdgeNatServer }) {
   const allConnectors = useAllConnectorsQuery();
   const linkable = connectorsAvailableToLink(allConnectors.data ?? [], server.id);
   const mutation = useLinkConnectorMutation(() => setChoice(""));
+  // Linking is also what brings this edge's tunnel up, when it has none yet.
+  const tunnelPending = edgeTunnelSetupNotice(server);
 
   if (allConnectors.isLoading) return null;
   return (
@@ -244,6 +247,7 @@ function NatRuleLinkConnectorField({ server }: { server: EdgeNatServer }) {
           >
             {mutation.isPending ? <Loader2 className="animate-spin" /> : <Link2 />} Link to this edge
           </Button>
+          {tunnelPending && <p className="text-[11px] leading-snug text-info/80">{tunnelPending}</p>}
         </>
       )}
     </div>

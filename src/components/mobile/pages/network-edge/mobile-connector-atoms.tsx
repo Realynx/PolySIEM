@@ -1,21 +1,28 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Check, Router, Server, Share2 } from "lucide-react";
+import { Check, Router, Server, Share2, Terminal, Waypoints } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/format";
 import { copyText } from "@/components/shared/clipboard";
 import { CopyButton } from "@/components/ssh/copy-button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   connectorContactFallback,
+  connectorInstallReachabilityCopy,
   connectorKindPresentation,
   connectorLastContactAt,
   connectorSshPresentation,
   connectorStatusPresentation,
+  connectorTunnelProvisionedCopy,
+  edgeTunnelSetupNotice,
   type ConnectorDto,
+  type ConnectorInstallCommandView,
   type ConnectorKind,
+  type ConnectorTunnelProvisionedDto,
+  type EdgeNatServer,
 } from "@/components/network/edge-networks-types";
 
 /**
@@ -160,20 +167,112 @@ export function CommandBlock({
   label,
   command,
   highlight = false,
+  copyLabel,
 }: {
   label: string;
   command: string;
   highlight?: boolean;
+  /** Overrides the derived "Copy <label>" accessible name. */
+  copyLabel?: string;
 }) {
   return (
     <div className={cn("rounded-xl border bg-muted/40 p-3", highlight && "border-primary/40")}>
       <div className="flex items-center justify-between gap-2">
         <p className="font-mono text-[11px] tracking-wider text-muted-foreground uppercase">{label}</p>
-        <CopyButton value={command} label={`Copy ${label}`} />
+        <CopyButton value={command} label={copyLabel ?? `Copy ${label}`} />
       </div>
       <p className="mt-1 max-h-40 overflow-y-auto break-all font-mono text-xs select-all">{command}</p>
     </div>
   );
+}
+
+/**
+ * The install one-liner, both variants, on a phone.
+ *
+ * PolySIEM serves HTTPS with a self-signed certificate by default, so the plain
+ * `curl … | sudo sh` dies on certificate verification on a default install.
+ * WHICH command leads, what the note says and when the other one is worth
+ * offering are all decided by `connectorInstallCommandView` in the shared
+ * layer — desktop renders the same decisions — so this component only chooses
+ * the phone treatment: full-width copy, scrolling blocks, footnote type.
+ */
+export function ConnectorInstallCommands({ view }: { view: ConnectorInstallCommandView | null }) {
+  const copyPrimary = async () => {
+    if (!view) return;
+    try {
+      await copyText(view.primary);
+      toast.success("Install command copied");
+    } catch {
+      toast.error("Clipboard unavailable — copy manually");
+    }
+  };
+  if (!view) {
+    return (
+      <p className="rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+        This response carried no install command. Rotate the token to mint a new one.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <CommandBlock label="Run as root on the connector" command={view.primary} highlight />
+      <Button type="button" className="w-full" onClick={copyPrimary}>
+        <Terminal /> Copy install command
+      </Button>
+      {view.primaryNote && <p className="px-0.5 text-[11px] leading-snug text-muted-foreground">{view.primaryNote}</p>}
+      {view.alternate && (
+        <div className="flex flex-col gap-2 rounded-xl border border-dashed p-2.5">
+          <p className="text-[11px] leading-snug text-muted-foreground">{view.alternate.label}</p>
+          <CommandBlock
+            label="Alternative command"
+            command={view.alternate.command}
+            copyLabel={view.alternate.copyLabel}
+          />
+        </div>
+      )}
+      <p className="px-0.5 text-[11px] leading-snug text-muted-foreground">
+        {connectorInstallReachabilityCopy(view.origin)}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * PolySIEM provisions an edge's WireGuard tunnel when a connector is linked to
+ * it, so the operator is told it happened rather than discovering it. Neutral
+ * tone: this is PolySIEM doing the work, not a fault — the only action left is
+ * the apply that pushes it to the host.
+ */
+export function TunnelProvisionedNote({ tunnel }: { tunnel: ConnectorTunnelProvisionedDto | null | undefined }) {
+  if (!tunnel) return null;
+  const copy = connectorTunnelProvisionedCopy(tunnel);
+  return (
+    <p className="flex items-start gap-1.5 rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
+      <Waypoints className="mt-0.5 size-3.5 shrink-0" />
+      <span className="min-w-0">
+        <span className="block font-medium">{copy.title}</span>
+        <span className="mt-0.5 block leading-snug">{copy.detail}</span>
+      </span>
+    </p>
+  );
+}
+
+/**
+ * Said BEFORE linking: this edge has no usable tunnel yet, and linking stands
+ * one up. The sentence — including which subnet it may promise — comes from the
+ * shared layer so the phone and the desktop dialog say the same thing.
+ */
+export function EdgeTunnelSetupNote({
+  server,
+  servers = [],
+}: {
+  server: EdgeNatServer | null | undefined;
+  /** Every edge box, so the note never promises a subnet another edge occupies. */
+  servers?: readonly EdgeNatServer[];
+}) {
+  const notice = edgeTunnelSetupNotice(server, servers);
+  if (!notice) return null;
+  return <p className="px-0.5 text-[11px] leading-snug text-muted-foreground">{notice}</p>;
 }
 
 export function InstallStep({ index, children }: { index: number; children: ReactNode }) {

@@ -4,7 +4,11 @@ import {
   connectorAgentSummary,
   connectorContactFallback,
   connectorDisplayName,
+  connectorInstallCommandView,
+  connectorInstallIsHttps,
+  connectorInstallOrigin,
   connectorInstallProgress,
+  connectorInstallReachabilityCopy,
   connectorInstallReveal,
   connectorKindLabel,
   connectorKindOf,
@@ -26,6 +30,8 @@ import {
   connectorStatusPresentation,
   connectorSummary,
   connectorTunnelAddressFor,
+  connectorTunnelProvisioned,
+  connectorTunnelProvisionedCopy,
   connectorUnavailableReason,
   connectorWgStatePresentation,
   connectorsAllUrl,
@@ -44,6 +50,7 @@ import {
   edgeReconciliation,
   edgeServerState,
   edgeTunnelEndpoint,
+  edgeTunnelSetupNotice,
   hostKeyAlgorithmLabel,
   infrastructureEdgeDetails,
   isConnectorLinkEnabled,
@@ -513,9 +520,214 @@ describe("connector kinds", () => {
 
   it("reads the one-time reveal only when the API actually minted one", () => {
     expect(connectorInstallReveal({ connector: connector(), installToken: "pscx_x", installCommand: "curl | sh" }))
-      .toEqual({ installToken: "pscx_x", installCommand: "curl | sh" });
+      .toEqual({
+        installToken: "pscx_x",
+        installCommand: "curl | sh",
+        installCommandInsecure: null,
+        tlsSelfSigned: false,
+        recommendedInstallCommand: null,
+      });
     expect(connectorInstallReveal({ connector: connector(), installToken: null, installCommand: null })).toBeNull();
     expect(connectorInstallReveal({ connector: connector() })).toBeNull();
+  });
+
+  it("carries the TLS posture through to the reveal", () => {
+    const reveal = connectorInstallReveal({
+      connector: connector(),
+      installToken: "pscx_x",
+      installCommand: "curl -fsSL \"https://polysiem.lan/api/network/connectors/install.sh?token=t\" | sudo sh",
+      installCommandInsecure: "curl -fsSL -k \"https://polysiem.lan/api/network/connectors/install.sh?token=t&insecure=1\" | sudo sh",
+      tlsSelfSigned: true,
+      recommendedInstallCommand: "curl -fsSL -k \"https://polysiem.lan/api/network/connectors/install.sh?token=t&insecure=1\" | sudo sh",
+    });
+    expect(reveal?.tlsSelfSigned).toBe(true);
+    expect(reveal?.recommendedInstallCommand).toContain("-k");
+    // A reveal feeds the shared view helper directly — desktop and mobile alike.
+    expect(connectorInstallCommandView(reveal)?.primary).toContain("-k");
+  });
+});
+
+describe("connector install command presentation", () => {
+  const PLAIN = "curl -fsSL \"https://polysiem.lan/api/network/connectors/install.sh?token=t\" | sudo sh";
+  const INSECURE =
+    "curl -fsSL -k \"https://polysiem.lan/api/network/connectors/install.sh?token=t&insecure=1\" | sudo sh";
+  const HTTP = "curl -fsSL \"http://polysiem.lan:3000/api/network/connectors/install.sh?token=t\" | sudo sh";
+  const HTTP_INSECURE =
+    "curl -fsSL -k \"http://polysiem.lan:3000/api/network/connectors/install.sh?token=t&insecure=1\" | sudo sh";
+
+  it("reads the origin the installer will be fetched from", () => {
+    expect(connectorInstallOrigin(PLAIN)).toBe("https://polysiem.lan");
+    expect(connectorInstallOrigin(HTTP)).toBe("http://polysiem.lan:3000");
+    expect(connectorInstallOrigin("nothing here")).toBeNull();
+    expect(connectorInstallIsHttps(PLAIN)).toBe(true);
+    expect(connectorInstallIsHttps(HTTP)).toBe(false);
+    expect(connectorInstallIsHttps(null)).toBe(false);
+  });
+
+  it("leads with the -k command on a self-signed instance and explains why", () => {
+    const view = connectorInstallCommandView({
+      installCommand: PLAIN,
+      installCommandInsecure: INSECURE,
+      tlsSelfSigned: true,
+      recommendedInstallCommand: INSECURE,
+    });
+    expect(view?.primary).toBe(INSECURE);
+    expect(view?.selfSigned).toBe(true);
+    expect(view?.primaryNote).toContain("self-signed");
+    // The trusted-certificate command stays one click away, and says when to use it.
+    expect(view?.alternate).toEqual({
+      command: PLAIN,
+      label: expect.stringContaining("trusted certificate"),
+      copyLabel: expect.any(String),
+    });
+    expect(view?.origin).toBe("https://polysiem.lan");
+  });
+
+  it("leads with the plain command on a trusted certificate, keeping the fallback reachable", () => {
+    const view = connectorInstallCommandView({
+      installCommand: PLAIN,
+      installCommandInsecure: INSECURE,
+      tlsSelfSigned: false,
+      recommendedInstallCommand: PLAIN,
+    });
+    expect(view?.primary).toBe(PLAIN);
+    // Nothing to explain: no -k is on screen, so no note is rendered.
+    expect(view?.primaryNote).toBeNull();
+    expect(view?.alternate?.command).toBe(INSECURE);
+    expect(view?.alternate?.label).toContain("certificate error");
+  });
+
+  it("offers no certificate fallback at all over plain http", () => {
+    const view = connectorInstallCommandView({
+      installCommand: HTTP,
+      installCommandInsecure: HTTP_INSECURE,
+      tlsSelfSigned: false,
+      recommendedInstallCommand: HTTP,
+    });
+    expect(view?.primary).toBe(HTTP);
+    expect(view?.alternate).toBeNull();
+  });
+
+  it("still renders a working command when the API sends none of the new fields", () => {
+    const older = connectorInstallCommandView({ installCommand: PLAIN });
+    expect(older?.primary).toBe(PLAIN);
+    expect(older?.alternate).toBeNull();
+    expect(older?.primaryNote).toBeNull();
+    // With only the insecure variant known, that one is led with rather than nothing.
+    const insecureOnly = connectorInstallCommandView({
+      installCommand: "",
+      installCommandInsecure: INSECURE,
+      tlsSelfSigned: true,
+    });
+    expect(insecureOnly?.primary).toBe(INSECURE);
+    expect(insecureOnly?.alternate).toBeNull();
+    expect(insecureOnly?.primaryNote).toContain("self-signed");
+  });
+
+  it("describes the command on screen, not the one it expected", () => {
+    // A part-way deploy: self-signed reported, but the strict command recommended.
+    const mismatched = connectorInstallCommandView({
+      installCommand: PLAIN,
+      installCommandInsecure: INSECURE,
+      tlsSelfSigned: true,
+      recommendedInstallCommand: PLAIN,
+    });
+    expect(mismatched?.primary).toBe(PLAIN);
+    expect(mismatched?.primaryNote).toContain("variant below");
+    expect(mismatched?.alternate?.command).toBe(INSECURE);
+
+    // A recommended command worded differently but still carrying the flag.
+    const worded = connectorInstallCommandView({
+      installCommand: PLAIN,
+      installCommandInsecure: INSECURE,
+      tlsSelfSigned: true,
+      recommendedInstallCommand: `${PLAIN.replace("-fsSL", "-fsSL --insecure")}`,
+    });
+    expect(worded?.primaryNote).toContain("-k (insecure) flag");
+    expect(worded?.alternate?.command).toBe(PLAIN);
+  });
+
+  it("renders nothing rather than an empty block when there is no command", () => {
+    expect(connectorInstallCommandView(null)).toBeNull();
+    expect(connectorInstallCommandView({ installCommand: "  " })).toBeNull();
+  });
+
+  it("says once that the connector host has to reach the address itself", () => {
+    expect(connectorInstallReachabilityCopy("https://polysiem.lan")).toContain("https://polysiem.lan");
+    expect(connectorInstallReachabilityCopy("https://polysiem.lan")).toContain("APP_URL");
+    expect(connectorInstallReachabilityCopy(null)).toContain("this PolySIEM address");
+  });
+});
+
+describe("edge tunnel auto-provisioning", () => {
+  const tunnel = (overrides: Partial<WireguardTunnelDto> = {}): WireguardTunnelDto => ({
+    enabled: true,
+    interfaceName: "wg0",
+    address: "10.9.9.1/24",
+    listenPort: 51820,
+    publicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=",
+    hasPrivateKey: true,
+    peer: null,
+    appliedConfigHash: null,
+    ...overrides,
+  });
+
+  it("reads tunnelProvisioned defensively", () => {
+    expect(connectorTunnelProvisioned(undefined)).toBeNull();
+    expect(connectorTunnelProvisioned({})).toBeNull();
+    expect(connectorTunnelProvisioned({ tunnelProvisioned: null })).toBeNull();
+    expect(connectorTunnelProvisioned({ tunnelProvisioned: "wg0" })).toBeNull();
+    expect(connectorTunnelProvisioned({ tunnelProvisioned: { edgeName: "  " } })).toBeNull();
+    // A partial payload still means PolySIEM changed the edge, so it is reported.
+    expect(connectorTunnelProvisioned({ tunnelProvisioned: { address: "10.9.10.1/24" } }))
+      .toMatchObject({ edgeName: "that edge box", address: "10.9.10.1/24" });
+    expect(connectorTunnelProvisioned({ tunnelProvisioned: { edgeName: "Edge one" } })).toEqual({
+      integrationId: "",
+      edgeName: "Edge one",
+      interfaceName: "wg0",
+      address: "10.9.9.1/24",
+      listenPort: 51820,
+    });
+    expect(connectorTunnelProvisioned({
+      tunnelProvisioned: {
+        integrationId: "edge-2", edgeName: "Edge two", interfaceName: "wg1", address: "10.9.10.1/24", listenPort: 51821,
+      },
+    })).toMatchObject({ interfaceName: "wg1", address: "10.9.10.1/24", listenPort: 51821 });
+  });
+
+  it("tells the operator the tunnel now exists and still needs an apply", () => {
+    const copy = connectorTunnelProvisionedCopy({
+      integrationId: "edge-1", edgeName: "Edge one", interfaceName: "wg0", address: "10.9.9.1/24", listenPort: 51820,
+    });
+    expect(copy.title).toContain("Edge one");
+    expect(copy.detail).toContain("10.9.9.1/24");
+    expect(copy.detail).toContain("Apply changes");
+    expect(copy.toast).toContain("Edge one");
+    expect(copy.toast).toContain("apply changes");
+  });
+
+  it("warns nobody when the tunnel is already up, and names the defaults when it is not", () => {
+    expect(edgeTunnelSetupNotice(server({ settings: { wireguard: tunnel() } }))).toBeNull();
+    expect(edgeTunnelSetupNotice(null)).toBeNull();
+
+    const fresh = edgeTunnelSetupNotice(server({ name: "Edge one" }));
+    expect(fresh).toContain("Edge one has no WireGuard tunnel yet");
+    expect(fresh).toContain("wg0, 10.9.9.1/24");
+    expect(fresh).toContain("apply changes");
+
+    // A disabled tunnel keeps ITS values — PolySIEM only flips it back on.
+    const disabled = edgeTunnelSetupNotice(
+      server({ name: "Edge one", settings: { wireguard: tunnel({ enabled: false, address: "10.9.12.1/24" }) } }),
+    );
+    expect(disabled).toContain("10.9.12.1/24");
+    expect(disabled).toContain("turned off");
+  });
+
+  it("does not promise a subnet another edge box already occupies", () => {
+    const taken = server({ id: "edge-2", name: "Edge two", settings: { wireguard: tunnel() } });
+    const notice = edgeTunnelSetupNotice(server({ name: "Edge one" }), [taken, server({ name: "Edge one" })]);
+    expect(notice).toContain("on its own subnet");
+    expect(notice).not.toContain("10.9.9.1/24");
   });
 });
 

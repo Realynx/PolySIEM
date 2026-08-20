@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { wireguardTunnelSchema } from "@/lib/validators/integrations";
 import {
+  DEFAULT_EDGE_TUNNEL_ADDRESS,
   TunnelAllocationError,
+  allocateEdgeTunnelAddress,
   allocateTunnelAddress,
   tunnelSubnetCapacity,
   tunnelSubnetFrom,
@@ -142,6 +145,67 @@ describe("allocateTunnelAddress", () => {
 
   it("defaults taken to an empty list", () => {
     expect(allocateTunnelAddress("10.9.9.0/24", "10.9.9.1")).toBe("10.9.9.2");
+  });
+});
+
+describe("allocateEdgeTunnelAddress", () => {
+  it("gives the first edge server the documented default", () => {
+    expect(allocateEdgeTunnelAddress([])).toBe("10.9.9.1/24");
+    expect(allocateEdgeTunnelAddress()).toBe(DEFAULT_EDGE_TUNNEL_ADDRESS);
+  });
+
+  it("agrees with the tunnel schema's own default, so nothing silently drifts", () => {
+    expect(wireguardTunnelSchema.parse({}).address).toBe(DEFAULT_EDGE_TUNNEL_ADDRESS);
+  });
+
+  it("gives a SECOND edge a distinct subnet", () => {
+    // Load-bearing: a connector holds one address per linked edge on a single
+    // WireGuard interface, so two edges on 10.9.9.0/24 would collide.
+    const first = allocateEdgeTunnelAddress([]);
+    const second = allocateEdgeTunnelAddress([first]);
+    expect(second).toBe("10.9.10.1/24");
+    expect(tunnelSubnetFrom(second).cidr).not.toBe(tunnelSubnetFrom(first).cidr);
+  });
+
+  it("walks on for every further edge", () => {
+    const taken: string[] = [];
+    for (let index = 0; index < 4; index += 1) taken.push(allocateEdgeTunnelAddress(taken));
+    expect(taken).toEqual(["10.9.9.1/24", "10.9.10.1/24", "10.9.11.1/24", "10.9.12.1/24"]);
+  });
+
+  it("reuses a gap left by a deleted edge server", () => {
+    expect(allocateEdgeTunnelAddress(["10.9.9.1/24", "10.9.11.1/24"])).toBe("10.9.10.1/24");
+  });
+
+  it("skips a WIDE subnet an edge holds, not just an exact match", () => {
+    // An edge configured by hand with a /16 swallows every 10.9.x candidate.
+    expect(allocateEdgeTunnelAddress(["10.9.0.0/16"])).toBe("10.10.0.1/24");
+  });
+
+  it("accepts a stored address with no prefix, treating it as its /24", () => {
+    expect(allocateEdgeTunnelAddress(["10.9.9.1"])).toBe("10.9.10.1/24");
+  });
+
+  it("ignores entries it cannot parse rather than skipping a usable block", () => {
+    expect(allocateEdgeTunnelAddress(["", "   ", "fd00::1/64", "not-an-address"])).toBe("10.9.9.1/24");
+  });
+
+  it("reports exhaustion when the whole sweep is spoken for", () => {
+    let thrown: unknown;
+    try {
+      allocateEdgeTunnelAddress(["10.0.0.0/8"]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(TunnelAllocationError);
+    expect((thrown as TunnelAllocationError).code).toBe("exhausted");
+  });
+
+  it("hands out a block connectors can actually be allocated inside", () => {
+    const address = allocateEdgeTunnelAddress([]);
+    const subnet = tunnelSubnetFrom(address);
+    expect(subnet).toEqual({ cidr: "10.9.9.0/24", edgeHost: "10.9.9.1", prefix: 24 });
+    expect(allocateTunnelAddress(subnet.cidr, subnet.edgeHost, [])).toBe("10.9.9.2");
   });
 });
 

@@ -47,6 +47,7 @@ import {
   connectorSshPresentation,
   connectorStatusPresentation,
   connectorSummary,
+  connectorTunnelProvisioned,
   isManualConnector,
   CONNECTOR_INDEPENDENCE_COPY,
   type ConnectorDto,
@@ -54,6 +55,7 @@ import {
   type ConnectorInstallReveal,
   type ConnectorLinkDto,
   type ConnectorPeerConfigDto,
+  type ConnectorTunnelProvisionedDto,
   type EdgeNatServer,
 } from "./edge-networks-types";
 
@@ -62,6 +64,8 @@ interface ConnectorSetupState {
   reason: ConnectorInstallReason;
   reveal: ConnectorInstallReveal | null;
   peerConfig?: ConnectorPeerConfigDto | null;
+  /** Set when creating the connector also stood the edge's tunnel up. */
+  tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
 }
 
 interface ConnectorTabDialogs {
@@ -157,6 +161,7 @@ export function ConnectorsTab({ servers, isAdmin }: { servers: EdgeNatServer[]; 
                 reason: "created",
                 reveal: connectorInstallReveal(result),
                 peerConfig: result.peerConfig ?? null,
+                tunnelProvisioned: connectorTunnelProvisioned(result),
               });
             }}
           />
@@ -177,6 +182,7 @@ export function ConnectorsTab({ servers, isAdmin }: { servers: EdgeNatServer[]; 
           reveal={setup.reveal}
           peerConfig={setup.peerConfig}
           reason={setup.reason}
+          tunnelProvisioned={setup.tunnelProvisioned}
           connector={setup.connector}
           liveConnector={connectors.find((entry) => entry.id === setup.connector.id)}
           servers={servers}

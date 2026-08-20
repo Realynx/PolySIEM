@@ -22,16 +22,19 @@ const mocks = vi.hoisted(() => {
     deleteMany: vi.fn(),
   };
   const edgeNatRule = { findMany: vi.fn() };
-  const integrationConfig = { findUnique: vi.fn() };
-  const tx = { connector, connectorEdgeLink, edgeNatRule, integrationConfig, $queryRaw: vi.fn() };
+  const integrationConfig = { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn() };
+  const appSetting = { findUnique: vi.fn() };
+  const tx = { connector, connectorEdgeLink, edgeNatRule, integrationConfig, appSetting, $queryRaw: vi.fn() };
   return {
     connector,
     connectorEdgeLink,
     edgeNatRule,
     integrationConfig,
+    appSetting,
     tx,
     audit: vi.fn(),
     markEdgeRulesPending: vi.fn(),
+    ensureEdgeWireguardTunnel: vi.fn(),
     connectorRulesetHash: vi.fn(() => "b".repeat(64)),
     runConnectorSsh: vi.fn(),
     scanConnectorHostKeys: vi.fn(),
@@ -44,11 +47,18 @@ vi.mock("@/lib/db", () => ({
     connectorEdgeLink: mocks.connectorEdgeLink,
     edgeNatRule: mocks.edgeNatRule,
     integrationConfig: mocks.integrationConfig,
+    appSetting: mocks.appSetting,
     $transaction: async (work: (tx: unknown) => Promise<unknown>) => work(mocks.tx),
   },
 }));
 vi.mock("@/lib/audit", () => ({ audit: mocks.audit }));
-vi.mock("./edge-networks", () => ({ markEdgeRulesPending: mocks.markEdgeRulesPending }));
+// The provisioning mechanics live in edge-networks.test.ts against the real
+// implementation; what matters here is that both link paths CALL it, honour what
+// it reports, and surface it to the operator.
+vi.mock("./edge-networks", () => ({
+  markEdgeRulesPending: mocks.markEdgeRulesPending,
+  ensureEdgeWireguardTunnel: mocks.ensureEdgeWireguardTunnel,
+}));
 // Only the hash is stubbed (so these tests do not depend on the canonical
 // ruleset format); the real installer-command builder is exercised on purpose,
 // because the seam between the two modules is what matters.
@@ -75,6 +85,7 @@ vi.mock("@/lib/integrations/connector/ssh", async (importOriginal) => ({
 
 import { connectorRulesetHash as realConnectorRulesetHash } from "@/lib/integrations/connector/agent";
 import { CONNECTOR_STATUS_HEADER } from "@/lib/integrations/connector/ssh";
+import { edgeNatSettingsSchema } from "@/lib/validators/integrations";
 import {
   CONNECTOR_POLL_INTERVAL_SECONDS,
   CONNECTOR_RATE_LIMIT_PER_MINUTE,
@@ -84,6 +95,7 @@ import {
   connectorInstallContext,
   connectorInstallInstructions,
   connectorMachineRateLimited,
+  connectorTlsSelfSigned,
   connectorTokenMatches,
   createConnector,
   deleteConnector,
@@ -255,11 +267,45 @@ function statusResponse(lines: string[] = []) {
   };
 }
 
+/**
+ * Stand in for the real provisioner: report the edge's settings as they are and
+ * claim nothing was provisioned. Individual tests override this to describe an
+ * edge whose tunnel PolySIEM had to set up.
+ */
+function tunnelAlreadyConfigured() {
+  mocks.ensureEdgeWireguardTunnel.mockImplementation(
+    async (_tx: unknown, integration: { settings: unknown }) => ({
+      settings: edgeNatSettingsSchema.parse(integration.settings ?? {}),
+      provisioned: null,
+    }),
+  );
+}
+
+/** …and the opposite: an edge that arrived with no tunnel at all. */
+function tunnelAutoProvisioned(overrides: Record<string, unknown> = {}) {
+  const provisioned = {
+    integrationId: "edge-1",
+    edgeName: "Edge A",
+    interfaceName: "wg0",
+    address: "10.9.9.1/24",
+    listenPort: 51820,
+    ...overrides,
+  };
+  mocks.ensureEdgeWireguardTunnel.mockImplementation(async () => ({
+    settings: edgeNatSettingsSchema.parse(edgeIntegrationRow().settings),
+    provisioned,
+  }));
+  return provisioned;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   resetConnectorRateLimit();
   mocks.connectorRulesetHash.mockReturnValue("b".repeat(64));
   mocks.integrationConfig.findUnique.mockResolvedValue(edgeIntegrationRow());
+  // No stored web certificate → PolySIEM cannot claim the origin is self-signed.
+  mocks.appSetting.findUnique.mockResolvedValue(null);
+  tunnelAlreadyConfigured();
   // The default fixture connector serves exactly one edge server. (`mocks.tx.*`
   // deliberately aliases `mocks.*`: the transaction client is the same surface.)
   mocks.connectorEdgeLink.findMany.mockResolvedValue([linkWithEdge()]);
@@ -532,6 +578,70 @@ describe("install instructions", () => {
       `curl -fsSL "http://[fd00::1]:3000/api/network/connectors/install.sh?token=${token}" | sudo sh`,
     );
   });
+
+  it("recommends the verified command unless told the certificate is self-signed", () => {
+    const token = "pscx_abcdefghijklmnopqrstuvwxyz012345";
+    const verified = connectorInstallInstructions("https://polysiem.example", token, false);
+    expect(verified.tlsSelfSigned).toBe(false);
+    expect(verified.recommendedInstallCommand).toBe(verified.installCommand);
+
+    const selfSigned = connectorInstallInstructions("https://polysiem.example", token, true);
+    expect(selfSigned.tlsSelfSigned).toBe(true);
+    expect(selfSigned.recommendedInstallCommand).toBe(selfSigned.installCommandInsecure);
+    // -k never becomes unconditional: the verified command is still offered.
+    expect(selfSigned.installCommand).toBe(verified.installCommand);
+    expect(selfSigned.installCommand).not.toContain(" -k ");
+  });
+
+  it("recommends the fallback command even for an origin the builder rejects", () => {
+    const token = "pscx_abcdefghijklmnopqrstuvwxyz012345";
+    const instructions = connectorInstallInstructions("https://[fd00::1]:3000", token, true);
+    expect(instructions.recommendedInstallCommand).toBe(instructions.installCommandInsecure);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("connectorTlsSelfSigned", () => {
+  /** The `web_certificate` AppSetting, as getSetting reads it. */
+  function storedCertificate(source: string | null) {
+    mocks.appSetting.findUnique.mockResolvedValue(
+      source === null ? null : { key: "web_certificate", value: { source, certPem: "x", keyPemEncrypted: "y" } },
+    );
+  }
+
+  it("is TRUE for an https origin serving a certificate PolySIEM generated", async () => {
+    storedCertificate("self-signed");
+    await expect(connectorTlsSelfSigned("https://polysiem.example")).resolves.toBe(true);
+  });
+
+  it("is FALSE once an operator has uploaded a CA-signed certificate", async () => {
+    storedCertificate("uploaded");
+    await expect(connectorTlsSelfSigned("https://polysiem.example")).resolves.toBe(false);
+  });
+
+  it("is FALSE for an http origin, whatever certificate is stored", async () => {
+    storedCertificate("self-signed");
+    await expect(connectorTlsSelfSigned("http://10.0.3.9:3000")).resolves.toBe(false);
+    // The setting is not even consulted — there is no TLS to verify.
+    expect(mocks.appSetting.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("is FALSE when no certificate has been recorded", async () => {
+    storedCertificate(null);
+    await expect(connectorTlsSelfSigned("https://polysiem.example")).resolves.toBe(false);
+  });
+
+  it("is FALSE when the setting cannot be read at all", async () => {
+    // Never weaken the default command on a guess.
+    mocks.appSetting.findUnique.mockRejectedValue(new Error("database is down"));
+    await expect(connectorTlsSelfSigned("https://polysiem.example")).resolves.toBe(false);
+  });
+
+  it("tolerates a malformed stored certificate record", async () => {
+    mocks.appSetting.findUnique.mockResolvedValue({ key: "web_certificate", value: { source: 7 } });
+    await expect(connectorTlsSelfSigned("https://polysiem.example")).resolves.toBe(false);
+  });
 });
 
 describe("resolveConnectorBaseUrl", () => {
@@ -703,11 +813,50 @@ describe("createConnector", () => {
     expect(createdLinkAddress()).toBe("10.9.9.3");
   });
 
-  it("refuses when the edge tunnel is not configured", async () => {
+  it("PROVISIONS the edge tunnel instead of refusing, and says so", async () => {
+    // The onboarding bug: an edge with no tunnel used to 409 here and send the
+    // operator to a form on which every field already had a working default.
     mocks.integrationConfig.findUnique.mockResolvedValue(edgeIntegrationRow({ settings: {} }));
-    await expect(createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" })).rejects.toMatchObject({
-      status: 409, code: "wireguard_not_configured",
+    const provisioned = tunnelAutoProvisioned();
+
+    const result = await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, {
+      baseUrl: "https://x.test",
     });
+
+    expect(result.tunnelProvisioned).toEqual(provisioned);
+    expect(result.connector.links).toHaveLength(1);
+    // Provisioning happens on the SAME transaction client as the link, so a
+    // concurrent create cannot be handed the same subnet.
+    expect(mocks.ensureEdgeWireguardTunnel).toHaveBeenCalledWith(mocks.tx, expect.objectContaining({ id: "edge-1" }));
+    // The tunnel still has to reach the host, so the edge owes an Apply.
+    expect(mocks.markEdgeRulesPending).toHaveBeenCalledWith(mocks.tx, "edge-1");
+  });
+
+  it("audits the auto-provision as its own action", async () => {
+    tunnelAutoProvisioned();
+    await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, { baseUrl: "https://x.test" });
+    expect(mocks.audit).toHaveBeenCalledWith(
+      ACTOR, "edge.wireguard.auto_provision", { type: "integration", id: "edge-1" },
+      expect.objectContaining({
+        edgeName: "Edge A", interfaceName: "wg0", address: "10.9.9.1/24", listenPort: 51820, reason: "connector_create",
+      }),
+    );
+  });
+
+  it("reports tunnelProvisioned as null when the edge was already configured", async () => {
+    const result = await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, {
+      baseUrl: "https://x.test",
+    });
+    expect(result.tunnelProvisioned).toBeNull();
+    expect(mocks.audit).not.toHaveBeenCalledWith(
+      ACTOR, "edge.wireguard.auto_provision", expect.anything(), expect.anything(),
+    );
+  });
+
+  it("provisions nothing for a STANDALONE create — there is no edge to touch", async () => {
+    const result = await createConnector(ACTOR, undefined, { name: "roaming", notes: null, kind: "agent" });
+    expect(result.tunnelProvisioned).toBeNull();
+    expect(mocks.ensureEdgeWireguardTunnel).not.toHaveBeenCalled();
   });
 
   it("rejects a non-edge integration", async () => {
@@ -744,6 +893,48 @@ describe("createConnector", () => {
     const result = await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, { baseUrl: "https://x.test" });
     expect(JSON.stringify(mocks.audit.mock.calls)).not.toContain(result.installToken!);
     expect(mocks.audit).toHaveBeenCalledWith(ACTOR, "edge_nat.connector.create", expect.anything(), expect.anything());
+  });
+
+  it("recommends the -k command when this instance serves its own certificate", async () => {
+    // PolySIEM knows its own TLS posture, so the operator is never handed a
+    // one-liner that curl will refuse.
+    mocks.appSetting.findUnique.mockResolvedValue({ key: "web_certificate", value: { source: "self-signed" } });
+    const result = await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, {
+      baseUrl: "https://polysiem.example",
+    });
+    expect(result.tlsSelfSigned).toBe(true);
+    expect(result.recommendedInstallCommand).toBe(result.installCommandInsecure);
+    expect(result.recommendedInstallCommand).toContain("-k");
+    // Both remain available; the verified one is untouched.
+    expect(result.installCommand).not.toContain("insecure=1");
+  });
+
+  it("recommends the verified command behind a CA-signed certificate", async () => {
+    mocks.appSetting.findUnique.mockResolvedValue({ key: "web_certificate", value: { source: "uploaded" } });
+    const result = await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, {
+      baseUrl: "https://polysiem.example",
+    });
+    expect(result.tlsSelfSigned).toBe(false);
+    expect(result.recommendedInstallCommand).toBe(result.installCommand);
+  });
+
+  it("recommends the verified command over plain http", async () => {
+    mocks.appSetting.findUnique.mockResolvedValue({ key: "web_certificate", value: { source: "self-signed" } });
+    const result = await createConnector(ACTOR, "edge-1", { name: "c1", notes: null, kind: "agent" }, {
+      baseUrl: "http://10.0.3.9:3000",
+    });
+    expect(result.tlsSelfSigned).toBe(false);
+    expect(result.recommendedInstallCommand).toBe(result.installCommand);
+  });
+
+  it("gives a manual kind no install command to recommend", async () => {
+    mocks.appSetting.findUnique.mockResolvedValue({ key: "web_certificate", value: { source: "self-signed" } });
+    const result = await createConnector(ACTOR, "edge-1", { name: "opn", notes: null, kind: "opnsense" }, {
+      baseUrl: "https://polysiem.example",
+    });
+    expect(result.recommendedInstallCommand).toBeNull();
+    expect(result.installCommand).toBeNull();
+    expect(result.tlsSelfSigned).toBe(false);
   });
 });
 
@@ -2060,11 +2251,45 @@ describe("linkConnector", () => {
     expect(mocks.tx.connectorEdgeLink.create).not.toHaveBeenCalled();
   });
 
-  it("refuses an edge whose WireGuard tunnel is not configured", async () => {
+  it("PROVISIONS the edge tunnel rather than refusing the link", async () => {
     mocks.integrationConfig.findUnique.mockResolvedValue(edgeIntegrationRow({ settings: {} }));
+    const provisioned = tunnelAutoProvisioned();
+
+    const result = await linkConnector(ACTOR, "cx-row-1", "edge-1");
+
+    expect(result.tunnelProvisioned).toEqual(provisioned);
+    expect(result.link).toMatchObject({ integrationId: "edge-1" });
+    expect(mocks.ensureEdgeWireguardTunnel).toHaveBeenCalledWith(mocks.tx, expect.objectContaining({ id: "edge-1" }));
+    expect(mocks.markEdgeRulesPending).toHaveBeenCalledWith(mocks.tx, "edge-1");
+    expect(mocks.audit).toHaveBeenCalledWith(
+      ACTOR, "edge.wireguard.auto_provision", { type: "integration", id: "edge-1" },
+      expect.objectContaining({ address: "10.9.9.1/24", reason: "connector_link" }),
+    );
+  });
+
+  it("re-pends the edge for a provisioned tunnel even when the connector has no key", async () => {
+    // The tunnel itself changed the desired edge config; the connector's key is
+    // a separate reason to re-pend, and neither may mask the other.
+    mocks.connector.findUnique.mockResolvedValue(connectorRow({ publicKey: null }));
+    tunnelAutoProvisioned();
+    await linkConnector(ACTOR, "cx-row-1", "edge-1");
+    expect(mocks.markEdgeRulesPending).toHaveBeenCalledWith(mocks.tx, "edge-1");
+  });
+
+  it("reports tunnelProvisioned as null when the edge was already configured", async () => {
+    const result = await linkConnector(ACTOR, "cx-row-1", "edge-1");
+    expect(result.tunnelProvisioned).toBeNull();
+    expect(mocks.audit).not.toHaveBeenCalledWith(
+      ACTOR, "edge.wireguard.auto_provision", expect.anything(), expect.anything(),
+    );
+  });
+
+  it("refuses a duplicate link BEFORE provisioning anything on that edge", async () => {
+    mocks.tx.connectorEdgeLink.findUnique.mockResolvedValue(linkRow());
     await expect(linkConnector(ACTOR, "cx-row-1", "edge-1")).rejects.toMatchObject({
-      status: 409, code: "wireguard_not_configured",
+      status: 409, code: "connector_already_linked",
     });
+    expect(mocks.ensureEdgeWireguardTunnel).not.toHaveBeenCalled();
   });
 });
 

@@ -1,11 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalEdgeRuleset, desiredEdgeRulesetHash } from "@/lib/integrations/edge-nat/agent";
 
-// edge-networks.ts holds the Prisma singleton at module scope; nothing under
-// test here touches it, but importing it must not construct a client.
+process.env.APP_SECRET = "unit-test-secret-0123456789abcdef0123456789abcdef";
+
+// edge-networks.ts holds the Prisma singleton at module scope; the tunnel
+// provisioning tests drive an explicit transaction client instead, so importing
+// it must still not construct a real client.
 vi.mock("@/lib/db", () => ({ prisma: {} }));
 
-import { deriveConnectorPeers, deriveEdgeApplyRules, deriveEdgeWireguardPeers } from "./edge-networks";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
+import { generateWireguardKeypair, isValidWireguardKey, wireguardPublicFromPrivate } from "@/lib/wireguard";
+import { storedEdgeNatCredentialsSchema } from "@/lib/validators/integrations";
+import {
+  deriveConnectorPeers,
+  deriveEdgeApplyRules,
+  deriveEdgeWireguardPeers,
+  ensureEdgeWireguardTunnel,
+} from "./edge-networks";
 
 const CONNECTOR_KEY = "K5rM2QdFvJ7t8YbN1oPxWzCqEaHiUjLmSnTvBcDgRfE=";
 const OTHER_KEY = "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=";
@@ -189,5 +200,188 @@ describe("deriveEdgeWireguardPeers — connectors + the legacy peer (phase 3)", 
   it("has no peers at all when nothing is configured", () => {
     expect(deriveEdgeWireguardPeers(null, [])).toEqual([]);
     expect(deriveEdgeWireguardPeers(undefined, [{ publicKey: null, tunnelAddress: "10.9.9.5" }])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Automatic tunnel provisioning — the fix for "add your first connector"
+// dead-ending on a 409 the operator could do nothing useful about.
+// ---------------------------------------------------------------------------
+
+const SSH_PRIVATE_KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n-----END OPENSSH PRIVATE KEY-----\n";
+const EXISTING_WG = generateWireguardKeypair();
+
+interface EdgeUpdateArgs {
+  where: { id: string };
+  data: { settings: unknown; encryptedCredentials: string };
+}
+
+/** A transaction client with exactly the two calls provisioning makes. */
+function fakeTx(otherEdges: Array<{ settings: unknown }> = []) {
+  return {
+    integrationConfig: {
+      findMany: vi.fn(async () => otherEdges),
+      update: vi.fn(async (args: EdgeUpdateArgs) => ({ id: args.where.id })),
+    },
+  };
+}
+
+function edgeRow(settings: unknown, credentials: Record<string, unknown> = {}) {
+  return {
+    id: "edge-1",
+    name: "Edge A",
+    type: "EDGE_NAT_SERVER",
+    baseUrl: "ssh://edge.example:22",
+    settings,
+    encryptedCredentials: encryptSecret(JSON.stringify({
+      username: "polysiem-edge",
+      privateKey: SSH_PRIVATE_KEY,
+      ...credentials,
+    })),
+  };
+}
+
+/** The settings/credentials a provisioning run actually wrote. */
+function written(tx: ReturnType<typeof fakeTx>) {
+  const call = tx.integrationConfig.update.mock.calls[0];
+  if (!call) throw new Error("expected the provisioned tunnel to have been written");
+  const { data } = call[0];
+  return {
+    settings: data.settings,
+    credentials: storedEdgeNatCredentialsSchema.parse(JSON.parse(decryptSecret(data.encryptedCredentials))),
+  };
+}
+
+const enabledTunnel = {
+  enabled: true,
+  interfaceName: "wg0",
+  address: "10.9.9.1/24",
+  listenPort: 51820,
+  publicKey: EXISTING_WG.publicKey,
+  hasPrivateKey: true,
+  peer: null,
+};
+
+describe("ensureEdgeWireguardTunnel", () => {
+  let tx: ReturnType<typeof fakeTx>;
+
+  beforeEach(() => {
+    tx = fakeTx();
+  });
+
+  it("provisions a complete tunnel for an edge that has none", async () => {
+    const result = await ensureEdgeWireguardTunnel(tx as never, edgeRow({}) as never);
+
+    expect(result.provisioned).toEqual({
+      integrationId: "edge-1",
+      edgeName: "Edge A",
+      interfaceName: "wg0",
+      address: "10.9.9.1/24",
+      listenPort: 51820,
+    });
+    expect(result.settings.wireguard).toMatchObject({
+      enabled: true, interfaceName: "wg0", address: "10.9.9.1/24", listenPort: 51820, hasPrivateKey: true,
+    });
+    expect(isValidWireguardKey(result.settings.wireguard!.publicKey!)).toBe(true);
+  });
+
+  it("keeps the generated private key OUT of settings and only in credentials", async () => {
+    await ensureEdgeWireguardTunnel(tx as never, edgeRow({}) as never);
+    const saved = written(tx);
+    expect(isValidWireguardKey(saved.credentials.wireguardPrivateKey!)).toBe(true);
+    expect(JSON.stringify(saved.settings)).not.toContain(saved.credentials.wireguardPrivateKey!);
+    // The public half in settings is the one derived from what we stored.
+    expect((saved.settings as { wireguard: { publicKey: string } }).wireguard.publicKey)
+      .toBe(wireguardPublicFromPrivate(saved.credentials.wireguardPrivateKey!));
+  });
+
+  it("marks the edge pending, because the tunnel still needs an Apply", async () => {
+    await ensureEdgeWireguardTunnel(tx as never, edgeRow({}) as never);
+    expect((written(tx).settings as { pendingChanges: boolean }).pendingChanges).toBe(true);
+  });
+
+  it("re-enables a DISABLED tunnel without rotating its key or moving it", async () => {
+    const row = edgeRow(
+      {
+        wireguard: {
+          ...enabledTunnel, enabled: false, interfaceName: "wg7", address: "10.9.42.1/24", listenPort: 51999,
+        },
+      },
+      { wireguardPrivateKey: EXISTING_WG.privateKey },
+    );
+
+    const result = await ensureEdgeWireguardTunnel(tx as never, row as never);
+
+    expect(result.provisioned).toEqual({
+      integrationId: "edge-1",
+      edgeName: "Edge A",
+      interfaceName: "wg7",
+      address: "10.9.42.1/24",
+      listenPort: 51999,
+    });
+    // Everything the operator had already published to the far side survives.
+    expect(result.settings.wireguard).toMatchObject({ enabled: true, publicKey: EXISTING_WG.publicKey });
+    expect(written(tx).credentials.wireguardPrivateKey).toBe(EXISTING_WG.privateKey);
+    // No subnet was needed, so no sweep over the other edges happened.
+    expect(tx.integrationConfig.findMany).not.toHaveBeenCalled();
+  });
+
+  it("leaves an edge whose tunnel is already enabled completely untouched", async () => {
+    const result = await ensureEdgeWireguardTunnel(
+      tx as never,
+      edgeRow({ wireguard: enabledTunnel }, { wireguardPrivateKey: EXISTING_WG.privateKey }) as never,
+    );
+
+    expect(result.provisioned).toBeNull();
+    expect(tx.integrationConfig.update).not.toHaveBeenCalled();
+    expect(result.settings.wireguard).toMatchObject({
+      publicKey: EXISTING_WG.publicKey, address: "10.9.9.1/24", interfaceName: "wg0", listenPort: 51820,
+    });
+  });
+
+  it("gives a SECOND edge a subnet the first one is not using", async () => {
+    // A connector links to both edges on ONE interface, so a shared 10.9.9.0/24
+    // would give it two addresses in the same prefix and break its routing.
+    tx = fakeTx([{ settings: { wireguard: enabledTunnel } }]);
+    const result = await ensureEdgeWireguardTunnel(tx as never, edgeRow({}) as never);
+    expect(result.provisioned?.address).toBe("10.9.10.1/24");
+    expect(tx.integrationConfig.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { type: "EDGE_NAT_SERVER", id: { not: "edge-1" } },
+    }));
+  });
+
+  it("reserves a subnet held by another edge even while that tunnel is disabled", async () => {
+    tx = fakeTx([{ settings: { wireguard: { ...enabledTunnel, enabled: false } } }]);
+    const result = await ensureEdgeWireguardTunnel(tx as never, edgeRow({}) as never);
+    expect(result.provisioned?.address).toBe("10.9.10.1/24");
+  });
+
+  it("ignores another edge whose settings are unreadable", async () => {
+    tx = fakeTx([{ settings: { wireguard: "nonsense" } }, { settings: null }]);
+    const result = await ensureEdgeWireguardTunnel(tx as never, edgeRow({}) as never);
+    expect(result.provisioned?.address).toBe("10.9.9.1/24");
+  });
+
+  it("keys a tunnel that was switched on but never given one", async () => {
+    const row = edgeRow({ wireguard: { ...enabledTunnel, publicKey: null, hasPrivateKey: false } });
+    const result = await ensureEdgeWireguardTunnel(tx as never, row as never);
+    expect(result.provisioned?.address).toBe("10.9.9.1/24");
+    expect(isValidWireguardKey(result.settings.wireguard!.publicKey!)).toBe(true);
+  });
+
+  it("re-allocates instead of refusing when the stored address is unusable", async () => {
+    const row = edgeRow({ wireguard: { ...enabledTunnel, address: "not-an-address" } });
+    const result = await ensureEdgeWireguardTunnel(tx as never, row as never);
+    expect(result.provisioned?.address).toBe("10.9.9.1/24");
+  });
+
+  it("keeps wireguard_not_configured for the one case it cannot resolve", async () => {
+    // Unreadable credentials: the private key would have nowhere to live, so
+    // announcing a tunnel would be a lie. This is the ONLY route to that error.
+    const row = { ...edgeRow({}), encryptedCredentials: "v2:not:a:blob" };
+    await expect(ensureEdgeWireguardTunnel(tx as never, row as never)).rejects.toMatchObject({
+      status: 409, code: "wireguard_not_configured",
+    });
+    expect(tx.integrationConfig.update).not.toHaveBeenCalled();
   });
 });

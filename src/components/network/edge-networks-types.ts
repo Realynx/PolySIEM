@@ -838,10 +838,34 @@ export interface ConnectorDto {
   sshReady?: boolean;
 }
 
-/** One-time reveal. Returned by create and rotate-token; shown once, never stored. */
+/**
+ * One-time reveal. Returned by create and rotate-token; shown once, never stored.
+ *
+ * Everything past `installCommand` is optional so an older API — or a deploy
+ * caught mid-upgrade — still renders a working command instead of an empty box.
+ */
 export interface ConnectorInstallReveal {
   installToken: string;
   installCommand: string;
+  /** `curl -k … &insecure=1` variant, which also makes the served agent poll with `-k`. */
+  installCommandInsecure?: string | null;
+  /** True when this PolySIEM instance serves its own self-signed certificate. */
+  tlsSelfSigned?: boolean;
+  /** The variant PolySIEM recommends for THIS instance's TLS posture. */
+  recommendedInstallCommand?: string | null;
+}
+
+/**
+ * Reported by create / link when PolySIEM had to stand the edge's WireGuard
+ * tunnel up as part of the same call. Null when the tunnel was already running.
+ */
+export interface ConnectorTunnelProvisionedDto {
+  integrationId: string;
+  edgeName: string;
+  interfaceName: string;
+  /** The edge's own tunnel address in CIDR form, e.g. "10.9.9.1/24". */
+  address: string;
+  listenPort: number;
 }
 
 /**
@@ -857,15 +881,287 @@ export interface CreateConnectorResult {
   installCommand?: string | null;
   installCommandInsecure?: string | null;
   installUrl?: string | null;
+  /** True when this instance serves a self-signed certificate (the default). */
+  tlsSelfSigned?: boolean;
+  /** The command to hand the operator first, already matched to the TLS posture. */
+  recommendedInstallCommand?: string | null;
   /** Paste-ready far-side block. Optional here so an older API still renders. */
   peerConfig?: ConnectorPeerConfigDto | null;
+  /** Set when linking this connector also stood the edge's tunnel up. */
+  tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
+}
+
+/** POST /api/network/connectors/:id/links response payload. */
+export interface LinkConnectorResult {
+  connector?: ConnectorDto;
+  link?: ConnectorLinkDto;
+  peerConfig?: ConnectorPeerConfigDto | null;
+  /** Set when the link had to stand the edge's tunnel up first. */
+  tunnelProvisioned?: ConnectorTunnelProvisionedDto | null;
 }
 
 /** Reads the one-time reveal out of a create result, or null for manual kinds. */
 export function connectorInstallReveal(result: CreateConnectorResult): ConnectorInstallReveal | null {
   const installToken = result.installToken?.trim();
   const installCommand = result.installCommand?.trim();
-  return installToken && installCommand ? { installToken, installCommand } : null;
+  if (!installToken || !installCommand) return null;
+  return {
+    installToken,
+    installCommand,
+    installCommandInsecure: result.installCommandInsecure ?? null,
+    tlsSelfSigned: result.tlsSelfSigned === true,
+    recommendedInstallCommand: result.recommendedInstallCommand ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Install command presentation
+//
+// PolySIEM serves HTTPS with a SELF-SIGNED certificate by default, so the plain
+// `curl -fsSL … | sudo sh` one-liner dies on certificate verification on a
+// default install. The instance knows its own TLS posture, so the operator is
+// handed the command that works for THIS instance first — and can always reach
+// the other variant, which stays labelled for what it is.
+// ---------------------------------------------------------------------------
+
+/** The alternate install command, offered under a label saying when to use it. */
+export interface ConnectorInstallAlternate {
+  command: string;
+  /** Why an operator would reach for this one instead. */
+  label: string;
+  copyLabel: string;
+}
+
+/** Everything a surface needs to render the install one-liner. Shared with mobile. */
+export interface ConnectorInstallCommandView {
+  /** Shown first, copied by default. Never empty. */
+  primary: string;
+  /** Neutral one-liner explaining a `-k` in the primary command. Null otherwise. */
+  primaryNote: string | null;
+  /** The other variant. Null when there is nothing meaningfully different to offer. */
+  alternate: ConnectorInstallAlternate | null;
+  /** True when PolySIEM told us it serves its own self-signed certificate. */
+  selfSigned: boolean;
+  /** Origin baked into the command, e.g. "https://polysiem.lan:3000". Null if unparsable. */
+  origin: string | null;
+}
+
+/** Everything `connectorInstallCommandView` needs. A reveal satisfies it, as does a raw response. */
+export interface ConnectorInstallCommandSource {
+  installCommand?: string | null;
+  installCommandInsecure?: string | null;
+  tlsSelfSigned?: boolean;
+  recommendedInstallCommand?: string | null;
+}
+
+/** Said when the command on screen really does carry `-k`. */
+const SELF_SIGNED_NOTE =
+  "PolySIEM is serving its own self-signed certificate — the default for a self-hosted install — so this command "
+  + "includes curl's -k (insecure) flag, and the agent it installs polls with it too. Give PolySIEM a trusted "
+  + "certificate to drop the flag.";
+
+/** Same fact when the recommended command is the strict one but a fallback exists. */
+const SELF_SIGNED_FALLBACK_NOTE =
+  "PolySIEM is serving its own self-signed certificate, so curl may stop on certificate verification. The variant "
+  + "below skips that check and is the one that works until you install a trusted certificate.";
+
+/** Same fact with no fallback to point at — still worth knowing why curl might stop. */
+const SELF_SIGNED_STRICT_NOTE =
+  "PolySIEM is serving its own self-signed certificate, so curl stops on certificate verification unless the "
+  + "connector host already trusts it.";
+
+const TRUSTED_ALTERNATE_LABEL = "If this instance has a trusted certificate, use this instead";
+const INSECURE_ALTERNATE_LABEL = "If that command fails with a certificate error, use this instead";
+
+/** The origin an install one-liner points at, read straight out of the URL it carries. */
+export function connectorInstallOrigin(command: string | null | undefined): string | null {
+  const match = /https?:\/\/[^\s"'/]+/i.exec(command ?? "");
+  return match ? match[0] : null;
+}
+
+/** True when the baked-in installer URL is https, so a certificate can be in the way. */
+export function connectorInstallIsHttps(command: string | null | undefined): boolean {
+  return connectorInstallOrigin(command)?.toLowerCase().startsWith("https://") ?? false;
+}
+
+/**
+ * One plain line about reachability. The installer URL is baked from `APP_URL`
+ * (falling back to the address the operator is browsing), so a connector on
+ * another VLAN pointed at `localhost` can never install.
+ */
+export function connectorInstallReachabilityCopy(origin: string | null): string {
+  const target = origin ? `${origin} ` : "this PolySIEM address ";
+  return `The connector host has to reach ${target}itself — that address comes from APP_URL, or from whatever `
+    + "address you are browsing PolySIEM on. A connector on another VLAN or another machine cannot install from a "
+    + "localhost URL.";
+}
+
+/** Non-empty trimmed string, or null. Takes `unknown` so wire data is safe to read. */
+function trimmedOrNull(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+/** Which of the two variants to lead with, given what the API told us. */
+function pickPrimaryInstallCommand(
+  plain: string | null,
+  insecure: string | null,
+  recommended: string | null,
+  selfSigned: boolean,
+): string | null {
+  if (recommended) return recommended;
+  if (selfSigned && insecure) return insecure;
+  return plain ?? insecure;
+}
+
+/**
+ * The other command, and the condition that would send an operator to it.
+ *
+ * Leading with the insecure variant always offers the plain one back — an
+ * instance can be given a real certificate later. Leading with the plain one
+ * only offers the fallback when TLS is actually in play; over plain http a
+ * certificate error is impossible and the extra block would be noise.
+ */
+function pickInstallAlternate(
+  primary: string,
+  plain: string | null,
+  insecure: string | null,
+  primarySkipsTls: boolean,
+): ConnectorInstallAlternate | null {
+  if (primarySkipsTls) {
+    return plain && plain !== primary
+      ? { command: plain, label: TRUSTED_ALTERNATE_LABEL, copyLabel: "Copy the trusted-certificate command" }
+      : null;
+  }
+  if (!insecure || insecure === primary || !connectorInstallIsHttps(primary)) return null;
+  return { command: insecure, label: INSECURE_ALTERNATE_LABEL, copyLabel: "Copy the self-signed fallback command" };
+}
+
+/**
+ * Does the command on offer actually skip certificate verification?
+ *
+ * Matched on the flag as well as on identity with `installCommandInsecure`, so
+ * a server that words its recommended command slightly differently is still
+ * described correctly — the note has to match what is on screen.
+ */
+function installCommandSkipsTls(command: string, insecure: string | null): boolean {
+  if (insecure !== null && command === insecure) return true;
+  return /\s(?:-k|--insecure)(?:\s|$)/.test(command);
+}
+
+/** Only claim what the command on screen actually does. */
+function installPrimaryNote(selfSigned: boolean, skipsTls: boolean, hasInsecureAlternate: boolean): string | null {
+  if (!selfSigned) return null;
+  if (skipsTls) return SELF_SIGNED_NOTE;
+  return hasInsecureAlternate ? SELF_SIGNED_FALLBACK_NOTE : SELF_SIGNED_STRICT_NOTE;
+}
+
+/**
+ * Decide what the install dialog renders, on desktop and on mobile alike.
+ *
+ * Returns null when there is no command at all, so a caller renders nothing
+ * rather than an empty code block.
+ */
+export function connectorInstallCommandView(
+  source: ConnectorInstallCommandSource | null | undefined,
+): ConnectorInstallCommandView | null {
+  if (!source) return null;
+  const plain = trimmedOrNull(source.installCommand);
+  const insecure = trimmedOrNull(source.installCommandInsecure);
+  const recommended = trimmedOrNull(source.recommendedInstallCommand);
+  const selfSigned = source.tlsSelfSigned === true;
+  const primary = pickPrimaryInstallCommand(plain, insecure, recommended, selfSigned);
+  if (!primary) return null;
+  const skipsTls = installCommandSkipsTls(primary, insecure);
+  const alternate = pickInstallAlternate(primary, plain, insecure, skipsTls);
+  return {
+    primary,
+    primaryNote: installPrimaryNote(selfSigned, skipsTls, alternate?.command === insecure && insecure !== null),
+    alternate,
+    selfSigned,
+    origin: connectorInstallOrigin(primary),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tunnel auto-provisioning
+//
+// Linking a connector to an edge whose WireGuard tunnel does not exist yet used
+// to be refused. PolySIEM now stands the tunnel up in the same call, so the UI's
+// job is to say so BEFORE (in the picker) and AFTER (in the success path).
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads `tunnelProvisioned` off any response, tolerating an API that omits it.
+ *
+ * Deliberately lenient: a partial payload still means PolySIEM changed the
+ * edge, and staying silent about that is worse than naming it vaguely.
+ */
+export function connectorTunnelProvisioned(source: unknown): ConnectorTunnelProvisionedDto | null {
+  if (!source || typeof source !== "object") return null;
+  const raw = (source as { tunnelProvisioned?: unknown }).tunnelProvisioned;
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Partial<ConnectorTunnelProvisionedDto>;
+  const integrationId = trimmedOrNull(value.integrationId);
+  const edgeName = trimmedOrNull(value.edgeName);
+  const address = trimmedOrNull(value.address);
+  if (!integrationId && !edgeName && !address) return null;
+  return {
+    integrationId: integrationId ?? "",
+    edgeName: edgeName ?? "that edge box",
+    interfaceName: trimmedOrNull(value.interfaceName) ?? WIREGUARD_DEFAULTS.interfaceName,
+    address: address ?? WIREGUARD_DEFAULTS.address,
+    listenPort: typeof value.listenPort === "number" && Number.isFinite(value.listenPort)
+      ? value.listenPort
+      : WIREGUARD_DEFAULTS.listenPort,
+  };
+}
+
+/** How the success path announces a tunnel PolySIEM just stood up. */
+export function connectorTunnelProvisionedCopy(tunnel: ConnectorTunnelProvisionedDto): {
+  title: string;
+  detail: string;
+  /** Single-line form, for a toast that has no room for a title and a body. */
+  toast: string;
+} {
+  const facts = `${tunnel.interfaceName} · ${tunnel.address} · UDP ${tunnel.listenPort}`;
+  return {
+    title: `PolySIEM set up ${tunnel.edgeName}'s WireGuard tunnel`,
+    detail: `It did not have one, so PolySIEM created ${facts} and generated its keypair. `
+      + `Apply changes on ${tunnel.edgeName} to bring the tunnel up on the host.`,
+    toast: `PolySIEM also set up ${tunnel.edgeName}'s tunnel (${facts}) — apply changes there to bring it up.`,
+  };
+}
+
+/**
+ * The quiet line a picker shows BEFORE linking, when the chosen edge has no
+ * usable tunnel yet. Null when the tunnel is already up, so nothing is said.
+ *
+ * `servers` is used only to avoid promising a subnet another edge already
+ * occupies — PolySIEM allocates the next free one, and a connector holds one
+ * address per edge on a single interface, so two edges may not share a subnet.
+ */
+export function edgeTunnelSetupNotice(
+  server: EdgeNatServer | null | undefined,
+  servers: readonly EdgeNatServer[] = [],
+): string | null {
+  if (!server) return null;
+  const tunnel = server.settings?.wireguard;
+  if (tunnel?.enabled) return null;
+  if (tunnel) {
+    return `${server.name}'s tunnel (${tunnel.interfaceName || WIREGUARD_DEFAULTS.interfaceName}, `
+      + `${tunnel.address || WIREGUARD_DEFAULTS.address}) is turned off — PolySIEM enables it when you link this `
+      + "connector, then apply changes there to bring it up.";
+  }
+  const defaultTaken = servers.some(
+    (other) => other.id !== server.id && other.settings?.wireguard?.address === WIREGUARD_DEFAULTS.address,
+  );
+  const where = defaultTaken
+    ? `(${WIREGUARD_DEFAULTS.interfaceName}, on its own subnet so it cannot collide with your other edge boxes)`
+    : `(${WIREGUARD_DEFAULTS.interfaceName}, ${WIREGUARD_DEFAULTS.address})`;
+  return `${server.name} has no WireGuard tunnel yet. PolySIEM sets one up ${where} when you link this connector, `
+    + "then apply changes there to bring it up.";
 }
 
 export interface CreateConnectorInput {

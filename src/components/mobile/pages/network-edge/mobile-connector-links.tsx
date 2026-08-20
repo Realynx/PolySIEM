@@ -22,7 +22,10 @@ import {
   connectorsAllUrl,
   connectorsAvailableToLink,
   connectorsQueryKey,
+  connectorTunnelProvisioned,
+  connectorTunnelProvisionedCopy,
   edgeServerForLink,
+  edgeTunnelSetupNotice,
   edgesAvailableForConnector,
   isConnectorLinkEnabled,
   isManualConnector,
@@ -32,7 +35,9 @@ import {
   type ConnectorLinkDto,
   type EdgeNatServer,
   type LinkConnectorInput,
+  type LinkConnectorResult,
 } from "@/components/network/edge-networks-types";
+import { EdgeTunnelSetupNote } from "./mobile-connector-atoms";
 
 /**
  * Connector ↔ edge links, on a phone.
@@ -85,17 +90,27 @@ export function useConnectorInvalidator(): () => void {
   };
 }
 
-/** POST /api/network/connectors/[id]/links — allocates the address on that edge. */
+/**
+ * POST /api/network/connectors/[id]/links — allocates the address on that edge.
+ *
+ * Linking an edge that has no WireGuard tunnel now provisions one instead of
+ * refusing, so the response can report a tunnel that did not exist a moment ago.
+ * The sheet closes on success, so that fact rides the toast.
+ */
 export function useLinkConnectorMutation(onDone: () => void) {
   const invalidate = useConnectorInvalidator();
   return useMutation({
     mutationFn: ({ connectorId, integrationId }: LinkConnectorInput & { connectorId: string }) =>
-      apiFetch(connectorLinksUrl(connectorId), {
+      apiFetch<LinkConnectorResult>(connectorLinksUrl(connectorId), {
         method: "POST",
         body: JSON.stringify({ integrationId } satisfies LinkConnectorInput),
       }),
-    onSuccess: () => {
-      toast.success("Connector linked. Apply that edge to register its peer.");
+    onSuccess: (result) => {
+      const tunnel = connectorTunnelProvisioned(result);
+      toast.success(
+        "Connector linked. Apply that edge to register its peer.",
+        tunnel ? { description: connectorTunnelProvisionedCopy(tunnel).toast } : undefined,
+      );
       invalidate();
       onDone();
     },
@@ -345,6 +360,36 @@ export function ConnectorLinkSheet({
   );
 }
 
+/**
+ * Row-sized form of the shared setup notice. The picker lists several edges, so
+ * the full sentence goes in the footnote once and each row that DIFFERS carries
+ * the short form; the gate is `edgeTunnelSetupNotice`, so a row can never
+ * disagree with the sentence the create dialog shows for the same edge.
+ */
+function edgeTunnelPendingShort(edge: EdgeNatServer): string | null {
+  if (!edgeTunnelSetupNotice(edge)) return null;
+  return edge.settings?.wireguard ? "tunnel switched on at link" : "tunnel set up on link";
+}
+
+const TUNNEL_PENDING_FOOTNOTE =
+  "An edge box marked that way has no usable WireGuard tunnel yet — PolySIEM stands one up as part of the link, "
+  + "generating its keypair and picking a free tunnel subnet, and that edge then needs an apply.";
+
+/**
+ * Base URL, plus what linking will do to an edge that has no tunnel yet. Only
+ * the rows that DIFFER carry the note — an edge already serving a tunnel says
+ * nothing extra.
+ */
+function EdgePickerSubtitle({ edge }: { edge: EdgeNatServer }) {
+  const pending = edgeTunnelPendingShort(edge);
+  return (
+    <>
+      <span className="font-mono">{edge.baseUrl}</span>
+      {pending && <span> · {pending}</span>}
+    </>
+  );
+}
+
 /** Pick an edge for this connector — the connector-side half of linking. */
 export function ConnectorEdgePickerSheet({
   connector,
@@ -380,7 +425,7 @@ export function ConnectorEdgePickerSheet({
                 onClick={() => mutation.mutate({ connectorId: connector.id, integrationId: edge.id })}
                 leading={<Server className="size-4" />}
                 title={<span className="truncate">{edge.name}</span>}
-                subtitle={<span className="font-mono">{edge.baseUrl}</span>}
+                subtitle={<EdgePickerSubtitle edge={edge} />}
                 trailing={
                   mutation.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Link2 className="size-3.5" />
                 }
@@ -392,6 +437,9 @@ export function ConnectorEdgePickerSheet({
           Linking allocates this connector an address from that edge&apos;s tunnel subnet and marks the edge for apply.
           Nothing is installed again — one install serves every edge.
         </p>
+        {available.some((edge) => edgeTunnelPendingShort(edge) !== null) && (
+          <p className="px-0.5 text-[11px] text-muted-foreground">{TUNNEL_PENDING_FOOTNOTE}</p>
+        )}
       </div>
     </BottomSheet>
   );
@@ -448,6 +496,7 @@ export function EdgeConnectorPickerSheet({
             ))}
           </MobileList>
         )}
+        <EdgeTunnelSetupNote server={server} />
         <p className="px-0.5 text-[11px] text-muted-foreground">
           A connector is installed once and can serve several edge boxes. Linking gives it an address on this edge, so
           this edge&apos;s routes can travel through it.

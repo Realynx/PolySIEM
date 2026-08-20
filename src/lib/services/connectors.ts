@@ -39,7 +39,11 @@ import {
   type UpdateConnectorInput,
 } from "@/lib/validators/edge-nat";
 import { TunnelAllocationError, allocateTunnelAddress, tunnelSubnetFrom } from "@/lib/connectors/allocate";
-import { markEdgeRulesPending } from "./edge-networks";
+import { SETTING_KEYS, getSetting } from "@/lib/settings";
+// Type-only: reading the certificate must not drag the TLS store (and its
+// filesystem helpers) into this service's module graph.
+import type { WebCertificateSetting } from "@/lib/tls/store";
+import { ensureEdgeWireguardTunnel, markEdgeRulesPending, type EdgeTunnelProvision } from "./edge-networks";
 
 /** How often the connector agent polls `/config`. Baked into every machine response. */
 export const CONNECTOR_POLL_INTERVAL_SECONDS = 30;
@@ -446,6 +450,16 @@ export interface ConnectorInstallInstructions {
   installCommand: string;
   /** Same command for instances serving a self-signed certificate. */
   installCommandInsecure: string;
+  /**
+   * True when THIS instance serves HTTPS with a certificate it generated for
+   * itself — the default posture, and the one where `curl` refuses the download.
+   */
+  tlsSelfSigned: boolean;
+  /**
+   * The command to put in front of the operator. Identical to `installCommand`
+   * unless we know verification will fail, in which case it is the `-k` variant.
+   */
+  recommendedInstallCommand: string;
   installUrl: string;
 }
 
@@ -453,30 +467,70 @@ export interface ConnectorInstallInstructions {
  * The insecure variant keeps `&insecure=1` on the URL as well as `-k` on curl:
  * the flag has to reach the generator so the SERVED script also polls with `-k`,
  * not just the one-off download.
+ *
+ * `tlsSelfSigned` only picks WHICH command is recommended. Both are always
+ * returned, the served installer is unchanged, and `-k` is never unconditional —
+ * an instance behind a CA-signed certificate still recommends verification.
  */
-export function connectorInstallInstructions(baseUrl: string, token: string): ConnectorInstallInstructions {
+export function connectorInstallInstructions(
+  baseUrl: string,
+  token: string,
+  tlsSelfSigned: boolean = false,
+): ConnectorInstallInstructions {
   const base = baseUrl.replace(/\/+$/, "");
   const installUrl = `${base}/api/network/connectors/install.sh?token=${encodeURIComponent(token)}`;
-  const insecureCommand = `curl -fsSL -k "${installUrl}&insecure=1" | sudo sh`;
+  const installCommandInsecure = `curl -fsSL -k "${installUrl}&insecure=1" | sudo sh`;
+  const recommend = (installCommand: string): ConnectorInstallInstructions => ({
+    installToken: token,
+    installCommand,
+    installCommandInsecure,
+    tlsSelfSigned,
+    recommendedInstallCommand: tlsSelfSigned ? installCommandInsecure : installCommand,
+    installUrl,
+  });
   try {
     // Shared with the installer generator so both sides stay in lockstep.
-    return {
-      installToken: token,
-      installCommand: buildConnectorInstallCommand({ baseUrl: base, token }),
-      installCommandInsecure: insecureCommand,
-      installUrl,
-    };
+    return recommend(buildConnectorInstallCommand({ baseUrl: base, token }));
   } catch {
     // An origin the shared builder refuses to bake into a script (an odd Host
     // header, an IPv6 literal). Emit the literal command rather than failing the
     // whole creation — the operator can still paste it.
-    return {
-      installToken: token,
-      installCommand: `curl -fsSL "${installUrl}" | sudo sh`,
-      installCommandInsecure: insecureCommand,
-      installUrl,
-    };
+    return recommend(`curl -fsSL "${installUrl}" | sudo sh`);
   }
+}
+
+/**
+ * How this instance's own certificate was obtained, from the `web_certificate`
+ * AppSetting. Read directly rather than through the TLS store so nothing here
+ * touches the filesystem; a missing or unreadable setting answers null.
+ */
+async function webCertificateSource(): Promise<string | null> {
+  try {
+    const stored = await getSetting<WebCertificateSetting | null>(SETTING_KEYS.webCertificate, null);
+    return typeof stored?.source === "string" ? stored.source : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when a `curl` against `baseUrl` will fail certificate verification
+ * because PolySIEM is serving a certificate it generated itself (the default —
+ * see deploy/docker-entrypoint.sh).
+ *
+ * Deliberately conservative in one direction only: an http origin, an
+ * operator-uploaded certificate, or a certificate we cannot read all answer
+ * FALSE, so the verified command stays the recommendation unless we positively
+ * know it cannot work.
+ */
+export async function connectorTlsSelfSigned(baseUrl: string): Promise<boolean> {
+  if (!/^https:\/\//i.test(baseUrl.trim())) return false;
+  return (await webCertificateSource()) === "self-signed";
+}
+
+/** Install instructions with this instance's TLS posture already resolved. */
+async function resolvedInstallInstructions(baseUrl: string, token: string): Promise<ConnectorInstallInstructions> {
+  return connectorInstallInstructions(baseUrl, token, await connectorTlsSelfSigned(baseUrl));
 }
 
 // ---------------------------------------------------------------------------
@@ -928,6 +982,10 @@ export interface CreatedConnector {
   installToken: string | null;
   installCommand: string | null;
   installCommandInsecure: string | null;
+  /** Which of the two to show first. Null for kinds that have no installer. */
+  recommendedInstallCommand: string | null;
+  /** This instance serves HTTPS with a certificate it generated for itself. */
+  tlsSelfSigned: boolean;
   installUrl: string | null;
   /**
    * Paste-ready far-side block for the edge this connector was linked to in the
@@ -935,12 +993,20 @@ export interface CreatedConnector {
    * longer belongs to an edge, so there is no block to render until it is linked.
    */
   peerConfig: ConnectorPeerConfig | null;
+  /**
+   * The edge tunnel PolySIEM set up on the operator's behalf during this call,
+   * or NULL when the edge was already configured (or none was named). It still
+   * needs an Apply to reach the host, which is why the UI has to say so.
+   */
+  tunnelProvisioned: EdgeTunnelProvision | null;
 }
 
 const NO_INSTALL = {
   installToken: null,
   installCommand: null,
   installCommandInsecure: null,
+  recommendedInstallCommand: null,
+  tlsSelfSigned: false,
   installUrl: null,
 } as const;
 
@@ -997,26 +1063,53 @@ function connectorCreateData(
  * Create the row plus, when `integrationId` is given, its FIRST link — allocating
  * that edge's tunnel address inside the same transaction so a concurrent link can
  * never be handed the same address.
+ *
+ * The edge's own WireGuard tunnel is provisioned first when it is missing or
+ * switched off, in that same transaction: "add your first connector" must not
+ * dead-end on a form the operator has nothing to fill in.
  */
 async function createConnectorRow(
   integrationId: string | undefined,
   data: Prisma.ConnectorUncheckedCreateInput,
-): Promise<{ row: ConnectorRow; peerConfig: ConnectorPeerConfig | null }> {
+): Promise<{ row: ConnectorRow; peerConfig: ConnectorPeerConfig | null; provisioned: EdgeTunnelProvision | null }> {
   if (!integrationId) {
     const row = await prisma.connector.create({ data, include: CONNECTOR_INCLUDE }).catch(asConnectorApiError);
-    return { row, peerConfig: null };
+    return { row, peerConfig: null, provisioned: null };
   }
   return withConnectorLock(integrationId, async (tx) => {
     const integration = await edgeIntegration(integrationId, tx);
-    const settings = edgeSettings(integration.settings);
+    const { settings, provisioned } = await ensureEdgeWireguardTunnel(tx, integration);
     const tunnelAddress = await allocateLinkAddress(tx, integrationId, settings);
     const row = await tx.connector.create({
       data: { ...data, links: { create: { integrationId, tunnelAddress } } },
       include: CONNECTOR_INCLUDE,
     }).catch(asConnectorApiError);
-    // A manual connector supplied with its key is a peer from this moment on.
-    if (data.publicKey) await markEdgeRulesPending(tx, integrationId);
-    return { row, peerConfig: connectorPeerConfig(integration, settings, row, tunnelAddress) };
+    // A manual connector supplied with its key is a peer from this moment on,
+    // and a freshly provisioned tunnel is itself a change the edge must apply.
+    if (data.publicKey || provisioned) await markEdgeRulesPending(tx, integrationId);
+    return { row, peerConfig: connectorPeerConfig(integration, settings, row, tunnelAddress), provisioned };
+  });
+}
+
+/**
+ * Record an auto-provisioned tunnel as its own action.
+ *
+ * Deliberately not folded into the create/link entry: PolySIEM changed an edge
+ * server's networking without being asked to, and that has to be legible in the
+ * audit trail on its own terms rather than hidden inside "connector created".
+ */
+async function auditTunnelProvision(
+  actor: AuditActor,
+  provisioned: EdgeTunnelProvision | null,
+  reason: string,
+): Promise<void> {
+  if (!provisioned) return;
+  await audit(actor, "edge.wireguard.auto_provision", { type: "integration", id: provisioned.integrationId }, {
+    edgeName: provisioned.edgeName,
+    interfaceName: provisioned.interfaceName,
+    address: provisioned.address,
+    listenPort: provisioned.listenPort,
+    reason,
   });
 }
 
@@ -1050,11 +1143,12 @@ export async function createConnector(
   const connectorId = generateConnectorPublicId();
   const token = manual ? null : generateConnectorToken();
   const ssh = manual ? null : generateConnectorSshKey(connectorId);
-  const { row, peerConfig } = await createConnectorRow(
+  const { row, peerConfig, provisioned } = await createConnectorRow(
     integrationId,
     connectorCreateData(input, kind, connectorId, publicKey, token, ssh),
   );
 
+  await auditTunnelProvision(actor, provisioned, "connector_create");
   await audit(actor, "edge_nat.connector.create", { type: "connector", id: row.id }, {
     connectorId: row.connectorId, kind,
     ...(integrationId ? { integrationId, tunnelAddress: row.links?.[0]?.tunnelAddress ?? null } : {}),
@@ -1064,9 +1158,10 @@ export async function createConnector(
   return {
     connector: toConnectorDto(row),
     ...(token
-      ? connectorInstallInstructions(options.baseUrl ?? resolveConnectorBaseUrl(null), token)
+      ? await resolvedInstallInstructions(options.baseUrl ?? resolveConnectorBaseUrl(null), token)
       : NO_INSTALL),
     peerConfig,
+    tunnelProvisioned: provisioned,
   };
 }
 
@@ -1079,6 +1174,15 @@ export interface ConnectorLinkResult {
   link: ConnectorLinkDto;
   /** Paste-ready far-side block for THIS edge. The whole flow for a manual kind. */
   peerConfig: ConnectorPeerConfig;
+  /**
+   * The edge tunnel PolySIEM set up as part of this link, or NULL when the edge
+   * was already configured. It needs an Apply before it reaches the host.
+   */
+  tunnelProvisioned: EdgeTunnelProvision | null;
+  /** This instance serves HTTPS with a certificate it generated for itself. */
+  tlsSelfSigned: boolean;
+  /** No token is minted by a link, so there is no command to recommend here. */
+  recommendedInstallCommand: string | null;
 }
 
 async function connectorOrThrow(id: string): Promise<Connector> {
@@ -1109,22 +1213,29 @@ async function connectorLinkOrThrow(connectorId: string, linkId: string) {
  * holds a different address on every edge it serves, so the operator never
  * supplies one. The edge is marked pending so the existing Apply button
  * registers the new peer.
+ *
+ * An edge whose own WireGuard tunnel has not been set up yet is provisioned
+ * here, inside the same transaction and advisory lock (see
+ * {@link ensureEdgeWireguardTunnel}). Linking used to refuse with
+ * `wireguard_not_configured` and send the operator off to a form on which
+ * nothing was theirs to decide.
  */
 export async function linkConnector(
   actor: AuditActor,
   id: string,
   integrationId: string,
+  options: { baseUrl?: string } = {},
 ): Promise<ConnectorLinkResult> {
   const connector = await connectorOrThrow(id);
   const created = await withConnectorLock(integrationId, async (tx) => {
     const integration = await edgeIntegration(integrationId, tx);
-    const settings = edgeSettings(integration.settings);
     const existing = await tx.connectorEdgeLink.findUnique({
       where: { connectorId_integrationId: { connectorId: id, integrationId } },
     });
     if (existing) {
       throw new ApiError(409, "connector_already_linked", "This connector already serves that edge server");
     }
+    const { settings, provisioned } = await ensureEdgeWireguardTunnel(tx, integration);
     const tunnelAddress = await allocateLinkAddress(tx, integrationId, settings);
     const link = await tx.connectorEdgeLink.create({
       data: { connectorId: id, integrationId, tunnelAddress },
@@ -1136,13 +1247,17 @@ export async function linkConnector(
       throw error;
     });
     // The peer list is derived from (enabled link + connector public key), so a
-    // keyed connector changes the desired edge config the moment it is linked.
-    if (connector.publicKey && connector.status !== "disabled") await markEdgeRulesPending(tx, integrationId);
+    // keyed connector changes the desired edge config the moment it is linked —
+    // and a tunnel we just provisioned is a change in its own right.
+    const peerAdded = Boolean(connector.publicKey) && connector.status !== "disabled";
+    if (peerAdded || provisioned) await markEdgeRulesPending(tx, integrationId);
     return {
       link,
       peerConfig: connectorPeerConfig(integration, settings, connector, tunnelAddress),
+      provisioned,
     };
   });
+  await auditTunnelProvision(actor, created.provisioned, "connector_link");
   await audit(actor, "edge_nat.connector.link", { type: "connector", id }, {
     integrationId, connectorId: connector.connectorId, tunnelAddress: created.link.tunnelAddress,
   });
@@ -1150,6 +1265,9 @@ export async function linkConnector(
     connector: await connectorDtoById(id),
     link: toConnectorLinkDto(created.link),
     peerConfig: created.peerConfig,
+    tunnelProvisioned: created.provisioned,
+    tlsSelfSigned: await connectorTlsSelfSigned(options.baseUrl ?? resolveConnectorBaseUrl(null)),
+    recommendedInstallCommand: null,
   };
 }
 
@@ -1235,6 +1353,11 @@ export async function setConnectorLinkEnabled(
     connector: await connectorDtoById(id),
     link: toConnectorLinkDto(updated.link),
     peerConfig: updated.peerConfig,
+    // Suspending or resuming a link never provisions anything: the address, and
+    // the edge tunnel it came from, both already exist.
+    tunnelProvisioned: null,
+    tlsSelfSigned: false,
+    recommendedInstallCommand: null,
   };
 }
 
@@ -1486,10 +1609,12 @@ export async function rotateConnectorToken(
   });
   return {
     connector: toConnectorDto(row),
-    ...connectorInstallInstructions(options.baseUrl ?? resolveConnectorBaseUrl(null), token),
+    ...(await resolvedInstallInstructions(options.baseUrl ?? resolveConnectorBaseUrl(null), token)),
     // Informational for an agent connector, and only when it already serves an
     // edge; a standalone connector simply has no far-side block yet.
     peerConfig: await getConnectorPeerConfig(id).catch(() => null),
+    // Rotating a token touches no edge, so nothing can have been provisioned.
+    tunnelProvisioned: null,
   };
 }
 

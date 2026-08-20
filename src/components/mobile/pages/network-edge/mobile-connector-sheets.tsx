@@ -5,6 +5,7 @@ import {
   connectorInstallReveal,
   connectorLinkFor,
   connectorLinks,
+  connectorTunnelProvisioned,
   edgeServerForLink,
   isManualConnector,
   type ConnectorDto,
@@ -86,6 +87,8 @@ export function ConnectorSheetHost({
   const openReveal = (connector: ConnectorDto, minted: ConnectorInstallReveal, server: EdgeNatServer | null) => {
     onSelectedIdChange(null);
     setReveal({
+      // `minted` is the rotate response verbatim, so the TLS variants ride along
+      // with it; an older API simply omits them and the plain command is used.
       ...minted,
       connector,
       reason: "rotated",
@@ -331,6 +334,9 @@ function handleCreated(
   const server = context.scope ?? firstLinkedEdge(connector, context.edges);
   context.onCreateOpenChange(false);
   const minted = connectorInstallReveal(result);
+  // Creating with an edge can also provision that edge's WireGuard tunnel, so
+  // the fact travels into whichever setup sheet the operator lands on.
+  const tunnelProvisioned = connectorTunnelProvisioned(result);
   if (!isManualConnector(connector) && minted) {
     context.setReveal({
       ...minted,
@@ -338,12 +344,13 @@ function handleCreated(
       reason: "created",
       baselineLastSeenAt: connector.lastSeenAt,
       server,
+      tunnelProvisioned,
     });
     return;
   }
   if (server) {
     const link = connectorLinkFor(connector, server.id);
-    context.setPeerSetup({ connector, server, link, apiPeerConfig: result.peerConfig });
+    context.setPeerSetup({ connector, server, link, apiPeerConfig: result.peerConfig, tunnelProvisioned });
     return;
   }
   context.onSelectedIdChange(connector.id);

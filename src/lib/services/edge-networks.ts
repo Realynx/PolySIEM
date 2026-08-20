@@ -10,6 +10,7 @@ import { parseEdgeApplyResponse, testEdgeNatConnection } from "@/lib/integration
 import { buildApplyProtocol, desiredEdgeRulesetHash, type EdgeApplyRule } from "@/lib/integrations/edge-nat/agent";
 import { EdgeHostKeyScanError, parseEdgeSshUrl, runVerifiedSsh, scanEdgeHostKeys } from "@/lib/integrations/edge-nat/ssh";
 import { runEdgeNatProvisioning } from "@/lib/integrations/edge-nat/provision";
+import { allocateEdgeTunnelAddress, tunnelSubnetFrom } from "@/lib/connectors/allocate";
 import { cloudflareSettingsSchema, edgeNatSettingsSchema, elasticsearchSettingsSchema, storedEdgeNatCredentialsSchema, tailscaleSettingsSchema, wireguardTunnelSchema, type EdgeNatSettings } from "@/lib/validators/integrations";
 import { edgeNatRulesConflict, edgeNatRuleUsesManagementPort, isManualConnectorKind, type ConfigureWireguardInput, type EdgeNatRuleInput } from "@/lib/validators/edge-nat";
 import { deriveEdgeLifecycle, deriveEdgeWireguardPeerConfig, matchesExpectedEdgeApply, nextEdgeApplyRevision } from "./edge-network-state";
@@ -656,6 +657,151 @@ export async function configureEdgeWireguard(
     peerAllowedIps: result.tunnel.peer?.allowedIps.length ?? 0,
   });
   return result.view;
+}
+
+// ---------------------------------------------------------------------------
+// Automatic tunnel provisioning (linking a connector)
+//
+// Linking a connector to an edge used to 409 `wireguard_not_configured` until
+// the operator had saved the tunnel form by hand — a form on which there is
+// nothing to decide: every field has a working default and PolySIEM generates
+// the keypair itself. So the link path provisions the tunnel instead of
+// refusing, inside the caller's transaction and advisory lock.
+//
+// The one thing that genuinely cannot be defaulted is the SUBNET, because it has
+// to be unique across edges (see `allocateEdgeTunnelAddress`). Everything else
+// comes from the tunnel schema's own defaults, and anything already configured —
+// key, address, interface, port — is preserved untouched.
+// ---------------------------------------------------------------------------
+
+/** What PolySIEM set up on the operator's behalf, for the link/create response. */
+export interface EdgeTunnelProvision {
+  integrationId: string;
+  edgeName: string;
+  interfaceName: string;
+  /** The edge's own tunnel address in CIDR form, e.g. "10.9.9.1/24". */
+  address: string;
+  listenPort: number;
+}
+
+export interface EnsuredEdgeTunnel {
+  /** Settings as they now stand — the provisioned tunnel included. */
+  settings: EdgeNatSettings;
+  /** Null when the tunnel was already usable and nothing was written. */
+  provisioned: EdgeTunnelProvision | null;
+}
+
+/** A tunnel connectors can be linked to: switched on, addressed, and keyed. */
+function edgeTunnelUsable(settings: EdgeNatSettings): boolean {
+  const tunnel = settings.wireguard;
+  if (!tunnel?.enabled || !tunnel.publicKey || !tunnel.address?.trim()) return false;
+  return usableTunnelAddress(tunnel.address) !== null;
+}
+
+/** The stored address if it is IPv4 CIDR we can allocate inside, else null. */
+function usableTunnelAddress(address: string | undefined): string | null {
+  const value = address?.trim();
+  if (!value) return null;
+  try {
+    tunnelSubnetFrom(value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Credentials for an edge we are about to write a WireGuard key into.
+ *
+ * Unreadable credentials are the one case auto-provisioning genuinely cannot
+ * resolve: the private key has nowhere safe to live, so the tunnel would be
+ * announced without anything able to bring it up. That is what
+ * `wireguard_not_configured` is left for.
+ */
+function edgeWireguardCredentials(integration: IntegrationConfig) {
+  try {
+    return storedEdgeNatCredentialsSchema.parse(JSON.parse(decryptSecret(integration.encryptedCredentials)));
+  } catch {
+    throw new ApiError(
+      409,
+      "wireguard_not_configured",
+      "This edge server's stored credentials cannot be read, so PolySIEM cannot set up its WireGuard tunnel. Re-enter its credentials and configure the tunnel first.",
+    );
+  }
+}
+
+/**
+ * Tunnel addresses every OTHER edge server occupies, enabled or not.
+ *
+ * A disabled tunnel still owns its subnet — re-enabling it must not collide with
+ * a block handed out in the meantime — so state is deliberately not filtered on.
+ */
+async function otherEdgeTunnelAddresses(
+  tx: Prisma.TransactionClient,
+  integrationId: string,
+): Promise<string[]> {
+  const rows = await tx.integrationConfig.findMany({
+    where: { type: "EDGE_NAT_SERVER", id: { not: integrationId } },
+    select: { settings: true },
+  });
+  return rows.flatMap((row) => {
+    const parsed = edgeNatSettingsSchema.safeParse(row.settings ?? {});
+    const address = parsed.success ? parsed.data.wireguard?.address?.trim() : undefined;
+    return address ? [address] : [];
+  });
+}
+
+/**
+ * Make sure this edge has a WireGuard tunnel connectors can be linked to,
+ * provisioning one when it is missing or switched off.
+ *
+ * Runs on the CALLER's transaction client so it shares the connector service's
+ * advisory lock: two concurrent links cannot both allocate a subnet, and the
+ * settings write lands atomically with the link that needed it.
+ *
+ * Nothing is ever rotated. A tunnel that is merely disabled keeps its key,
+ * address, interface and port and is only switched on; a stored private key is
+ * reused rather than replaced, so an operator who already pasted the edge's key
+ * into OPNsense stays configured.
+ */
+export async function ensureEdgeWireguardTunnel(
+  tx: Prisma.TransactionClient,
+  integration: IntegrationConfig,
+): Promise<EnsuredEdgeTunnel> {
+  const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
+  if (edgeTunnelUsable(settings)) return { settings, provisioned: null };
+
+  const stored = edgeWireguardCredentials(integration);
+  const privateKey = stored.wireguardPrivateKey ?? generateWireguardKeypair().privateKey;
+  const address = usableTunnelAddress(settings.wireguard?.address)
+    ?? allocateEdgeTunnelAddress(await otherEdgeTunnelAddresses(tx, integration.id));
+  const wireguard = wireguardTunnelSchema.parse({
+    ...(settings.wireguard ?? {}),
+    enabled: true,
+    address,
+    publicKey: wireguardPublicFromPrivate(privateKey),
+    hasPrivateKey: true,
+  });
+  const nextSettings = edgeNatSettingsSchema.parse({ ...settings, wireguard, pendingChanges: true });
+  await tx.integrationConfig.update({
+    where: { id: integration.id },
+    data: {
+      encryptedCredentials: encryptSecret(JSON.stringify(
+        storedEdgeNatCredentialsSchema.parse({ ...stored, wireguardPrivateKey: privateKey }),
+      )),
+      settings: nextSettings as unknown as Prisma.InputJsonValue,
+    },
+  });
+  return {
+    settings: nextSettings,
+    provisioned: {
+      integrationId: integration.id,
+      edgeName: integration.name,
+      interfaceName: wireguard.interfaceName,
+      address: wireguard.address,
+      listenPort: wireguard.listenPort,
+    },
+  };
 }
 
 /** Ready-to-paste OPNsense-side values (edge public key, endpoint, addressing). No private key. */
