@@ -326,13 +326,22 @@ impl Stats {
 
     /// A flow ended. Not tied to a slot: a flow can end before it has one.
     pub fn flow_ended(&self) {
-        // `fetch_update` rather than `fetch_sub` so an accounting slip can never
-        // wrap the gauge to u64::MAX and report 18 quintillion active flows.
-        let _ = self
-            .active
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_sub(1))
-            });
+        // A saturating CAS loop rather than `fetch_sub` so an accounting slip can
+        // never wrap the gauge to u64::MAX and report 18 quintillion active flows.
+        // (Hand-rolled: `fetch_update` is deprecated on new toolchains and its
+        // replacement `try_update` postdates our `rust-version`.)
+        let mut current = self.active.load(Ordering::Relaxed);
+        loop {
+            match self.active.compare_exchange_weak(
+                current,
+                current.saturating_sub(1),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// Bytes travelling from the upstream to the client.
