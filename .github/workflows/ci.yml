@@ -108,9 +108,16 @@ jobs:
         run: |
           BIN=target/x86_64-unknown-linux-musl/release/polysiem-privacy-proxy
           file "$BIN"
-          # No dynamic interpreter: the whole point of musl here.
-          if ldd "$BIN" 2>&1 | grep -qv 'not a dynamic executable'; then
-            echo "::error::proxy binary is dynamically linked"; ldd "$BIN"; exit 1
+          # No dynamic interpreter and no shared-library dependencies: the whole
+          # point of musl here. Read the ELF headers rather than parsing ldd,
+          # whose wording differs between glibc versions ("statically linked"
+          # for static-pie vs "not a dynamic executable").
+          if readelf -lW "$BIN" | grep -q 'Requesting program interpreter' \
+            || readelf -dW "$BIN" | grep -q '(NEEDED)'; then
+            echo "::error::proxy binary is dynamically linked"
+            readelf -lW "$BIN" | grep -i interpreter || true
+            readelf -dW "$BIN" | grep NEEDED || true
+            exit 1
           fi
           "$BIN" --version
           "$BIN" --check tests/fixtures/reference.conf
