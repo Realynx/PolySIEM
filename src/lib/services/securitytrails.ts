@@ -1,5 +1,4 @@
 import "server-only";
-import { isIP } from "node:net";
 import { domainToASCII } from "node:url";
 import { Prisma, type IntegrationConfig } from "@prisma/client";
 import { ApiError } from "@/lib/api";
@@ -7,6 +6,7 @@ import { sha256Hex } from "@/lib/crypto";
 import { prisma } from "@/lib/db";
 import { toDriverConfig } from "@/lib/integrations";
 import { fetchSecurityTrails, type SecurityTrailsLookupKind } from "@/lib/integrations/securitytrails/client";
+import { isIP } from "@/lib/net/ip";
 import { securityTrailsSettingsSchema } from "@/lib/validators/integrations";
 
 export const SECURITYTRAILS_CACHE_TTL_MS = 4 * 24 * 60 * 60 * 1_000;

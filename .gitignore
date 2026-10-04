@@ -59,3 +59,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# rust (native/privacy-proxy). Cargo.lock IS committed: this is a binary crate and
+# the Docker build uses `--locked` so the shipped proxy is reproducible.
+/native/*/target/
+
+# Locally built privacy-proxy binary (the Docker image builds its own)
+/assets/
+
+# Locally assembled release bundles (scripts/build-linux-bundle.sh)
+/dist/

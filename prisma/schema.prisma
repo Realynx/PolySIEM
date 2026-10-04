@@ -197,9 +197,9 @@ model IntegrationConfig {
 /// can route through any linked connector — the link (and the per-edge tunnel
 /// address allocated from that edge's own subnet) lives on ConnectorEdgeLink.
 model Connector {
-  id            String            @id @default(cuid())
+  id                   String    @id @default(cuid())
   /// Unique across the instance: connectors are no longer scoped to one edge.
-  name          String            @unique
+  name                 String    @unique
   /// What kind of peer this connector is. Every kind is a WireGuard peer of the
   /// edge and gets an allocated tunnel address; they differ only in how the far
   /// side is set up and whether PolySIEM manages it.
@@ -209,16 +209,16 @@ model Connector {
   ///                paste-ready peer block and only needs its public key back.
   ///   "peer"     — any other WireGuard endpoint, same manual flow as OPNsense.
   /// Non-agent kinds never receive an install token, SSH key, or pushed rules.
-  kind          String            @default("agent")
+  kind                 String    @default("agent")
   /// Stable public identifier surfaced in the UI and used by the agent to
   /// identify itself. Opaque, URL-safe, generated once (never reused).
-  connectorId   String            @unique
+  connectorId          String    @unique
   /// WireGuard interface the agent owns on the host. One interface carries a peer
   /// per linked edge, so a single connector serves many edges without extra netdevs.
-  interfaceName String            @default("wg0")
+  interfaceName        String    @default("wg0")
   /// The connector's WireGuard public key — ONE identity reused across every edge
   /// it links to. Reported by the agent (or pasted for manual kinds). Null until known.
-  publicKey     String?
+  publicKey            String?
   /// sha256 of the one-time install token. The plaintext token is shown once at
   /// creation and never persisted.
   installTokenHash     String?
@@ -248,8 +248,8 @@ model Connector {
   sshProvisionedAt      DateTime?
   encryptedCredentials  String?
 
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   rules EdgeNatRule[]
   links ConnectorEdgeLink[]
@@ -266,20 +266,20 @@ model Connector {
 /// holds a different tunnel IP on each edge it serves), which is why the address
 /// cannot live on Connector.
 model ConnectorEdgeLink {
-  id            String            @id @default(cuid())
-  connectorId   String
-  connector     Connector         @relation(fields: [connectorId], references: [id], onDelete: Cascade)
-  integrationId String
-  integration   IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  id              String            @id @default(cuid())
+  connectorId     String
+  connector       Connector         @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  integrationId   String
+  integration     IntegrationConfig @relation(fields: [integrationId], references: [id], onDelete: Cascade)
   /// Implicitly allocated host address inside this edge's tunnel subnet (e.g. "10.9.9.3").
   /// Allocated by PolySIEM, never typed by the operator.
-  tunnelAddress String
+  tunnelAddress   String
   /// Set false to keep the link on record while tearing the peer off the edge.
-  enabled       Boolean           @default(true)
+  enabled         Boolean           @default(true)
   /// Last handshake PolySIEM observed for this connector on this edge.
   lastHandshakeAt DateTime?
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
   @@unique([connectorId, integrationId])
   @@unique([integrationId, tunnelAddress])
@@ -315,6 +315,334 @@ model EdgeNatRule {
   @@unique([integrationId, protocol, publicPort])
   @@index([integrationId, enabled])
   @@index([connectorId])
+}
+
+// ---------- privacy router (managed policy-routing box) ----------
+
+/// A Linux host PolySIEM manages over SSH, in ONE standardized shape.
+///
+/// The columns mirror the SSH half of `Connector` (sshHost/sshPort/sshUsername/
+/// sshPublicKey/sshAuthorizedKey/sshHostKeyFingerprint/sshProvisionedAt/
+/// encryptedCredentials) because that model is the one that already got the
+/// restricted forced-command story right. Same custody rules apply: the private
+/// half lives ONLY in `encryptedCredentials` (AES-GCM under APP_SECRET), the
+/// account is reachable only as `username`, and it only runs one forced command.
+///
+/// SCOPE, deliberately: only `PrivacyRouter` points here today. `Connector` and the
+/// EDGE_NAT_SERVER integration keep their own SSH columns until a separate,
+/// separately-reviewed migration moves them — those boxes carry live production
+/// traffic and rewriting their storage alongside a new feature is how you break
+/// someone's house. `kind` exists so that later backfill can tell rows apart
+/// without guessing.
+///
+/// Lifetime: a ManagedHost is owned by whatever references it. Deleting a
+/// PrivacyRouter does NOT delete its host row (the FK points the other way), so the
+/// router service deletes both inside one transaction.
+model ManagedHost {
+  id                   String    @id @default(cuid())
+  /// What PolySIEM manages this host as: "privacy-router" today; "connector" and
+  /// "edge" are reserved for the follow-up that migrates those onto this table.
+  kind                 String    @default("privacy-router")
+  /// Hostname or IP reachable from the PolySIEM server itself. These boxes
+  /// normally have no public address, so this is usually a LAN/VPN address.
+  host                 String
+  port                 Int       @default(22)
+  /// The Linux service account whose authorized_keys carries the restricted key.
+  username             String
+  /// PolySIEM-generated public key the operator installs on the host.
+  publicKey            String?
+  /// The exact `restrict,command="…"` authorized_keys line for that public key.
+  authorizedKey        String?   @db.Text
+  /// SHA256:… host key pinned out of band by the operator. Cleared whenever
+  /// host/port change, because the pin is only meaningful for one endpoint.
+  hostKeyFingerprint   String?
+  provisionedAt        DateTime?
+  /// AES-GCM under APP_SECRET. Holds the private key half; never returned by any API.
+  encryptedCredentials String?   @db.Text
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  privacyRouter PrivacyRouter?
+
+  @@index([kind])
+  @@index([host])
+}
+
+/// A PolySIEM-managed Linux box on the LAN that decides, per flow, whether
+/// traffic egresses through the normal WAN or through one of several WireGuard
+/// exits. OPNsense registers it as a gateway; the decision itself is made by
+/// this router's own ordered rule list (see PrivacyRoutingRule).
+///
+/// Never call this an "edge" and never call an exit a "connector" — those are
+/// load-bearing existing domain terms for different things.
+model PrivacyRouter {
+  id            String      @id @default(cuid())
+  name          String      @unique
+  enabled       Boolean     @default(true)
+  /// 1:1 — one router per managed host. See ManagedHost for the custody rules.
+  managedHostId String      @unique
+  managedHost   ManagedHost @relation(fields: [managedHostId], references: [id], onDelete: Cascade)
+
+  /// The LAN the router serves and the interfaces it serves it on. The box is a
+  /// one-armed router in the field: `lanInterface` and `wanInterface` are
+  /// normally the SAME NIC, which is why they are stored separately rather than
+  /// derived — a two-NIC box must still be expressible.
+  ///
+  /// ALL THREE ARE NULLABLE, and carry no default, because a router exists
+  /// BEFORE its topology is known: PolySIEM discovers the interface names by
+  /// asking the box (the agent's `IFACE` status lines), and it can only ask
+  /// once the agent is installed — which is after the row was created. Null
+  /// therefore means "not confirmed yet", a normal state with its own step in
+  /// the add flow. A default of "eth0" would make an unconfirmed guess look
+  /// exactly like a confirmed answer, and `applyPrivacyRouter` would then push
+  /// an nftables ruleset that routes real traffic through an interface nobody
+  /// verified; it refuses on null instead.
+  lanCidr      String?
+  lanInterface String?
+  wanInterface String?
+
+  /// The SOURCE networks whose traffic this router policy-routes — the CIDRs
+  /// OPNsense's gateway rule sends here.
+  ///
+  /// DELIBERATELY NOT `lanCidr`, and the distinction is the whole reason this
+  /// column exists. `lanCidr` is the network the router BOX SITS ON, discovered
+  /// from its own interface. This is the set of networks it SERVES. For a
+  /// policy-routing gateway those are routinely different: a phone on a separate
+  /// VLAN is exactly the traffic the feature exists to tunnel, and it never
+  /// shares the router's own subnet. Conflating the two scoped every
+  /// client-facing nftables rule — the mark chain's source guard, the QUIC drop
+  /// and BOTH masquerade rules — to the router's own subnet, so traffic from any
+  /// other VLAN was forwarded back out unmasqueraded and the return path
+  /// collapsed at OPNsense. See the migration that added this column.
+  ///
+  /// A LIST, because serving several VLANs is the normal case. Defaulted to
+  /// `[lanCidr]` when the topology is confirmed, so a genuinely single-subnet
+  /// deployment needs no extra thought — but EMPTY IS NOT "everything": the
+  /// apply refuses rather than rendering a router that masquerades the internet.
+  clientNetworks String[] @default([])
+
+  /// Where the userspace SNI/Host proxy listens. Only TCP/80 and TCP/443 are
+  /// ever redirected here; everything else is decided in the kernel.
+  proxyHttpPort  Int     @default(3128)
+  proxyHttpsPort Int     @default(3129)
+  /// Drop UDP/443 so browsers fall back to TCP+TLS, where SNI is readable.
+  /// QUIC's ClientHello is encrypted, so a hostname rule cannot see through it.
+  blockQuic      Boolean @default(true)
+
+  /// What happens to a flow that matches no rule: "direct" | "exit" | "block".
+  /// `defaultExitId` is required when and only when this is "exit".
+  defaultAction String   @default("direct")
+  defaultExitId String?
+  /// Restrict, not SetNull: an exit that is a router's default must be detached
+  /// deliberately. Silently nulling it would leave defaultAction="exit" with no
+  /// exit, and a flow assigned to a VPN must never quietly fall back to WAN.
+  /// Deleting the ROUTER is unaffected — its own row is gone before the cascade
+  /// reaches its exits.
+  defaultExit   VpnExit? @relation("PrivacyRouterDefaultExit", fields: [defaultExitId], references: [id], onDelete: Restrict)
+
+  /// Monotonic revision and sha256 of the canonical ruleset the agent last
+  /// confirmed applying. `appliedHash` IS the ruleset identity — private key
+  /// material never appears in the hashed text, only sha256 of each key.
+  appliedRevision Int       @default(0)
+  appliedHash     String?
+  lastStatusAt    DateTime?
+  /// Whether this box was PROBED to forward through several exits at once.
+  /// Null = not yet probed. False = rules naming a specific exit are honoured on
+  /// the inspected path only, and the UI must warn. Never assumed true.
+  exitsConcurrent Boolean?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  exits          VpnExit[]              @relation("PrivacyRouterExits")
+  rules          PrivacyRoutingRule[]
+  trafficSamples ServiceTrafficSample[]
+  trafficRollups ServiceTrafficRollup[]
+
+  @@index([enabled])
+}
+
+/// One WireGuard tunnel configured on a privacy router. An "exit" is never a peer
+/// and never a connector — it is one egress path a routing rule can select.
+model VpnExit {
+  id       String        @id @default(cuid())
+  routerId String
+  router   PrivacyRouter @relation("PrivacyRouterExits", fields: [routerId], references: [id], onDelete: Cascade)
+  /// Short stable token used in the canonical ruleset (`exit:<key>`) and in the
+  /// agent's interface/table naming. Unique per router, lowercase.
+  key      String
+  name     String
+  /// The netdev the agent creates, e.g. "psvpn-us1". Unique per router: two
+  /// exits sharing an interface name would silently clobber each other.
+  ifName   String
+
+  addressCidr   String
+  endpoint      String
+  peerPublicKey String
+  keepalive     Int    @default(25)
+  /// 1420 for a WireGuard tunnel over a 1500-byte underlay. MSS clamping on the
+  /// exit interface is the only mitigation available on a one-armed box.
+  mtu           Int    @default(1420)
+
+  /// AES-GCM under APP_SECRET. Staged to /etc/wireguard on the box (AppArmor
+  /// refuses key material read from /tmp) and never logged or returned.
+  encryptedPrivateKey String? @db.Text
+  /// sha256 of the private key. Safe to log, and it is what the canonical
+  /// ruleset carries so a key rotation still bumps the revision.
+  privateKeySha256    String?
+
+  enabled         Boolean   @default(true)
+  lastHandshakeAt DateTime?
+  /// Cumulative counters as last read from `wg show <if> transfer`. BigInt: a
+  /// busy tunnel exceeds 2^53 bytes. Never use 0n literals — the build targets
+  /// ES2017; use BigInt(0).
+  lastRxBytes     BigInt?
+  lastTxBytes     BigInt?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  defaultForRouters PrivacyRouter[]      @relation("PrivacyRouterDefaultExit")
+  rules             PrivacyRoutingRule[]
+
+  @@unique([routerId, key])
+  @@unique([routerId, ifName])
+  @@index([routerId, enabled])
+}
+
+/// One row of the ordered, first-match-wins rule list. There is exactly ONE
+/// list per router; it is evaluated in the kernel (nftables) for rules with no
+/// hostname, and in the userspace proxy for TCP/80+443, which evaluates the
+/// FULL list because only it can see a hostname.
+///
+/// `seq` is dense from 1 and ordered ascending. NOTE FOR THE REORDER PATH: the
+/// unique below is checked per statement, so swapping two rows with two separate
+/// UPDATEs transiently violates it. Reorder by shifting the affected rows to
+/// negative seq values first, or rewrite the whole block in one statement.
+model PrivacyRoutingRule {
+  id       String        @id @default(cuid())
+  routerId String
+  router   PrivacyRouter @relation(fields: [routerId], references: [id], onDelete: Cascade)
+  seq      Int
+  enabled  Boolean       @default(true)
+  name     String
+
+  /// "direct" | "exit" | "block". `exitId` is set when and only when "exit".
+  action String
+  exitId String?
+  /// Cascade matches EdgeNatRule.connector: deleting an exit deletes the rules
+  /// that route through it rather than leaving rules that cannot be rendered.
+  /// The UI must say how many rules a deletion takes with it.
+  exit   VpnExit? @relation(fields: [exitId], references: [id], onDelete: Cascade)
+
+  /// Match conditions. Null means "no condition on this field"; the canonical
+  /// ruleset renders each unset field as the literal token "-", never blank.
+  srcCidr   String?
+  dstCidr   String?
+  /// "tcp" | "udp"; null = any protocol.
+  proto     String?
+  /// Single port, inclusive range "N-M", or a comma list of either.
+  dportSpec String?
+  /// A hostname condition, optionally with a leading "*." wildcard. A rule with
+  /// a hostname can only ever match TCP/80 or TCP/443 — it is inert otherwise,
+  /// and inert again when the client uses Encrypted Client Hello.
+  hostname  String?
+  /// Throttle in kbit/s. Inspected rules get a smooth token bucket in the proxy;
+  /// kernel rules get an nftables policer, which drops rather than shapes. The
+  /// UI must label the two mechanisms differently.
+  rateKbps  Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([routerId, seq])
+  @@index([routerId, enabled, seq])
+  @@index([exitId])
+}
+
+/// Per-service traffic for one router, stored as INTERVAL values.
+///
+/// The agent reports counters that are cumulative since the proxy started; the
+/// ingest differences them and stores the difference here together with the
+/// number of seconds it covers, so "average over observed seconds" is always
+/// answerable without re-deriving it.
+///
+/// This is deliberately NOT TrafficCounterSample: that model's `bytes` column is
+/// contractually cumulative and its reset detector turns interval-shaped input
+/// into `delta: null` silently, and overloading its `kind` would drag these
+/// high-cardinality rows into the firewall dashboard's unfiltered window query.
+///
+/// The column is `hostname`, NOT `externalId`: `externalId` is in the demo
+/// anonymizer's SKIP_KEYS, so a hostname stored under that name would leak
+/// through demo mode verbatim. `hostname` is in HOST_KEYS and gets scrubbed.
+///
+/// INGEST CONTRACT: `sampledAt` must be the poll's own timestamp (the agent's
+/// reported instant, or one timestamp computed once per poll and reused for
+/// every row of that poll). The unique below is what makes a duplicated or
+/// concurrent poll idempotent, and it only works if the same poll produces the
+/// same instant — `new Date()` per row defeats it. Hence no @default(now()).
+model ServiceTrafficSample {
+  id       String        @id @default(cuid())
+  routerId String
+  router   PrivacyRouter @relation(fields: [routerId], references: [id], onDelete: Cascade)
+  /// Registrable hostname, lowercase. The agent folds everything past its
+  /// cardinality cap into the literal hostname "other", and reports the literal
+  /// "-" for a flow whose hostname was never readable.
+  hostname String
+  /// The egress path this traffic actually took: "direct" | "block" |
+  /// "exit:<key>". The proxy counts (hostname, action) PAIRS, so one STATUS can
+  /// carry the same hostname twice — once out the WAN, once through a tunnel —
+  /// and folding those together would destroy the one thing this feature exists
+  /// to answer: how much traffic really went through the VPN.
+  action   String
+
+  sampledAt     DateTime
+  /// Seconds this interval covers; 0 would make any rate undefined, so the
+  /// ingest drops a zero-length window rather than storing one.
+  windowSeconds Int
+  bytesIn       BigInt
+  bytesOut      BigInt
+  flows         Int      @default(0)
+
+  /// Idempotent ingest, keyed the way the proxy counts: one row per pair per
+  /// poll. This also serves every (routerId, hostname, …) lookup, so no separate
+  /// @@index is declared for that column list — a second identical btree would
+  /// only add write cost on the hottest table here.
+  @@unique([routerId, hostname, action, sampledAt])
+  @@index([routerId, sampledAt])
+}
+
+/// Fold-forward totals per service. Maintained by upsert + { increment } INSIDE
+/// the ingest transaction, so monthly figures survive the raw-sample prune by
+/// construction instead of depending on a batch job beating the pruner.
+///
+/// `samples` and `observedSeconds` are carried so a window served from the
+/// rollup can still answer "average over the time we actually observed" — a
+/// period with gaps must not be averaged over its wall-clock length.
+model ServiceTrafficRollup {
+  id          String        @id @default(cuid())
+  routerId    String
+  router      PrivacyRouter @relation(fields: [routerId], references: [id], onDelete: Cascade)
+  hostname    String
+  /// The egress path, carried through the fold so the direct-vs-VPN split
+  /// survives the raw prune exactly as the byte totals do. See
+  /// ServiceTrafficSample.action.
+  action      String
+  /// "day" | "month". Day rows are pruned at 400 days (a year plus a month, so
+  /// year-over-year comparisons keep working); month rows are kept forever —
+  /// they are tiny and they are the point of this table.
+  period      String
+  /// Start of the period, UTC-aligned by the ingest.
+  periodStart DateTime
+
+  bytesIn         BigInt   @default(0)
+  bytesOut        BigInt   @default(0)
+  samples         Int      @default(0)
+  observedSeconds Int      @default(0)
+  updatedAt       DateTime @updatedAt
+
+  @@unique([routerId, hostname, action, period, periodStart])
+  @@index([routerId, period, periodStart])
 }
 
 /// Cached Censys Platform responses. Host lookups are reused for four days so
@@ -537,6 +865,7 @@ model VirtualMachine {
 
   @@unique([integrationId, externalId])
   @@index([name])
+  @@index([hostId])
 }
 
 model Container {
@@ -573,6 +902,7 @@ model Container {
 
   @@unique([integrationId, externalId])
   @@index([name])
+  @@index([hostId])
 }
 
 model Network {
@@ -646,6 +976,9 @@ model NetworkInterface {
   ip IpAddress?
 
   @@unique([integrationId, externalId])
+  @@index([deviceId])
+  @@index([vmId])
+  @@index([containerId])
 }
 
 model Service {
@@ -938,6 +1271,7 @@ model TunnelHostname {
   updatedAt      DateTime  @updatedAt
 
   @@unique([tunnelId, hostname])
+  @@index([lastResolvedAt])
 }
 
 // ---------- ssh keys ----------
@@ -1106,21 +1440,21 @@ model SecurityTicket {
 /// domain. Unlike a response ticket, it remains open-ended and editable while
 /// its evidence snapshots are append-only.
 model SecurityResearchPage {
-  id               String    @id @default(cuid())
+  id               String                 @id @default(cuid())
   title            String
   subject          String
   subjectType      String // "ip" | "domain"
   parentId         String?
   parent           SecurityResearchPage?  @relation("ResearchTree", fields: [parentId], references: [id], onDelete: SetNull)
   children         SecurityResearchPage[] @relation("ResearchTree")
-  status           String    @default("open") // "open" | "archived"
-  verdict          String    @default("unknown") // unknown|benign|suspicious|malicious
-  notes            String?   @db.Text
+  status           String                 @default("open") // "open" | "archived"
+  verdict          String                 @default("unknown") // unknown|benign|suspicious|malicious
+  notes            String?                @db.Text
   createdById      String?
-  createdBy        User?     @relation("ResearchPageCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdBy        User?                  @relation("ResearchPageCreator", fields: [createdById], references: [id], onDelete: SetNull)
   lastResearchedAt DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
 
   evidence SecurityResearchEvidence[]
 

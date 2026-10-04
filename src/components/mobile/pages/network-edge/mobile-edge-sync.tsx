@@ -120,7 +120,7 @@ export function edgeForwardingLabel(server: EdgeNatServer): string {
   const live = settings.syncedSnapshot?.ipForwarding;
   if (live === true) return "On";
   if (settings.enableIpForwarding !== false) {
-    return live === false ? "Off on the edge — Apply turns it on" : "On after the next apply";
+    return live === false ? "Off on the relay — Apply turns it on" : "On after the next apply";
   }
   return "Off (not requested)";
 }
@@ -145,7 +145,7 @@ function relativeOr(value: string | null | undefined, fallback: string): string 
  * from "on after the next apply", while the Interfaces tab here has to explain
  * a forwarding switch the operator can turn off.
  */
-const SHARED_FORWARDING_FACT = "IP forwarding on the edge";
+const SHARED_FORWARDING_FACT = "IP forwarding on the relay";
 
 /** Tier 4: everything the sync line summarises, for when something looks wrong. */
 export function EdgeDetailsSheet({
@@ -167,7 +167,7 @@ export function EdgeDetailsSheet({
       open
       onOpenChange={onOpenChange}
       title={`Sync details — ${server.name}`}
-      description="The bookkeeping behind the sync line: what PolySIEM wants, what the edge last confirmed."
+      description="The bookkeeping behind the sync line: what PolySIEM wants, what the relay last confirmed."
     >
       <div className="flex flex-col gap-3 pb-2">
         <div className="rounded-xl border bg-card px-3.5 py-2.5">
@@ -223,7 +223,7 @@ export function EdgeMoreSheet({
       open
       onOpenChange={onOpenChange}
       title={server.name}
-      description="Checks and diagnostics for this edge box."
+      description="Checks and diagnostics for this relay server."
     >
       <MobileList className="mb-2">
         {server.hostKeyEnrolled && (
@@ -254,7 +254,7 @@ export function EdgeCleanupAction({ server }: { server: EdgeNatServer }) {
   const clearMutation = useMutation({
     mutationFn: () => apiFetch(`/api/network/edge-networks/servers/${server.id}/clear`, { method: "POST" }),
     onSuccess: () => {
-      toast.success(`Remote NAT rules cleared on ${server.name}`);
+      toast.success(`Relayed ports cleared on ${server.name}`);
       setClearOpen(false);
       void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
@@ -269,9 +269,9 @@ export function EdgeCleanupAction({ server }: { server: EdgeNatServer }) {
       <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Clear every remote NAT rule on {server.name}?</AlertDialogTitle>
+            <AlertDialogTitle>Stop relaying everything on {server.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This sends an empty managed ruleset to the edge server. Desired rules remain saved in PolySIEM, but
+              This sends an empty managed ruleset to the relay server. Desired rules remain saved in PolySIEM, but
               traffic may continue until the remote server confirms cleanup.
             </AlertDialogDescription>
           </AlertDialogHeader>

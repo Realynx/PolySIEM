@@ -1,6 +1,8 @@
 import "server-only";
+import { cache } from "react";
 import { prisma } from "@/lib/db";
 import { encryptSecret } from "@/lib/crypto";
+import { normalizeManagedHostBaseUrl } from "@/lib/managed-host-url";
 
 /** Well-known AppSetting keys. */
 export const SETTING_KEYS = {
@@ -8,6 +10,8 @@ export const SETTING_KEYS = {
   setupStarted: "setup_started",
   setupStage: "setup_stage",
   instanceName: "instance_name",
+  /** Origin managed hosts (routers, connectors) use to reach PolySIEM. "" = unset. */
+  managedHostBaseUrl: "managed_host_base_url",
   defaultTheme: "default_theme",
   developerMode: "developer_mode",
   ollamaConfig: "ollama_config",
@@ -22,6 +26,8 @@ export const SETTING_KEYS = {
   autoUpdate: "auto_update",
   updateRequest: "update_request",
   webCertificate: "web_certificate",
+  /** Admin overrides for PostgreSQL tuning (memory, CPUs, storage). */
+  postgresTuning: "postgres_tuning",
 } as const;
 
 export type SetupStage = "welcome" | "ai" | "integrations" | "tutorial" | "complete";
@@ -326,8 +332,14 @@ export function mergeStoredEmbeddingConfig(
   };
 }
 
+// Deduped per server render: the layout and the page often read the same keys.
+// Outside a render (API routes, schedulers) React's cache() is a pass-through.
+const readSettingRow = cache((key: string) =>
+  prisma.appSetting.findUnique({ where: { key }, select: { value: true } }),
+);
+
 export async function getSetting<T>(key: string, fallback: T): Promise<T> {
-  const row = await prisma.appSetting.findUnique({ where: { key } });
+  const row = await readSettingRow(key);
   return row ? (row.value as T) : fallback;
 }
 
@@ -339,8 +351,15 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
   });
 }
 
+// Setup never un-completes, so once observed the answer is fixed for the
+// life of the process — saves a query on every page navigation.
+let setupCompletedSeen = false;
+
 export async function isSetupCompleted(): Promise<boolean> {
-  return getSetting<boolean>(SETTING_KEYS.setupCompleted, false);
+  if (setupCompletedSeen) return true;
+  const completed = await getSetting<boolean>(SETTING_KEYS.setupCompleted, false);
+  if (completed === true) setupCompletedSeen = true;
+  return completed;
 }
 
 /** Resumable first-run installer state; older completed installs remain compatible. */
@@ -375,6 +394,24 @@ export async function getInstanceName(): Promise<string> {
 
 export async function getDefaultTheme(): Promise<string> {
   return getSetting<string>(SETTING_KEYS.defaultTheme, "blue");
+}
+
+/**
+ * The origin an operator has DECLARED that managed hosts should use to reach
+ * PolySIEM, or "" when they have not.
+ *
+ * Unset by default and deliberately so: the request-derived value is right for
+ * most installs, and a setting that must be filled in before anything works is a
+ * worse default than one that is only needed when the convenience is wrong. When
+ * it IS set it wins over everything — including APP_URL — because it is the one
+ * value an operator entered specifically to answer this question.
+ *
+ * Returns a normalized origin (trimmed, no trailing slash) so callers can
+ * concatenate a path onto it without re-normalizing.
+ */
+export async function getManagedHostBaseUrl(): Promise<string> {
+  const stored = await getSetting<unknown>(SETTING_KEYS.managedHostBaseUrl, "");
+  return typeof stored === "string" ? normalizeManagedHostBaseUrl(stored) : "";
 }
 
 /**

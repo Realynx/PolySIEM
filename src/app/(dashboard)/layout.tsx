@@ -5,7 +5,7 @@ import { isLockedDemoMode } from "@/lib/demo/mode";
 import { isMobileView } from "@/lib/device";
 import { anonymizeForDisplay } from "@/lib/privacy/server";
 import { getInstanceName, getOllamaConfig, isSetupCompleted } from "@/lib/settings";
-import { ChatDock } from "@/components/chat/chat-dock";
+import { ChatDockLazy as ChatDock } from "@/components/chat/chat-dock-lazy";
 import { PrivacyProvider } from "@/components/privacy/privacy-provider";
 import { SidebarNav } from "@/components/shell/sidebar";
 import { Topbar } from "@/components/shell/topbar";
@@ -14,12 +14,17 @@ import { MobileShell } from "@/components/mobile/shell/mobile-shell";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  if (!(await isSetupCompleted())) redirect("/setup");
-  const { user } = await requirePageUser();
-  const [instanceName, aiConfig] = await Promise.all([
-    getInstanceName(),
-    getOllamaConfig(),
-  ]);
+  // Start every shell read at once instead of three sequential round-trips.
+  // The setup check still decides first: before setup there are no users, so
+  // the session check would otherwise redirect to /login instead of /setup.
+  const setupDone = isSetupCompleted();
+  const session = requirePageUser();
+  const shellSettings = Promise.all([getInstanceName(), getOllamaConfig()]);
+  session.catch(() => undefined);
+  shellSettings.catch(() => undefined);
+  if (!(await setupDone)) redirect("/setup");
+  const { user } = await session;
+  const [instanceName, aiConfig] = await shellSettings;
   const demoLocked = isLockedDemoMode();
   const mobile = await isMobileView();
   // Shell identity (instance name, own username) leaks into every screenshot,

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { patchSchema } from "@/lib/validators/patch";
 
 /**
  * Zod schemas for workflow API bodies (shared by routes and MCP tools).
@@ -34,23 +35,17 @@ export const createWorkflowSchema = z.object({
 });
 export type CreateWorkflowInput = z.infer<typeof createWorkflowSchema>;
 
-export const updateWorkflowSchema = createWorkflowSchema.partial();
+/**
+ * PATCH body. `patchSchema`, not `.partial()`: `.partial()` keeps the `enabled`
+ * default, so a graph-only save would have carried `enabled: true` and silently
+ * re-enabled a workflow the operator had disabled. Defaults nested inside
+ * `graph` (node label/config) are deliberately kept — they only apply when the
+ * client actually sends a graph.
+ */
+export const updateWorkflowSchema = patchSchema(createWorkflowSchema);
 export type UpdateWorkflowInput = z.infer<typeof updateWorkflowSchema>;
 
 export const runWorkflowSchema = z.object({
   input: z.record(z.string(), z.unknown()).default({}),
 });
 export type RunWorkflowInput = z.infer<typeof runWorkflowSchema>;
-
-/**
- * Parse a PATCH body with updateWorkflowSchema, then drop keys the client did
- * not send — zod v4 partial() still applies .default() values (enabled, node
- * label/config defaults) for absent keys, which would clobber saved fields.
- */
-export function parseWorkflowPatch(body: unknown): UpdateWorkflowInput {
-  const parsed = updateWorkflowSchema.parse(body) as Record<string, unknown>;
-  const provided = new Set(Object.keys((body ?? {}) as Record<string, unknown>));
-  return Object.fromEntries(
-    Object.entries(parsed).filter(([key]) => provided.has(key)),
-  ) as UpdateWorkflowInput;
-}

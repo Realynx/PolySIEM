@@ -64,7 +64,7 @@ export function MobileAllConnectorsPanel({
           </Button>
         )}
         <p className="px-0.5 text-[11px] text-muted-foreground">
-          {CONNECTOR_INDEPENDENCE_COPY} Each link gets its own address from that edge&apos;s tunnel subnet, all carried
+          {CONNECTOR_INDEPENDENCE_COPY} Each link gets its own address from that relay&apos;s tunnel subnet, all carried
           on the connector&apos;s single WireGuard interface.
         </p>
       </div>
@@ -94,7 +94,7 @@ function connectorOverviewItems(connectors: readonly ConnectorDto[]): MobileSumm
   const unlinked = connectors.filter((connector) => connectorLinks(connector).length === 0).length;
   const items: MobileSummaryItem[] = [
     { label: `${summary.ready}/${summary.total} ready` },
-    { label: `${linkCount} edge link${linkCount === 1 ? "" : "s"}` },
+    { label: `${linkCount} relay link${linkCount === 1 ? "" : "s"}` },
   ];
   if (unlinked > 0) items.push({ label: `${unlinked} not linked yet` });
   return items;
@@ -136,7 +136,7 @@ function AllConnectorsBody({
       <EmptyState
         icon={Cable}
         title="No connectors yet"
-        description="A connector is the far end of a tunnel: PolySIEM's agent on a Linux host, an OPNsense box, or another WireGuard peer. It dials out, so nothing at home needs a public IP — and one install can serve every edge box you link it to."
+        description="A connector is the far end of a tunnel: PolySIEM's agent on a Linux host, an OPNsense box, or another WireGuard peer. It dials out, so nothing at home needs a public IP — and one install can serve every relay server you link it to."
       />
     );
   }

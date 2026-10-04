@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Layers, Loader2, Terminal, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { buildEdgeBootstrapCommand } from "@/lib/integrations/edge-nat/bootstrap";
+import { buildSshBootstrapCommand } from "@/lib/ssh/bootstrap";
 import { apiFetch } from "@/components/shared/api-client";
 import { copyText } from "@/components/shared/clipboard";
 import { Badge } from "@/components/ui/badge";
@@ -107,7 +107,7 @@ export interface ManualSetup {
 function edgeBootstrapCommand(publicKey: string | null): string {
   if (!publicKey) return "";
   try {
-    return buildEdgeBootstrapCommand(publicKey);
+    return buildSshBootstrapCommand(publicKey);
   } catch {
     return "";
   }
@@ -120,7 +120,7 @@ function EdgeInstallEnd({ server }: { server: EdgeNatServer }) {
   return (
     <InstallEnd
       index="1"
-      heading="On your edge server"
+      heading="On your relay server"
       title={step.title}
       detail={step.detail}
       satisfied={step.satisfied}
@@ -139,15 +139,15 @@ function EdgeBootstrapHint({ command }: { command: string }) {
   if (!command) {
     return (
       <p className="text-[11px] text-warning">
-        The edge setup command is unavailable — recreate the Edge NAT integration before continuing.
+        The relay setup command is unavailable — recreate the relay server integration before continuing.
       </p>
     );
   }
   return (
     <>
-      <CommandBlock label="Run as your edge admin" command={command} />
+      <CommandBlock label="Run as your relay admin" command={command} />
       <p className="text-[11px] text-muted-foreground">
-        Then finish the guided setup — scan the host key and install the restricted service — from the edge server
+        Then finish the guided setup — scan the host key and install the restricted service — from the relay server
         card.
       </p>
     </>
@@ -229,7 +229,7 @@ export function ConnectorInstallSheet({
       open
       onOpenChange={onOpenChange}
       title={`Install ${reveal.connector.name}`}
-      description="PolySIEM manages both ends: the edge server and this connector."
+      description="PolySIEM manages both ends: the relay server and this connector."
     >
       <div className="flex flex-col gap-3 pb-2">
         <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
@@ -242,7 +242,7 @@ export function ConnectorInstallSheet({
         <TunnelProvisionedNote tunnel={reveal.tunnelProvisioned} />
         <ConnectorInstallEnd
           name={reveal.connector.name}
-          serverName={server?.name ?? "the edge"}
+          serverName={server?.name ?? "the relay"}
           view={view}
           connected={connected}
         />
@@ -271,11 +271,11 @@ export function ConnectorInstallSheet({
           )}
         >
           {progress.detail}
-          {!connected && " The machine needs outbound UDP access to the edge WireGuard port."}
+          {!connected && " The machine needs outbound UDP access to the relay WireGuard port."}
         </p>
         <p className="px-0.5 text-[11px] text-muted-foreground">
           Once it is up, set its SSH host in the connector details so PolySIEM can push changes immediately as well as
-          through the poll. You only install it once — link it to another edge box and it serves that one too.
+          through the poll. You only install it once — link it to another relay server and it serves that one too.
         </p>
 
         <Button variant="outline" className="w-full" onClick={() => onOpenChange(false)}>
@@ -353,11 +353,11 @@ function PeerBlockHeading({
 function PeerConfigRows({ block, opnsense }: { block: ConnectorPeerBlock; opnsense: boolean }) {
   return (
     <div className="flex flex-col gap-2">
-      <MobileCopyRow label={opnsense ? "Endpoint (edge)" : "Edge endpoint"} value={block.edgeEndpoint} />
-      <MobileCopyRow label="Edge public key" value={block.edgePublicKey ?? "Generate the edge key first"} />
+      <MobileCopyRow label={opnsense ? "Endpoint (relay)" : "Relay endpoint"} value={block.edgeEndpoint} />
+      <MobileCopyRow label="Relay public key" value={block.edgePublicKey ?? "Generate the relay key first"} />
       <MobileCopyRow
-        label={opnsense ? "Allowed IPs (on the edge peer)" : "AllowedIPs for the edge peer"}
-        value={block.allowedIps.join(", ") || "Set the edge tunnel address first"}
+        label={opnsense ? "Allowed IPs (on the relay peer)" : "AllowedIPs for the relay peer"}
+        value={block.allowedIps.join(", ") || "Set the relay tunnel address first"}
       />
       <MobileCopyRow
         label={opnsense ? "Tunnel address for OPNsense" : "Tunnel address for this peer"}
@@ -388,7 +388,7 @@ interface PeerInstructionInput {
  */
 function peerInstructionSteps(input: PeerInstructionInput): string[] {
   const { opnsense, additional, edgeName, keepalive } = input;
-  const peerFields = `the edge public key, the endpoint above, ${
+  const peerFields = `the relay public key, the endpoint above, ${
     opnsense ? "those Allowed IPs" : "those AllowedIPs"
   }, and keepalive ${keepalive}`;
   if (opnsense) {
@@ -451,7 +451,7 @@ function PeerKeyForm({ connector, opnsense }: { connector: ConnectorDto; opnsens
     onSuccess: () => {
       // One key identifies this peer on every edge it is linked to, so each of
       // those edges needs an apply to register it.
-      toast.success("Peer key saved. Apply each linked edge to register it.");
+      toast.success("Peer key saved. Apply each linked relay to register it.");
       void queryClient.invalidateQueries({ queryKey: CONNECTORS_QUERY_PREFIX });
       void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
@@ -542,7 +542,7 @@ function PeerBlockNotices({ view, server }: { view: PeerBlockView; server: EdgeN
       {!view.tunnelAddress && (
         <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          This connector is not linked to {server.name} yet, so it holds no address on that edge. Link it first — the
+          This connector is not linked to {server.name} yet, so it holds no address on that relay. Link it first — the
           address is allocated by the link.
         </p>
       )}
@@ -552,7 +552,7 @@ function PeerBlockNotices({ view, server }: { view: PeerBlockView; server: EdgeN
       {!view.block.edgePublicKey && !view.isLoading && (
         <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          {server.name} has no WireGuard key yet. Generate it in that edge&apos;s tunnel settings before configuring
+          {server.name} has no WireGuard key yet. Generate it in that relay&apos;s tunnel settings before configuring
           this peer.
         </p>
       )}
@@ -577,7 +577,7 @@ function PeerSnippetButton({
   server: EdgeNatServer;
 }) {
   const copyAll = async () => {
-    const snippet = `# PolySIEM edge box: ${server.name}\n${
+    const snippet = `# PolySIEM relay server: ${server.name}\n${
       buildConnectorPeerSnippet(block, { kind, name: connector.name })
     }`;
     try {
@@ -644,7 +644,7 @@ export function ConnectorPeerSetupSheet({
     >
       <div className="flex flex-col gap-3 pb-2">
         <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
-          The far side initiates the tunnel; the edge only listens on its WireGuard port. PolySIEM issues no install
+          The far side initiates the tunnel; the relay only listens on its WireGuard port. PolySIEM issues no install
           token and no SSH key for this kind — it just registers the peer.
         </p>
 
@@ -702,8 +702,8 @@ export function ConnectorPeerSetupSheet({
         <MobileConnectorSetupDisclosure connector={connector} integrationId={server.id} />
 
         <p className="px-0.5 text-[11px] text-muted-foreground">
-          Linking the same far end to another edge gives it a second address there, on the same WireGuard interface —
-          and its own peer settings, reachable from that edge&apos;s row under Linked edges.
+          Linking the same far end to another relay gives it a second address there, on the same WireGuard interface —
+          and its own peer settings, reachable from that relay&apos;s row under Linked relays.
         </p>
 
         <Button variant="outline" className="w-full" onClick={() => onOpenChange(false)}>

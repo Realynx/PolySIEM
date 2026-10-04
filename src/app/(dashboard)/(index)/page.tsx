@@ -28,7 +28,7 @@ import { formatBytes, formatRelative } from "@/lib/format";
 import { isLiveQueryType, type IntegrationTypeValue } from "@/lib/types";
 import { loadFootprintInput } from "@/lib/topology/footprint-data";
 import { deriveFootprint } from "@/lib/topology/footprint";
-import { FootprintMap } from "@/components/topology/footprint-map";
+import { FootprintMapLazy } from "@/components/topology/footprint-map-lazy";
 import { MobileHome } from "@/components/mobile/pages/home/mobile-home";
 import { EmptyState } from "@/components/shared/empty-state";
 import { SyncStatusBadge } from "@/components/shared/badges";
@@ -153,7 +153,7 @@ export default async function DashboardHomePage() {
 
       {/* Footprint map */}
       {hasFootprint ? (
-        <FootprintMap graph={footprint} />
+        <FootprintMapLazy graph={footprint} />
       ) : (
         <EmptyState
           icon={MapIcon}

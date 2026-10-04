@@ -58,7 +58,7 @@ export function MobileWireguardBlock({ server, isAdmin }: { server: EdgeNatServe
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2 px-0.5">
         <span className="flex items-center gap-1.5 font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
-          <Waypoints className="size-3.5" /> WireGuard tunnel
+          <Waypoints className="size-3.5" /> Relay tunnel
         </span>
         <Badge variant={status.tone === "on" ? "secondary" : "outline"} className={cn("text-[10px] font-normal", status.tone === "pending" && "text-warning")}>
           {status.tone === "on" && <span className="size-1.5 rounded-full bg-success" />}
@@ -113,7 +113,7 @@ function MobileWireguardBody({
         <MobileKeyRow label="Home subnets">{view.subnetCount}</MobileKeyRow>
       </MobileList>
 
-      <MobileCopyBlock label="Edge public key" value={view.edgePublicKey} emptyHint="Generate the edge key first" emphasized />
+      <MobileCopyBlock label="Relay public key" value={view.edgePublicKey} emptyHint="Generate the relay key first" emphasized />
       {settings.peer ? (
         <MobileOpnsenseBlock peerConfig={peerConfig} edgePublicKey={view.edgePublicKey} keepalive={view.keepalive} />
       ) : (
@@ -129,7 +129,7 @@ function MobileWireguardBody({
         </Button>
       )}
       <p className="px-0.5 text-[11px] text-muted-foreground">
-        The edge only listens; every peer initiates. Saving marks a pending change — use Apply to push it.
+        The relay only listens; every peer initiates. Saving marks a pending change — use Apply to push it.
       </p>
     </>
   );
@@ -244,7 +244,7 @@ function MobileWireguardSheet({
         body: JSON.stringify(input),
       }),
     onSuccess: (result, variables) => {
-      toast.success(variables.regenerateKey ? "Edge key generated. Apply to push it." : "Tunnel saved. Apply to push it.");
+      toast.success(variables.regenerateKey ? "Relay key generated. Apply to push it." : "Tunnel saved. Apply to push it.");
       queryClient.setQueryData([WIREGUARD_QUERY_KEY, server.id], result);
       void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
       if (!variables.regenerateKey) onOpenChange(false);
@@ -266,7 +266,7 @@ function MobileWireguardSheet({
       open
       onOpenChange={onOpenChange}
       title={`WireGuard tunnel — ${server.name}`}
-      description="The edge listens; every peer initiates. Set the interface, port and tunnel subnet, then generate the edge key."
+      description="The relay listens; every peer initiates. Set the interface, port and tunnel subnet, then generate the relay key."
     >
       <form onSubmit={submit} className="flex flex-col gap-4 pb-2">
         <div className="flex items-center justify-between gap-4 rounded-xl border p-3">
@@ -301,14 +301,14 @@ function MobileWireguardSheet({
 
         <MobileSelectField
           id="m-wg-addr"
-          label="Edge tunnel address"
+          label="Relay tunnel address"
           value={form.address}
           onChange={(address) => update({ address })}
           choices={WIREGUARD_ADDRESS_CHOICES}
           mono
           invalid={Boolean(form.address) && !looksLikeCidr(form.address)}
           customPlaceholder="10.9.9.1/24"
-          help="The edge takes the first address in this subnet; connector and peer addresses are allocated from it."
+          help="The relay takes the first address in this subnet; connector and peer addresses are allocated from it."
         />
 
         <MobilePeerFields form={form} update={update} />
@@ -318,7 +318,7 @@ function MobileWireguardSheet({
         </p>
 
         {(settings.publicKey ?? data.peerConfig.edgePublicKey) && (
-          <MobileCopyBlock label="Edge public key (paste into OPNsense)" value={settings.publicKey ?? data.peerConfig.edgePublicKey} emphasized />
+          <MobileCopyBlock label="Relay public key (paste into OPNsense)" value={settings.publicKey ?? data.peerConfig.edgePublicKey} emphasized />
         )}
 
         {settings.hasPrivateKey && (

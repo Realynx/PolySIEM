@@ -9,6 +9,7 @@ export type SettingsSkeletonSection =
   | "backup"
   | "certificate"
   | "danger"
+  | "database"
   | "index"
   | "integrations"
   | "privacy"
@@ -179,6 +180,7 @@ export function SettingsContentSkeleton({ section }: { section: SettingsSkeleton
     ai: ["h-72", "h-64"],
     appearance: ["h-44", "h-32", "h-40"],
     certificate: ["h-36", "h-64", "h-72"],
+    database: ["h-72", "h-[36rem]"],
     privacy: ["h-32", "h-48", "h-36"],
     profile: ["h-48", "h-72", "h-52"],
     system: ["h-80"],

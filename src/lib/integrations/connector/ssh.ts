@@ -1,16 +1,18 @@
 import "server-only";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { z } from "zod";
 import { decryptSecret } from "@/lib/crypto";
 import {
+  ManagedSshError,
+  isSshPort,
   runCommand,
+  runManagedSsh,
   scanSshHostKeys,
+  SSH_DEFAULT_PORT,
   type CommandResult,
   type CommandRunner,
+  type ManagedSshTarget,
   type ObservedHostKey,
-} from "@/lib/integrations/edge-nat/ssh";
+} from "@/lib/ssh/managed-host";
 import {
   CONNECTOR_AGENT_PATH,
   canonicalConnectorRuleset,
@@ -28,11 +30,12 @@ import {
  * key can therefore do exactly one thing on the connector host: run the connector
  * agent's STATUS/APPLY forced command. It is never a shell.
  *
- * Everything here mirrors `src/lib/integrations/edge-nat/ssh.ts`: the host key is
- * re-observed and matched against the ENROLLED fingerprint before every
- * connection, `StrictHostKeyChecking=yes` and `BatchMode=yes` are mandatory, the
- * identity file lives 0600 inside a per-call temp directory that is always
- * removed, output is capped, and the call is bounded by a timeout.
+ * The session mechanics are NOT restated here: they are
+ * `src/lib/ssh/managed-host.ts`, shared with every other managed box. The host
+ * key is re-observed and matched against the ENROLLED fingerprint before any
+ * credential reaches disk, `StrictHostKeyChecking=yes` and `BatchMode=yes` are
+ * mandatory, the identity file lives 0600 inside a per-call temp directory that
+ * is always removed, output is capped, and the call is bounded by a timeout.
  * `accept-new` never appears in this path.
  *
  * The connector's WIREGUARD private key is not managed here and never travels
@@ -43,6 +46,9 @@ import {
 /** Remote command string; the forced command ignores it, but it documents intent. */
 const CONNECTOR_REMOTE_COMMAND = "polysiem-connector-agent";
 
+/** Operational sessions are short: the agent answers STATUS/APPLY promptly. */
+const CONNECTOR_SESSION_TIMEOUT_MS = 30_000;
+
 /** First line of a well-formed STATUS response (§1c). */
 export const CONNECTOR_STATUS_HEADER = "POLYSIEM_CONNECTOR_STATUS_V1";
 
@@ -52,10 +58,17 @@ export type ConnectorSshErrorCode =
   | "connector_ssh_credentials_missing"
   | "connector_ssh_host_key_mismatch";
 
-/** A transport failure whose message is safe and useful to show an administrator. */
-export class ConnectorSshError extends Error {
+/**
+ * A transport failure whose message is safe and useful to show an administrator.
+ *
+ * Every code here means "this connector row is not ready", which is a conflict
+ * with the caller's expectation rather than an upstream fault — hence 409, fixed
+ * on the class so no call site has to remember it. Scanner failures come out of
+ * the shared transport as {@link ManagedSshError}s carrying 502.
+ */
+export class ConnectorSshError extends ManagedSshError {
   constructor(public code: ConnectorSshErrorCode, message: string) {
-    super(message);
+    super(code, message, 409);
     this.name = "ConnectorSshError";
   }
 }
@@ -79,13 +92,12 @@ export interface ConnectorSshRow {
   encryptedCredentials: string | null;
 }
 
-export interface ConnectorSshTarget {
-  host: string;
-  port: number;
-  username: string;
+export interface ConnectorSshTarget extends ManagedSshTarget {
+  /**
+   * Alias of {@link ManagedSshTarget.hostKeyFingerprint}, kept so the phase-2
+   * shape of this object is unchanged. Prefer `hostKeyFingerprint`.
+   */
   fingerprint: string;
-  /** OpenSSH private key PEM. Held only in memory and in a 0600 temp file. */
-  privateKey: string;
 }
 
 /**
@@ -100,8 +112,8 @@ export function connectorSshTarget(connector: ConnectorSshRow): ConnectorSshTarg
       "This connector has no SSH host yet. Set its address before pushing configuration over SSH.",
     );
   }
-  const port = connector.sshPort ?? 22;
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  const port = connector.sshPort ?? SSH_DEFAULT_PORT;
+  if (!isSshPort(port)) {
     throw new ConnectorSshError("connector_ssh_not_configured", "This connector's SSH port is not a valid port number.");
   }
   if (!connector.sshHostKeyFingerprint) {
@@ -130,6 +142,7 @@ export function connectorSshTarget(connector: ConnectorSshRow): ConnectorSshTarg
     host,
     port,
     username: connector.sshUsername?.trim() || stored.username,
+    hostKeyFingerprint: connector.sshHostKeyFingerprint,
     fingerprint: connector.sshHostKeyFingerprint,
     privateKey: stored.privateKey,
   };
@@ -157,32 +170,16 @@ export async function runConnectorSsh(
   protocolInput?: string,
   runner: CommandRunner = runCommand,
 ): Promise<CommandResult> {
-  const target = connectorSshTarget(connector);
-  const observed = await scanConnectorHostKeys(target.host, target.port, runner);
-  const enrolled = observed.find((key) => key.fingerprint === target.fingerprint);
-  if (!enrolled) {
-    throw new ConnectorSshError(
+  return runManagedSsh(connectorSshTarget(connector), {
+    remoteCommand: CONNECTOR_REMOTE_COMMAND,
+    stdin: protocolInput ?? `${action}\n`,
+    timeoutMs: CONNECTOR_SESSION_TIMEOUT_MS,
+    tempPrefix: "polysiem-connector-ssh-",
+    hostKeyMismatchError: () => new ConnectorSshError(
       "connector_ssh_host_key_mismatch",
       "The connector's SSH host key changed or does not match the enrolled fingerprint; connection refused",
-    );
-  }
-
-  const dir = await mkdtemp(join(tmpdir(), "polysiem-connector-ssh-"));
-  const privateKeyPath = join(dir, "identity");
-  const knownHostsPath = join(dir, "known_hosts");
-  try {
-    await writeFile(privateKeyPath, target.privateKey, { encoding: "utf8", mode: 0o600 });
-    await chmod(privateKeyPath, 0o600).catch(() => undefined); // Windows ACLs do not expose POSIX modes.
-    await writeFile(knownHostsPath, `${enrolled.knownHostsLine}\n`, { encoding: "utf8", mode: 0o600 });
-    return await runner("ssh", [
-      "-T", "-p", String(target.port), "-i", privateKeyPath,
-      "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
-      "-o", `UserKnownHostsFile=${knownHostsPath}`, "-o", "GlobalKnownHostsFile=none",
-      "-o", "ConnectTimeout=10", `${target.username}@${target.host}`, CONNECTOR_REMOTE_COMMAND,
-    ], protocolInput ?? `${action}\n`, 30_000);
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-  }
+    ),
+  }, runner);
 }
 
 // ---------------------------------------------------------------------------

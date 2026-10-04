@@ -56,7 +56,15 @@ export function chooseBucketMs(windowMs: number): number {
   return minutes * 60_000;
 }
 
-function bucketStarts(fromMs: number, toMs: number, bucketMs: number): number[] {
+/**
+ * The bucket grid a series is laid out on: every bucket start in [from, to),
+ * aligned to the epoch so two callers over the same window always agree.
+ *
+ * Exported because the privacy router's per-service series is the same convention
+ * over a different row shape — every start is emitted whether or not it has
+ * data, so an empty bucket can carry `null` (a gap) rather than being absent.
+ */
+export function bucketStarts(fromMs: number, toMs: number, bucketMs: number): number[] {
   const first = Math.floor(fromMs / bucketMs) * bucketMs;
   const out: number[] = [];
   for (let t = first; t < toMs; t += bucketMs) out.push(t);

@@ -3,28 +3,18 @@ import { handleApi, jsonOk, ApiError } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guards";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
-import { updateTunnelSchema, type UpdateTunnelInput } from "@/lib/validators/tunnels";
+import { updateTunnelSchema } from "@/lib/validators/tunnels";
 import { reconcileTunnelHostnames } from "@/lib/services/tunnel-dns";
 import { toJsonSafe } from "@/lib/serialize";
 
 type Params = { params: Promise<{ id: string }> };
 
-/**
- * Parse the PATCH body, then drop keys the client did not send — the update
- * schema is `createTunnelSchema.partial()` and zod v4 still applies defaults
- * (provider, ingressHostnames) for absent keys, which would clobber fields the
- * client never touched.
- */
-function parsePatch(body: unknown): UpdateTunnelInput {
-  const parsed = updateTunnelSchema.parse(body) as Record<string, unknown>;
-  const provided = new Set(Object.keys((body ?? {}) as Record<string, unknown>));
-  return Object.fromEntries(Object.entries(parsed).filter(([key]) => provided.has(key))) as UpdateTunnelInput;
-}
-
 export const PATCH = handleApi(async (req: NextRequest, { params }: Params) => {
   const { user } = await requireAdmin();
   const { id } = await params;
-  const input = parsePatch(await req.json());
+  // `updateTunnelSchema` is built with `patchSchema`, so keys the client did not
+  // send are genuinely absent and this spread into `data` cannot clobber them.
+  const input = updateTunnelSchema.parse(await req.json());
   const existing = await prisma.tunnel.findUnique({ where: { id }, select: { id: true } });
   if (!existing) throw new ApiError(404, "not_found", "Tunnel not found");
   const tunnel = await prisma.tunnel.update({

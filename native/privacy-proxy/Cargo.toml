@@ -1,0 +1,69 @@
+[package]
+name = "polysiem-privacy-proxy"
+version = "1.0.0"
+edition = "2021"
+# `[lints]` needs 1.74; `let ... else` needs 1.65; `OwnedFd` needs 1.63.
+rust-version = "1.74"
+description = "SNI-inspecting transparent TCP proxy for the PolySIEM privacy router"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "polysiem-privacy-proxy"
+path = "src/main.rs"
+
+[lib]
+name = "polysiem_privacy_proxy"
+path = "src/lib.rs"
+
+# The ONLY runtime dependency. Everything else (epoll, splice, signal handling,
+# the token bucket, the event loop) is written against `libc` directly.
+#
+# Deliberately absent:
+#   * tokio      - a work-stealing async scheduler buys nothing when the payload
+#                  path is `splice(2)` between raw file descriptors; it would add
+#                  ~50 transitive crates to the audit surface for zero throughput.
+#   * mio        - permitted by the contract, but it is a thin wrapper over the
+#                  same `epoll_*` calls that `src/sys.rs` already has to make for
+#                  `splice`/`SO_ORIGINAL_DST`/`SO_BINDTODEVICE`. Taking it would
+#                  add a dependency without removing a single `unsafe` block.
+#   * arc-swap   - `Mutex<Arc<Generation>>` read once per event-loop iteration is
+#                  not a measurable cost at this connection rate.
+[dependencies]
+libc = { version = "0.2", default-features = false, features = ["std"] }
+
+# Dev-only. `proptest` is what turns "the parser looks bounds-checked" into
+# "the parser survives arbitrary bytes", which is the entire reason this is
+# Rust and not C. It never ships in the binary.
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Stripped by rustc rather than by a separate `strip` invocation in the
+# Dockerfile: `rust:1-alpine` has no binutils, and adding a package to get a
+# command that `-C strip` already provides is a worse trade.
+strip = "symbols"
+# NOT `panic = "abort"`. The no-panic lints in `parser`/`hostname` are the
+# primary defence, but if one ever slips through, unwinding lets the supervisor
+# in `server.rs` notice a dead worker, respawn it and raise DEGRADED. Aborting
+# would turn a single bad packet into a whole-proxy outage - a worse DoS than
+# the one we are defending against. `proptest` also needs unwinding to shrink.
+panic = "unwind"
+
+[profile.release.package."*"]
+opt-level = 3
+
+# Crate-wide, per the contract: unsafe may only appear in `src/sys.rs`, and an
+# `unsafe fn` does not get to be an implicit `unsafe` block.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+# Nudges that catch the classes of mistake that actually bite in this crate.
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_lossless = "warn"

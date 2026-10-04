@@ -10,6 +10,7 @@ This is the long-form companion to the [README install section](../README.md#ins
 - [Option 3: Manual Docker Compose](#option-3-manual-docker-compose)
 - [Option 4: Build from source (Docker)](#option-4-build-from-source-docker)
 - [Option 5: Native Linux VM install](#option-5-native-linux-vm-install)
+- [Tuning PostgreSQL](#tuning-postgresql)
 - [First run](#first-run)
 - [Upgrading](#upgrading)
 - [Backup & restore](#backup--restore)
@@ -107,6 +108,10 @@ docker compose --env-file .env -f deploy/docker-compose.source.yml up -d --build
 
 To build just the image: `docker build -f deploy/Dockerfile -t polysiem .` (note: the Dockerfile lives in `deploy/` but the **build context is the repo root**).
 
+One of the image's four stages is not JavaScript. `proxy-builder` compiles the privacy router's SNI proxy from `native/privacy-proxy` into a statically-linked musl binary, and produces two files: `polysiem-privacy-proxy-x86_64` and a sidecar holding its bare sha256. Both land in `/app/assets/privacy-proxy` in the runtime image, which is what `POLYSIEM_PRIVACY_PROXY_DIR` points at.
+
+Nothing in the image ever runs that binary. It is a payload: PolySIEM serves it to a managed privacy router, which verifies the sha256 named in its configuration before installing it. The stage is pinned to `linux/amd64` deliberately, and that is not the image's own platform — v1 supports x86-64 routers only, so an arm64 build of PolySIEM must still ship an x86-64 artifact rather than one no router can execute. On an arm64 builder that one stage runs under emulation and takes noticeably longer than the rest of the build.
+
 ## Option 5: Native Linux VM install
 
 For a Debian/Ubuntu VM or LXC (e.g. on Proxmox), no Docker involved:
@@ -137,6 +142,15 @@ systemctl status polysiem
 journalctl -u polysiem -f
 systemctl restart polysiem
 ```
+
+## Tuning PostgreSQL
+
+Stock PostgreSQL settings assume a tiny machine. **Settings → Database** (admins only) sizes them to the memory, CPUs and disk the database actually has:
+
+- **Resources.** PolySIEM reads RAM (the smaller of system memory and the cgroup limit), CPUs (available cores, capped by any cgroup quota) and SSD vs HDD (`/sys/block/*/queue/rotational`, best-effort). When PostgreSQL shares the machine with the app (native installs and the Compose stack), the app's Node heap cap and about 256 MB of OS headroom are set aside first. When the database lives in another container or on another server, PolySIEM can't see its resources. The card asks you to confirm the values or enter the real ones, and it remembers what you entered once you apply.
+- **Recommendations.** These are pgtune-style values for a web workload: `shared_buffers`, `effective_cache_size`, `work_mem`, `maintenance_work_mem`, `wal_buffers`, planner costs, parallel workers, `jit = off`, and (when free disk is readable) WAL sizing. Tick the settings you want and press **Apply recommended**. PolySIEM runs `ALTER SYSTEM SET …` and `pg_reload_conf()`, then reports which values are live and which are waiting for a restart. **Reset to defaults** runs `ALTER SYSTEM RESET` for every managed setting. Every apply and reset is written to the audit log with the before and after values.
+- **Privileges.** Docker Compose and the bundled Helm database connect as a superuser, so they work out of the box. On native installs, `install-vm.sh` grants the `polysiem` role `ALTER SYSTEM` on exactly the managed parameters, plus `EXECUTE` on `pg_reload_conf()`. It does this on every run, so re-running the installer upgrades older installs. These grants need PostgreSQL 15 or later. On older versions, or whenever the role lacks a privilege, the page shows the exact SQL and the command to run it, for example `sudo -u postgres psql -c "…"` or `docker compose exec db psql -U polysiem -c "…"`.
+- **Restarting.** `shared_buffers`, `wal_buffers` and `max_worker_processes` only take effect after PostgreSQL restarts. Native installs get a root helper made of two units: `polysiem-postgres-restart.path` watches `/opt/polysiem/data/postgres-restart.request`, and `polysiem-postgres-restart.service` deletes that file and runs `systemctl restart postgresql`. The **Restart PostgreSQL** button creates the file. Expect a few seconds of downtime while the app reconnects. Check the helper with `journalctl -u polysiem-postgres-restart`. Docker installs show `docker compose restart db`, and Kubernetes installs show a `kubectl rollout restart` command, for you to run instead.
 
 ## First run
 
@@ -295,6 +309,45 @@ sudo -u postgres psql polysiem \
 ```
 
 (Adjust the table/column names if the schema differs in your version — check with `\d` in psql.)
+
+### Privacy router: apply is refused because the topology is unconfirmed
+
+Apply answers 409 `privacy_router_topology_unconfirmed` and names which of the **router's own network**, **LAN interface** or **WAN interface** it is still missing. This is not a fault: a router is created from a name and an address, which is before anyone can ask the box what NICs it has, so all three start out empty and PolySIEM refuses to guess one. The wrong interface name would not fail loudly — it would render a ruleset that silently steers the LAN's forwarded traffic into an interface that is not there.
+
+Fill them in from what the box itself reported rather than from memory. The last step of the add flow does this for you; for a router that was created earlier, open its **Setup** tab, use **Detect interfaces**, check the LAN and WAN the box suggests, and **Save topology**. A router with a single NIC carrying both the LAN and the VPN underlay will suggest the same interface for both — that is the normal shape of a router VM, not a misconfiguration. If a field comes back blank, the box's own report could not settle it (several default routes over different interfaces, or a router reached by DNS name rather than by address); pick from the reported interface list yourself.
+
+### Privacy router: a client on another VLAN loses all connectivity through it
+
+The device reports "address unreachable" or simply stops reaching anything, while the router itself reads healthy everywhere in PolySIEM: the ruleset is applied, the exits are up, and the Traffic tab is empty. Almost always this is the router's **client networks** list not containing the network the device is actually on.
+
+Client networks are the source networks whose traffic OPNsense sends here, and they are **not** the network the router itself sits on. Those are different questions, and for a policy-routing gateway they are routinely different answers — the whole point is to steer clients that live on other VLANs. Every client-scoped rule the router renders comes from this list: the guard that decides whether a packet is handled at all, the QUIC block, and both masquerade rules. A source outside the list is not blocked; it is forwarded straight back out unchanged, so OPNsense sees a packet it just routed away coming back with an unexpected source and the return path collapses. Nothing reports a fault, because nothing failed.
+
+Open the router's **Setup** tab (or **Router settings**) and list every network whose clients you point at this router in OPNsense — one CIDR per line. It must match the **Source** of the OPNsense LAN rule whose `Advanced → Gateway` names this router; those two are one decision recorded in two places and nothing cross-checks them. Then apply. The router's own subnet is seeded there by default, which is right only when your clients share it.
+
+Apply answers 409 `privacy_router_client_networks_unset` when the list is empty. That is deliberate: an empty list is never read as "every network", because a router scoped to every source address would masquerade the whole internet out of the box.
+
+### Privacy router: "the SNI proxy binary has not been built"
+
+Applying a privacy router configuration answers 503 `privacy_proxy_binary_missing` when PolySIEM cannot find `polysiem-privacy-proxy-x86_64`. The error lists every path it looked in.
+
+From a source checkout this is expected rather than a fault: `npm run dev` does not run the Docker build, and the binary is produced by the image's `proxy-builder` stage, so a plain dev server has no proxy to serve. Build it once:
+
+```bash
+cd native/privacy-proxy
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+PolySIEM picks the result up from `native/privacy-proxy/target/x86_64-unknown-linux-musl/release/` with no configuration. If you would rather not install a Rust toolchain, copy the binary out of a built image and point `POLYSIEM_PRIVACY_PROXY_DIR` at the directory holding it. Everything else on the privacy router page works without it — only apply, and the router's own download of the proxy, need the artifact.
+
+In a container this means the image was not built from `deploy/Dockerfile` in full; rebuild it with the whole file rather than a single stage.
+
+### Privacy router: a hostname rule never matches
+
+Hostname rules read the name out of the TLS ClientHello, so they only ever apply to TCP/80 and TCP/443, and two things can make that name unavailable. Both are properties of how clients encrypt, not faults in the router, and neither can be fixed on the router.
+
+**QUIC.** A browser that reaches a site over QUIC (UDP/443) encrypts its ClientHello, so no middlebox can read a hostname from it. PolySIEM therefore drops UDP/443 by default — the **Block QUIC (UDP/443)** switch in the router's **Router settings** dialog, on the **Setup** tab — which makes browsers fall back to TCP+TLS where the name is readable. That fallback is the normal, designed path for browsers. Some non-browser applications degrade instead of falling back cleanly — they retry slowly, or lose features — so if one specific app misbehaves after a router is introduced, turn the switch off and route that app by IP or port instead of by hostname.
+
+**ECH (Encrypted Client Hello).** ECH encrypts the real server name and leaves only a cover name in the clear, so a rule naming the real host cannot match it; the flow is decided by whatever else matches it — an IP or port rule, or the default action at the foot of the **Rules** tab. There is nothing to configure on the router for this. It is suppressed one step earlier, at your DNS resolver: a client only learns a site's ECH configuration from an HTTPS (type 65) DNS record, so a resolver that does not answer type-65 queries leaves clients using ordinary readable SNI. Configure that on whichever resolver your LAN actually uses — Unbound on OPNsense, for example — not in PolySIEM.
 
 ### "Wizard doesn't appear / goes to login instead"
 

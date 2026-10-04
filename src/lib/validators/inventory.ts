@@ -1,4 +1,14 @@
 import { z } from "zod";
+import { patchSchema } from "@/lib/validators/patch";
+
+/**
+ * Every `updateXSchema` here is `patchSchema(createXSchema)`, never
+ * `createXSchema.partial()` — `.partial()` keeps `.default()`, so a PATCH would
+ * arrive at the service carrying `kind`/`powerState`/`runtime` the client never
+ * sent, tripping the integration-owned-field guard on synced rows and writing
+ * the default over the synced value. `patchSchema` is used even where the create
+ * schema currently has no default, so adding one later cannot reintroduce the bug.
+ */
 
 /** Fields shared by all inventory entities that users may edit. */
 const baseEditable = {
@@ -23,7 +33,7 @@ export const createDeviceSchema = z.object({
   osName: z.string().max(128).nullish(),
   osVersion: z.string().max(128).nullish(),
 });
-export const updateDeviceSchema = createDeviceSchema.partial();
+export const updateDeviceSchema = patchSchema(createDeviceSchema);
 export type CreateDeviceInput = z.infer<typeof createDeviceSchema>;
 export type UpdateDeviceInput = z.infer<typeof updateDeviceSchema>;
 
@@ -37,7 +47,7 @@ export const createVmSchema = z.object({
   diskBytes: z.coerce.bigint().nonnegative().nullish(),
   osName: z.string().max(128).nullish(),
 });
-export const updateVmSchema = createVmSchema.partial();
+export const updateVmSchema = patchSchema(createVmSchema);
 export type CreateVmInput = z.infer<typeof createVmSchema>;
 export type UpdateVmInput = z.infer<typeof updateVmSchema>;
 
@@ -53,7 +63,7 @@ export const createContainerSchema = z.object({
   diskBytes: z.coerce.bigint().nonnegative().nullish(),
   osName: z.string().max(128).nullish(),
 });
-export const updateContainerSchema = createContainerSchema.partial();
+export const updateContainerSchema = patchSchema(createContainerSchema);
 export type CreateContainerInput = z.infer<typeof createContainerSchema>;
 export type UpdateContainerInput = z.infer<typeof updateContainerSchema>;
 
@@ -66,7 +76,7 @@ export const createNetworkSchema = z.object({
   domain: z.string().max(255).nullish(),
   purpose: z.string().max(64).nullish(),
 });
-export const updateNetworkSchema = createNetworkSchema.partial();
+export const updateNetworkSchema = patchSchema(createNetworkSchema);
 export type CreateNetworkInput = z.infer<typeof createNetworkSchema>;
 export type UpdateNetworkInput = z.infer<typeof updateNetworkSchema>;
 
@@ -76,7 +86,7 @@ export const createIpSchema = z.object({
   networkId: idRef,
   description: z.string().max(500).nullish(),
 });
-export const updateIpSchema = createIpSchema.partial();
+export const updateIpSchema = patchSchema(createIpSchema);
 export type CreateIpInput = z.infer<typeof createIpSchema>;
 export type UpdateIpInput = z.infer<typeof updateIpSchema>;
 
@@ -93,7 +103,7 @@ export const createServiceSchema = z.object({
   vmId: idRef,
   containerId: idRef,
 });
-export const updateServiceSchema = createServiceSchema.partial();
+export const updateServiceSchema = patchSchema(createServiceSchema);
 export type CreateServiceInput = z.infer<typeof createServiceSchema>;
 export type UpdateServiceInput = z.infer<typeof updateServiceSchema>;
 
@@ -106,7 +116,7 @@ export const createStorageSchema = z.object({
   totalBytes: z.coerce.bigint().nonnegative().nullish(),
   usedBytes: z.coerce.bigint().nonnegative().nullish(),
 });
-export const updateStorageSchema = createStorageSchema.partial();
+export const updateStorageSchema = patchSchema(createStorageSchema);
 export type CreateStorageInput = z.infer<typeof createStorageSchema>;
 export type UpdateStorageInput = z.infer<typeof updateStorageSchema>;
 

@@ -45,6 +45,8 @@ If your homelab is anything like ours, the truth about it lives in a dozen place
 
 It connects to Proxmox, OPNsense, UniFi, Cloudflare, Tailscale, Elasticsearch, OTX, Censys, and SecurityTrails. Once things are wired up you can search and annotate the inventory (with audit history and network context stitched across integrations), dig through logs, investigate threats, build workflows, and expose scoped documentation through MCP. It runs entirely on your own infrastructure, with encrypted credentials, roles, and no default accounts.
 
+Two network boxes it manages directly rather than just reads: **Edge networks**, where a small remote host publishes a listener back toward the lab, and the **privacy router** — a Linux box on your LAN with one ordered, first-match-wins rule list that decides, per flow, whether traffic leaves through your ordinary WAN or through one of its WireGuard exits. PolySIEM installs a restricted agent on it over SSH, pins its host key, and reports per-service traffic back, including how much of it actually went through the VPN. Rules can match on source, destination, port, or hostname; the [install guide](docs/INSTALL.md#privacy-router-a-hostname-rule-never-matches) covers the two cases where a hostname is not readable.
+
 <p align="center">
   <img src="docs/images/demo-dashboard.png" width="1200" alt="PolySIEM demo dashboard showing the lab network map, inventory summary, and integration health">
 </p>

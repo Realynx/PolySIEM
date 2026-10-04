@@ -1,11 +1,11 @@
 import "server-only";
-import { isIP } from "node:net";
 import { Prisma, type IntegrationConfig } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { sha256Hex } from "@/lib/crypto";
 import { prisma } from "@/lib/db";
 import { toDriverConfig } from "@/lib/integrations";
 import { fetchCensysCreditBalance, fetchCensysHost } from "@/lib/integrations/censys/client";
+import { isIP } from "@/lib/net/ip";
 import { censysSettingsSchema } from "@/lib/validators/integrations";
 
 export const CENSYS_CACHE_TTL_MS = 4 * 24 * 60 * 60 * 1_000;

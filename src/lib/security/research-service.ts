@@ -1,11 +1,11 @@
 import "server-only";
-import { isIP } from "node:net";
 import { randomUUID } from "node:crypto";
 import { domainToASCII } from "node:url";
 import { resolve4, resolve6, resolveCname, resolveMx, resolveNs, resolveTxt, reverse } from "node:dns/promises";
 import { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { prisma } from "@/lib/db";
+import { isIP } from "@/lib/net/ip";
 import { gatherIpIdentity, queryLogsForTerm } from "@/lib/ai/agent/research";
 import { lookupCensysHost } from "@/lib/services/censys";
 import type { CreateSecurityResearchPageInput, UpdateSecurityResearchPageInput } from "@/lib/validators/security-research";

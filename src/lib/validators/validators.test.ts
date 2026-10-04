@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { createDeviceSchema, updateDeviceSchema, createNetworkSchema, listQuerySchema } from "./inventory";
-import { createIntegrationSchema, edgeNatSettingsSchema } from "./integrations";
+import {
+  createDeviceSchema,
+  createNetworkSchema,
+  listQuerySchema,
+  updateContainerSchema,
+  updateDeviceSchema,
+  updateVmSchema,
+} from "./inventory";
+import { createIntegrationSchema, edgeNatSettingsSchema, instanceSettingsSchema } from "./integrations";
 import { setupProgressSchema, setupSchema } from "./auth";
 
 describe("inventory validators", () => {
@@ -10,17 +17,24 @@ describe("inventory validators", () => {
   });
 
   /**
-   * zod v4 hazard (found by two workstreams independently): `.partial()`
-   * schemas still re-apply `.default()` values when the key IS present as
-   * undefined — and route/tool layers must therefore drop absent keys before
-   * parsing PATCH bodies. This test documents the safe usage pattern.
+   * zod v4 hazard: `.partial()` does NOT strip `.default()`, so the PATCH
+   * schemas used to inject `kind` / `powerState` / `runtime` for keys the client
+   * never sent. The services spread the patch straight into a Prisma `update`,
+   * so those injected values would trip the integration-owned-field guard on a
+   * synced row and overwrite the synced value on a manual one. The update
+   * schemas are built with `patchSchema`, which strips the defaults.
    */
   it("does not invent defaulted fields for PATCH when keys are absent", () => {
-    const patch = updateDeviceSchema.parse({ description: "hello" });
-    // If `kind` sneaks back in as "server", PATCHes on synced entities would
-    // trip the integration-owned-field guard and clobber manual data.
-    expect("description" in patch).toBe(true);
-    expect(patch.description).toBe("hello");
+    // Object.keys, not toMatchObject: toMatchObject ignores extra keys and would
+    // pass even with `kind: "server"` injected.
+    expect(Object.keys(updateDeviceSchema.parse({ description: "hello" }))).toEqual(["description"]);
+    expect(Object.keys(updateVmSchema.parse({ name: "vm-01" }))).toEqual(["name"]);
+    expect(Object.keys(updateContainerSchema.parse({ name: "ct-01" }))).toEqual(["name"]);
+  });
+
+  it("keeps create defaults intact while the PATCH schema drops them", () => {
+    expect(createDeviceSchema.parse({ name: "nas-01" }).kind).toBe("server");
+    expect("kind" in updateDeviceSchema.parse({ name: "nas-01" })).toBe(false);
   });
 
   it("validates CIDR and gateway formats", () => {
@@ -101,6 +115,40 @@ describe("integration validators", () => {
     expect(() =>
       createIntegrationSchema.parse({ ...input, baseUrl: "mock://unknown?script=bad" }),
     ).toThrow(/allowed mock scenario/);
+  });
+});
+
+/**
+ * The override that lets an operator state the truth when the address PolySIEM
+ * derives for itself is wrong. Refused HERE as well as at apply time: an address
+ * unreachable by construction cannot become reachable later, so storing one only
+ * moves the failure onto a remote box.
+ */
+describe("managed host base URL setting", () => {
+  it("treats blank as unset rather than as an error", () => {
+    expect(instanceSettingsSchema.parse({ managedHostBaseUrl: "" }).managedHostBaseUrl).toBe("");
+    expect(instanceSettingsSchema.parse({ managedHostBaseUrl: "   " }).managedHostBaseUrl).toBe("");
+    // Absent entirely is also fine — the field is optional and defaults to unset.
+    expect(instanceSettingsSchema.parse({ instanceName: "PolySIEM" }).managedHostBaseUrl).toBeUndefined();
+  });
+
+  it("normalizes what it stores so callers can append a path to it", () => {
+    expect(instanceSettingsSchema.parse({ managedHostBaseUrl: "  https://polysiem.lan:3000/  " }).managedHostBaseUrl)
+      .toBe("https://polysiem.lan:3000");
+  });
+
+  it("refuses an address no managed host could reach, and says why", () => {
+    expect(() => instanceSettingsSchema.parse({ managedHostBaseUrl: "http://localhost:3000" }))
+      .toThrow(/localhost:3000/);
+    expect(() => instanceSettingsSchema.parse({ managedHostBaseUrl: "http://127.0.0.1:3000" })).toThrow();
+    expect(() => instanceSettingsSchema.parse({ managedHostBaseUrl: "https://polysiem" })).toThrow();
+    expect(() => instanceSettingsSchema.parse({ managedHostBaseUrl: "polysiem.lan:3000" })).toThrow();
+  });
+
+  it("accepts the addresses a homelab actually uses", () => {
+    for (const value of ["https://polysiem.lan:3000", "http://192.168.1.10:3000", "https://siem.example.com"]) {
+      expect(instanceSettingsSchema.parse({ managedHostBaseUrl: value }).managedHostBaseUrl).toBe(value);
+    }
   });
 });
 

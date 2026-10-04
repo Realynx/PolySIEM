@@ -73,13 +73,32 @@ export const FIELD_TYPES: Record<BackupModel, ModelFieldTypes> = {
   dyndnsHost: { date: ["lastSeenAt", "createdAt", "updatedAt"], json: ["metadata"] },
   networkGateway: { date: ["lastSeenAt", "createdAt", "updatedAt"], json: ["metadata"] },
   connector: {
-    date: ["installTokenIssuedAt", "enrolledAt", "lastSeenAt", "lastHandshakeAt", "createdAt", "updatedAt"],
+    date: [
+      "installTokenIssuedAt",
+      "enrolledAt",
+      "lastSeenAt",
+      "lastHandshakeAt",
+      // Added with the SSH-management columns and originally missed here, which
+      // left a restored connector's provisioning timestamp as an ISO string.
+      "sshProvisionedAt",
+      "createdAt",
+      "updatedAt",
+    ],
     json: ["metadata"],
   },
   connectorEdgeLink: {
     date: ["lastHandshakeAt", "createdAt", "updatedAt"],
   },
   edgeNatRule: { date: ["createdAt", "updatedAt"] },
+  managedHost: { date: ["provisionedAt", "createdAt", "updatedAt"] },
+  privacyRouter: { date: ["lastStatusAt", "createdAt", "updatedAt"] },
+  vpnExit: {
+    bigint: ["lastRxBytes", "lastTxBytes"],
+    date: ["lastHandshakeAt", "createdAt", "updatedAt"],
+  },
+  privacyRoutingRule: { date: ["createdAt", "updatedAt"] },
+  serviceTrafficSample: { bigint: ["bytesIn", "bytesOut"], date: ["sampledAt"] },
+  serviceTrafficRollup: { bigint: ["bytesIn", "bytesOut"], date: ["periodStart", "updatedAt"] },
   trafficCounterSample: { bigint: ["bytes", "bytesIn", "bytesOut", "delta"], date: ["sampledAt"] },
   tunnel: { date: ["createdAt", "updatedAt"] },
   tunnelHostname: { date: ["lastResolvedAt", "createdAt", "updatedAt"], json: ["metadata"] },
@@ -114,12 +133,15 @@ export const FIELD_TYPES: Record<BackupModel, ModelFieldTypes> = {
  *   - ipAddress.interfaceId   -> NetworkInterface (interface is later)
  *   - docPage.parentId        -> DocPage         (self-reference)
  *   - securityTicket.scanRunId -> AiScanRun       (scan run is later)
+ *   - privacyRouter.defaultExitId -> VpnExit         (exits belong to the router, so
+ *                                                     the router must exist first)
  */
 export const DEFERRED_FK_COLUMNS: Partial<Record<BackupModel, readonly string[]>> = {
   switchVlan: ["networkId"],
   ipAddress: ["interfaceId"],
   docPage: ["parentId"],
   securityTicket: ["scanRunId"],
+  privacyRouter: ["defaultExitId"],
 };
 
 /**

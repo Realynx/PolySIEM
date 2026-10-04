@@ -123,7 +123,7 @@ function ConnectorsListBody({
         <MobileEmpty
           icon={<Cable />}
           title="No connector linked"
-          description="A connector is the far end of a tunnel — PolySIEM's agent, an OPNsense box, or another WireGuard peer. It is installed once and can serve several edge boxes, so link one you already have or add a new one."
+          description="A connector is the far end of a tunnel — PolySIEM's agent, an OPNsense box, or another WireGuard peer. It is installed once and can serve several relay servers, so link one you already have or add a new one."
         />
       )}
       {connectors.length > 0 && (
@@ -187,7 +187,7 @@ export function MobileConnectorsBlock({
         </div>
       )}
       <p className="px-0.5 text-[11px] text-muted-foreground">
-        One connector can serve several edge boxes; each link gets its own tunnel address here.
+        One connector can serve several relay servers; each link gets its own tunnel address here.
       </p>
 
       {/* Every sheet this list opens — including the link picker, because a

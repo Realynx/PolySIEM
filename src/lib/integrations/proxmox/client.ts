@@ -22,6 +22,7 @@ import type {
   RawAgentNetworkInterface,
   PveContainerOptions,
   RawAgentNetworkResult,
+  RawClusterFwOptions,
   RawClusterResource,
   RawFwAlias,
   RawFwGroup,
@@ -39,6 +40,7 @@ import type {
   RawStorageResource,
   RawTaskStatus,
 } from "./client-types";
+import { nicFirewallFlag, parseClusterFwEnabled, parseGuestFwOptions } from "./firewall-posture";
 
 export type { PveContainerOptions } from "./client-types";
 
@@ -373,6 +375,7 @@ export function parsePveNet(nicName: string, raw: string): PveGuestNic {
   let bridge: string | null = null;
   let vlanTag: number | null = null;
   let ip: string | null = null;
+  const firewall = nicFirewallFlag(raw);
   for (const part of raw.split(",")) {
     const eq = part.indexOf("=");
     if (eq === -1) continue;
@@ -384,7 +387,7 @@ export function parsePveNet(nicName: string, raw: string): PveGuestNic {
     else if (key === "tag") vlanTag = Number.isInteger(Number(value)) ? Number(value) : null;
     else if (key === "ip" && value !== "dhcp" && value !== "manual") ip = value.split("/")[0] || null;
   }
-  return { name: nicName, mac, bridge, vlanTag, ip };
+  return { name: nicName, mac, bridge, vlanTag, ip, firewall };
 }
 
 function guestNics(config: RawGuestConfig): PveGuestNic[] {
@@ -512,7 +515,14 @@ async function fetchClusterFirewall(cfg: DriverConfig, errors: string[]): Promis
     errors.push(`cluster firewall: rules fetch failed (${err instanceof Error ? err.message : err})`);
   } };
 
-  await Promise.all([fetchGroups(), fetchIpsets(), fetchAliases(), fetchRules()]);
+  // Datacenter firewall on/off: when off, no guest firewall setting applies.
+  const fetchOptions = async (): Promise<void> => { try {
+    fw.enabled = parseClusterFwEnabled(await pveGet<RawClusterFwOptions>(cfg, "/cluster/firewall/options"));
+  } catch (err) {
+    errors.push(`cluster firewall: options fetch failed (${err instanceof Error ? err.message : err})`);
+  } };
+
+  await Promise.all([fetchGroups(), fetchIpsets(), fetchAliases(), fetchRules(), fetchOptions()]);
 
   return fw;
 }
@@ -552,9 +562,13 @@ async function fetchGuestFirewall(
     }
   }
 
+  const parsed = parseGuestFwOptions(options);
   return {
-    enabled: options.enable === 1,
-    policyIn: typeof options.policy_in === "string" ? options.policy_in : null,
+    enabled: parsed.enabled,
+    policyIn: parsed.policyIn,
+    policyOut: parsed.policyOut,
+    ipfilter: parsed.ipfilter,
+    macfilter: parsed.macfilter,
     groups,
     rules,
   };

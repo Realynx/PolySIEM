@@ -201,12 +201,22 @@ export async function refreshTunnelDns(): Promise<DnsRefreshResult> {
  * exist), kick a refresh without awaiting it — the dashboard uses this so DNS
  * latency never blocks the first render.
  */
+// One background refresh at a time: every dashboard load (and every open
+// tab's periodic refresh) calls this, and while the data is stale each call
+// would otherwise start its own full reconcile.
+let inFlight: Promise<unknown> | null = null;
+
 export async function refreshTunnelDnsIfStale(): Promise<void> {
+  if (inFlight) return;
   const newest = await prisma.tunnelHostname.findFirst({
     orderBy: { lastResolvedAt: { sort: "desc", nulls: "first" } },
     select: { lastResolvedAt: true },
   });
   const stale = !newest || newest.lastResolvedAt === null || Date.now() - newest.lastResolvedAt.getTime() > STALE_MS;
-  if (!stale) return;
-  void refreshTunnelDns().catch((err) => console.error("[tunnel-dns] background refresh failed:", err));
+  if (!stale || inFlight) return;
+  inFlight = refreshTunnelDns()
+    .catch((err) => console.error("[tunnel-dns] background refresh failed:", err))
+    .finally(() => {
+      inFlight = null;
+    });
 }

@@ -10,13 +10,19 @@ import { requireScope, type TokenScope } from "@/lib/auth/api-token";
  * hands it to tool/resource callbacks as `extra.authInfo`, which is where
  * per-tool scope enforcement happens.
  */
-export function authInfoFromApiToken(rawToken: string, record: ApiToken): AuthInfo {
+export function authInfoFromApiToken(
+  rawToken: string,
+  record: ApiToken,
+  opts: { anonymize?: boolean } = {},
+): AuthInfo {
   return {
     token: rawToken,
     clientId: record.tokenPrefix,
     scopes: record.scopes,
     ...(record.expiresAt ? { expiresAt: Math.floor(record.expiresAt.getTime() / 1000) } : {}),
-    extra: { apiTokenId: record.id, userId: record.userId },
+    // `anonymize` mirrors the token owner's PolySIEM anonymous mode so MCP
+    // output gets the same pseudonymization the dashboard applies.
+    extra: { apiTokenId: record.id, userId: record.userId, anonymize: opts.anonymize === true },
   };
 }
 

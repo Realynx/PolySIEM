@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ApiError } from "@/lib/api";
+import { addNote, NOTE_TYPES, setPortForwardAnnotation } from "@/lib/mcp/notes";
 import { runTool as run } from "@/lib/mcp/tool-results";
 import * as inventory from "@/lib/services/inventory";
 import {
@@ -30,13 +31,15 @@ const DOC_FIELDS_BY_TYPE: Record<CreatableType, ReadonlyArray<"description" | "l
   service: ["description"],
 };
 
+const writeHint = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
+
 export function registerInventoryWriteTools(server: McpServer): void {
   server.registerTool(
     "create_entity",
     {
       title: "Create inventory entity",
       description:
-        "Create a MANUAL inventory entity. type selects the entity; fields is the entity payload validated against the matching schema. " +
+        "Document something PolySIEM cannot discover by creating a MANUAL inventory record (it does not create anything on real infrastructure). type selects the entity; fields is the entity payload validated against the matching schema. " +
         "device: {name, kind?, description?, manufacturer?, model?, location?, cpuModel?, cpuCores?, memoryBytes?, osName?, osVersion?}. " +
         "vm: {name, description?, hostId?, powerState?, cpuCores?, memoryBytes?, diskBytes?, osName?}. " +
         "container: {name, runtime?, description?, hostId?, vmId?, powerState?, cpuCores?, memoryBytes?, diskBytes?, osName?}. " +
@@ -46,6 +49,7 @@ export function registerInventoryWriteTools(server: McpServer): void {
         type: z.enum(CREATABLE_TYPES).describe("Entity type to create"),
         fields: z.record(z.string(), z.unknown()).describe("Entity fields (see description for the shape per type)"),
       },
+      annotations: writeHint,
     },
     async (args, extra) =>
       run("write_docs", extra, (actor) => {
@@ -70,7 +74,7 @@ export function registerInventoryWriteTools(server: McpServer): void {
     {
       title: "Update entity documentation fields",
       description:
-        "Update the human documentation fields of an inventory entity. These fields survive integration syncs. " +
+        "REPLACE the human documentation fields of an inventory entity (to append instead, use add_note). These fields survive integration syncs. " +
         "Supported per type — device: description, location; network: description, purpose; vm/container/service: description. " +
         "Integration-owned fields cannot be edited; the service rejects them.",
       inputSchema: {
@@ -80,6 +84,7 @@ export function registerInventoryWriteTools(server: McpServer): void {
         location: z.string().max(255).nullable().optional().describe("Physical location (devices only)"),
         purpose: z.string().max(64).nullable().optional().describe("Network purpose label (networks only)"),
       },
+      annotations: { ...writeHint, idempotentHint: true },
     },
     async (args, extra) =>
       run("write_docs", extra, (actor) => {
@@ -118,23 +123,39 @@ export function registerInventoryWriteTools(server: McpServer): void {
   );
 
   server.registerTool(
-    "set_firewall_annotation",
+    "set_annotation",
     {
-      title: "Set firewall rule annotation",
+      title: "Set firewall/NAT annotation",
       description:
-        "Set the PolySIEM-owned operator note on a firewall rule (the only writable firewall field; it survives OPNsense syncs). Pass null to clear. Never changes the rule itself.",
+        "Replace the PolySIEM-owned operator note on a firewall rule or port forward (pass null to clear). The note survives OPNsense syncs and is shown next to the rule. It never changes the rule itself: PolySIEM does not push firewall changes. To append rather than replace, use add_note.",
       inputSchema: {
-        ruleId: z.string().min(1).describe("Firewall rule id"),
+        target: z.enum(["firewall_rule", "port_forward"]).optional().describe("Default firewall_rule"),
+        id: z.string().trim().min(1).max(128).describe("Rule or port-forward id"),
         annotation: z.string().max(10_000).nullable().describe("Operator note (null clears)"),
       },
+      annotations: writeHint,
     },
     async (args, extra) =>
       run("write_docs", extra, (actor) =>
-        inventory.updateFirewallRuleAnnotation(
-          actor,
-          args.ruleId,
-          updateFirewallRuleSchema.parse({ annotation: args.annotation }),
-        ),
+        args.target === "port_forward"
+          ? setPortForwardAnnotation(actor, args.id, args.annotation)
+          : inventory.updateFirewallRuleAnnotation(actor, args.id, updateFirewallRuleSchema.parse({ annotation: args.annotation })),
       ),
+  );
+
+  server.registerTool(
+    "add_note",
+    {
+      title: "Add a note to an entity",
+      description:
+        "Append a dated note to an entity's PolySIEM-owned notes without overwriting what is there: the description of a device/VM/container/network/service, the annotation of a firewall rule or port forward, or the purpose of an SSH key. Notes survive integration syncs. Use for findings, decisions and context discovered while investigating.",
+      inputSchema: {
+        type: z.enum(NOTE_TYPES).describe("Entity type"),
+        id: z.string().trim().min(1).max(128).describe("Entity id (resolve names with get_entity first)"),
+        note: z.string().trim().min(1).max(5_000).describe("Markdown note text"),
+      },
+      annotations: writeHint,
+    },
+    async (args, extra) => run("write_docs", extra, (actor) => addNote(actor, args.type, args.id, args.note)),
   );
 }

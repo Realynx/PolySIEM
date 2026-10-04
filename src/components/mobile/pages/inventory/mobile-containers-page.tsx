@@ -3,6 +3,7 @@ import type { listContainers } from "@/lib/services/inventory";
 import type { ListQuery } from "@/lib/validators/inventory";
 import { formatBytes } from "@/lib/format";
 import { PowerBadge, StatusBadge } from "@/components/shared/badges";
+import { GuestFirewallBadges } from "@/components/inventory/guest-firewall";
 import { EntityFormDialog } from "@/components/inventory/entity-form-dialog";
 import { MobilePage } from "@/components/mobile/ui/mobile-page";
 import { MobilePageHeader } from "@/components/mobile/ui/mobile-page-header";
@@ -54,6 +55,7 @@ export function MobileContainersPage({
                     <>
                       <span className="truncate">{ct.name}</span>
                       <StatusBadge status={ct.status} />
+                      <GuestFirewallBadges metadata={ct.metadata} compact />
                     </>
                   }
                   subtitle={

@@ -1,6 +1,6 @@
 {
   "name": "polysiem",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "description": "PolySIEM self-hosted homelab documentation and security dashboard",
   "private": true,
   "repository": {
@@ -30,7 +30,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run lint && npm run test",
-    "quality:check": "npm run typecheck && npm run lint -- --max-warnings=0 && npm run codefactor:check && npm test && npm run build"
+    "quality:check": "npm run typecheck && npm run lint -- --max-warnings=0 && npm run codefactor:check && npm test && npm run build",
+    "bundle:linux": "bash scripts/build-linux-bundle.sh"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.5.1",

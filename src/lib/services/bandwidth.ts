@@ -181,6 +181,9 @@ function bandwidthStatus(enabled: boolean, status: Awaited<ReturnType<typeof rea
   };
 }
 
+const REPORT_CACHE_MAX_AGE_MS = 30_000;
+const reportCache = new Map<string, { key: string; at: number; report: BandwidthResponse }>();
+
 /** Assemble normalized firewall telemetry for a selected provider. */
 export async function bandwidthReport(
   window: "1h" | "6h" | "24h",
@@ -206,6 +209,19 @@ export async function bandwidthReport(
 
   const windowMs = WINDOW_MS[window];
   const fromMs = now.getTime() - windowMs;
+  // Maps poll this every 1–10s, but samples only land once per poll cycle.
+  // Re-aggregating a whole window of raw rows per request is the expensive
+  // part, so reuse the last report until a new sample arrives (or it ages).
+  const newest = await prisma.trafficCounterSample.findFirst({
+    where: { integrationId: integration.id },
+    orderBy: { sampledAt: "desc" },
+    select: { sampledAt: true },
+  });
+  const cacheKey = `${window}|${integration.id}|${newest?.sampledAt.getTime() ?? 0}|${JSON.stringify(status ?? null)}`;
+  const cached = reportCache.get(window + "|" + integration.id);
+  if (cached && cached.key === cacheKey && now.getTime() - cached.at < REPORT_CACHE_MAX_AGE_MS) {
+    return cached.report;
+  }
   const samples = await prisma.trafficCounterSample.findMany({
     where: { integrationId: integration.id, sampledAt: { gte: new Date(fromMs) } },
     orderBy: { sampledAt: "asc" },
@@ -231,11 +247,13 @@ export async function bandwidthReport(
   const namedInterfaces = interfaces.map((iface) => ({ ...iface, name: nameByKey.get(iface.key) ?? null }));
   const summaryInterfaceKeys = selectTrafficSummaryInterfaces(namedInterfaces, gateways).map((iface) => iface.key);
 
-  return {
+  const report: BandwidthResponse = {
     window,
     rules,
     interfaces: namedInterfaces,
     summaryInterfaceKeys,
     status: bandwidthStatus(enabled, status),
   };
+  reportCache.set(window + "|" + integration.id, { key: cacheKey, at: now.getTime(), report });
+  return report;
 }

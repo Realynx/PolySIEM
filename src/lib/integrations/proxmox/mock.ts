@@ -71,9 +71,26 @@ interface GuestSpec {
   diskGiB: number;
   os: string | null;
   descr?: string;
-  nics: { name: string; macSeed: number; bridge: string; tag?: number; ip?: string }[];
-  firewall?: PveGuestFirewall;
+  nics: { name: string; macSeed: number; bridge: string; tag?: number; ip?: string; firewall?: boolean }[];
+  /** Overrides on top of DEFAULT_GUEST_FIREWALL (every demo guest has a firewall config). */
+  firewall?: Partial<PveGuestFirewall>;
 }
+
+/**
+ * Baseline demo guest firewall: on, inbound DROP, IP + MAC filtering on.
+ * A few guests below deviate so the guest-firewall advisor has something to
+ * show: jump-box and unifi-controller run with IP filter off, mqtt-broker's
+ * NIC is missing firewall=1, and wireguard has its guest firewall disabled.
+ */
+const DEFAULT_GUEST_FIREWALL: PveGuestFirewall = {
+  enabled: true,
+  policyIn: "DROP",
+  policyOut: "ACCEPT",
+  ipfilter: true,
+  macfilter: true,
+  groups: [],
+  rules: [],
+};
 
 const GUESTS: GuestSpec[] = [
   // ---- QEMU VMs (12) ----
@@ -140,7 +157,9 @@ const GUESTS: GuestSpec[] = [
   {
     kind: "qemu", node: "pve3", vmid: 111, name: "jump-box", status: "paused",
     cores: 2, memGiB: 4, diskGiB: 32, os: "Alpine 3.20",
+    descr: "Bastion for admin SSH into the lab.",
     nics: [{ name: "net0", macSeed: 111, bridge: "vmbr0" }],
+    firewall: { ipfilter: false },
   },
   // ---- LXC containers (6) ----
   {
@@ -153,6 +172,7 @@ const GUESTS: GuestSpec[] = [
     kind: "lxc", node: "pve1", vmid: 201, name: "unifi-controller", status: "running",
     cores: 2, memGiB: 2, diskGiB: 16, os: "Debian 12",
     nics: [{ name: "net0", macSeed: 201, bridge: "vmbr0" }],
+    firewall: { ipfilter: false },
   },
   {
     kind: "lxc", node: "pve2", vmid: 202, name: "nginx-proxy", status: "running",
@@ -164,17 +184,18 @@ const GUESTS: GuestSpec[] = [
     kind: "lxc", node: "pve2", vmid: 203, name: "postgres-db", status: "running",
     cores: 2, memGiB: 4, diskGiB: 32, os: "Debian 12",
     nics: [{ name: "net0", macSeed: 203, bridge: "vmbr0", ip: "10.0.10.55" }],
-    firewall: { enabled: true, policyIn: "DROP", groups: ["db-peers"], rules: [] },
+    firewall: { groups: ["db-peers"] },
   },
   {
     kind: "lxc", node: "pve3", vmid: 204, name: "mqtt-broker", status: "running",
     cores: 1, memGiB: 0.5, diskGiB: 8, os: "Alpine 3.20",
-    nics: [{ name: "net0", macSeed: 204, bridge: "vmbr0", tag: 20, ip: "10.0.20.40" }],
+    nics: [{ name: "net0", macSeed: 204, bridge: "vmbr0", tag: 20, ip: "10.0.20.40", firewall: false }],
   },
   {
     kind: "lxc", node: "pve3", vmid: 205, name: "wireguard", status: "stopped",
     cores: 1, memGiB: 0.5, diskGiB: 8, os: "Debian 12",
     nics: [{ name: "net0", macSeed: 205, bridge: "vmbr0" }],
+    firewall: { enabled: false, ipfilter: false },
   },
 ];
 
@@ -251,6 +272,7 @@ const FIREWALL: PveClusterFirewall = {
   ],
   aliases: [],
   rules: [],
+  enabled: true,
 };
 
 /** Deterministic demo cluster: 3 nodes, 12 VMs, 6 LXC containers, storage pools. */
@@ -272,8 +294,9 @@ export function mockProxmoxSnapshot(): ProxmoxSnapshot {
       bridge: n.bridge,
       vlanTag: n.tag ?? null,
       ip: n.ip ?? null,
+      firewall: n.firewall ?? true,
     })),
-    firewall: g.firewall ? { ...g.firewall, rules: [] } : null,
+    firewall: { ...DEFAULT_GUEST_FIREWALL, ...g.firewall, rules: [] },
   }));
   return { nodes: NODES, guests, storage: STORAGE, firewall: FIREWALL, errors: [] };
 }

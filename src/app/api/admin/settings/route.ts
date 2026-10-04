@@ -7,6 +7,7 @@ import {
   SETTING_KEYS,
   getEmbeddingConfig,
   getDeveloperModeConfig,
+  getManagedHostBaseUrl,
   getOllamaConfig,
   getSetting,
   mergeStoredAiConfig,
@@ -29,6 +30,10 @@ type InstanceSettings = ReturnType<typeof instanceSettingsSchema.parse>;
 async function updateBasicSettings(instance: InstanceSettings, fields: string[]): Promise<void> {
   const updates = [
     ["instanceName", SETTING_KEYS.instanceName, instance.instanceName],
+    // Validated by `managedHostBaseUrlSchema`, so an address no managed host
+    // could reach is refused here rather than on a remote box later. "" is the
+    // documented way back to the derived default.
+    ["managedHostBaseUrl", SETTING_KEYS.managedHostBaseUrl, instance.managedHostBaseUrl],
     ["defaultTheme", SETTING_KEYS.defaultTheme, instance.defaultTheme],
     ["staleRemoveThreshold", SETTING_KEYS.staleRemoveThreshold, instance.staleRemoveThreshold],
   ] as const;
@@ -80,6 +85,7 @@ async function updateAiSettings(body: Record<string, unknown>, fields: string[])
 async function readSettings() {
   const [
     instanceName,
+    managedHostBaseUrl,
     defaultTheme,
     staleRemoveThreshold,
     ollamaConfig,
@@ -88,6 +94,7 @@ async function readSettings() {
     autoUpdate,
   ] = await Promise.all([
     getSetting<string>(SETTING_KEYS.instanceName, "PolySIEM"),
+    getManagedHostBaseUrl(),
     getSetting<string>(SETTING_KEYS.defaultTheme, "blue"),
     getSetting<number>(
       SETTING_KEYS.staleRemoveThreshold,
@@ -101,6 +108,7 @@ async function readSettings() {
   // Sanitize AI configs so the encrypted Azure API key never leaves the server.
   return {
     instanceName,
+    managedHostBaseUrl,
     defaultTheme,
     staleRemoveThreshold,
     ollamaConfig: sanitizeAiConfig(ollamaConfig),

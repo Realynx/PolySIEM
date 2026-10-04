@@ -113,7 +113,9 @@ import {
   listConnectors,
   normalizeConnectorKind,
   resetConnectorRateLimit,
+  assertManagedHostCanReach,
   resolveConnectorBaseUrl,
+  resolveManagedHostBaseUrl,
   rotateConnectorToken,
   toConnectorDto,
   applyConnectorOverSsh,
@@ -682,6 +684,84 @@ describe("resolveConnectorBaseUrl", () => {
     withAppUrl(undefined, () => {
       expect(resolveConnectorBaseUrl(null)).toBe("http://localhost:3000");
     });
+  });
+
+  /**
+   * The durable fix for the whole class of bug: the request-derived value is a
+   * CONVENIENCE, right whenever the admin reaches PolySIEM the way a managed
+   * host would and wrong whenever they do not. The stored setting is where an
+   * operator states the truth, so it outranks everything else — including
+   * APP_URL, which answers a subtly different question.
+   */
+  describe("resolveManagedHostBaseUrl", () => {
+    /** The async sibling of `withAppUrl`: restores only once the work is done. */
+    async function withAppUrlAsync<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
+      const previous = process.env.APP_URL;
+      if (value === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = value;
+      try {
+        return await run();
+      } finally {
+        if (previous === undefined) delete process.env.APP_URL;
+        else process.env.APP_URL = previous;
+      }
+    }
+
+    /** The `managed_host_base_url` AppSetting, as `getManagedHostBaseUrl` reads it. */
+    function declared(value: string | null) {
+      mocks.appSetting.findUnique.mockImplementation(async ({ where }: { where: { key: string } }) =>
+        (where.key === "managed_host_base_url" && value !== null ? { key: where.key, value } : null));
+    }
+
+    it("prefers the operator's declared address over APP_URL and the request alike", async () => {
+      declared("https://polysiem.lan:3000/");
+      await withAppUrlAsync("https://app-url.example", async () => {
+        await expect(resolveManagedHostBaseUrl(null, new Headers({ host: "localhost:3000" })))
+          .resolves.toBe("https://polysiem.lan:3000");
+        // A caller that already resolved one does not get to overrule it either.
+        await expect(resolveManagedHostBaseUrl("http://localhost:3000")).resolves.toBe("https://polysiem.lan:3000");
+      });
+    });
+
+    it("falls back to what the caller resolved, then to the derived value", async () => {
+      declared(null);
+      await withAppUrlAsync(undefined, async () => {
+        await expect(resolveManagedHostBaseUrl("https://given.example/")).resolves.toBe("https://given.example");
+        await expect(resolveManagedHostBaseUrl(null, new Headers({ host: "10.0.3.9:3000" })))
+          .resolves.toBe("http://10.0.3.9:3000");
+      });
+    });
+  });
+});
+
+/**
+ * The check that stops a doomed URL BEFORE it is written into a remote box's
+ * configuration. Afterwards the only symptom is a download that could not
+ * connect, on a machine nobody is looking at.
+ */
+describe("assertManagedHostCanReach", () => {
+  /** The thrown ApiError, or null when the call was allowed through. */
+  function refusal(baseUrl: string, subject: string): (Error & { status?: number; code?: string }) | null {
+    try {
+      assertManagedHostCanReach(baseUrl, subject);
+      return null;
+    } catch (error) {
+      return error as Error & { status?: number; code?: string };
+    }
+  }
+
+  it("refuses an address the named far end resolves to itself, and says so", () => {
+    const error = refusal("http://localhost:3000", "privacy router");
+    expect(error).toMatchObject({ status: 409, code: "managed_host_base_url_unreachable" });
+    // Names the URL that was resolved and WHICH host has to reach it — the two
+    // facts the old generic dependency/architecture message left out entirely.
+    expect(error?.message).toContain("http://localhost:3000");
+    expect(error?.message).toContain("privacy router");
+  });
+
+  it("passes an address that could plausibly work, including a private LAN one", () => {
+    expect(() => assertManagedHostCanReach("http://10.0.3.9:3000", "connector host")).not.toThrow();
+    expect(() => assertManagedHostCanReach("https://polysiem.lan:3000", "privacy router")).not.toThrow();
   });
 });
 
@@ -1299,6 +1379,18 @@ describe("setConnectorSshEndpoint", () => {
       connectorRow({ ...row, ...data }));
 
     await setConnectorSshEndpoint(ACTOR, "cx-row-1", { sshHost: "10.0.3.99" });
+    expect(mocks.tx.connector.update.mock.calls[0][0].data.sshHostKeyFingerprint).toBeNull();
+  });
+
+  it("clears the enrolled host key when only the PORT moves", async () => {
+    // A pin belongs to one host AND one port; the same rule the edge server's
+    // baseUrl change enforces in services/integrations.ts.
+    const row = sshManagedRow();
+    mocks.connector.findUnique.mockResolvedValue(row);
+    mocks.tx.connector.update.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      connectorRow({ ...row, ...data }));
+
+    await setConnectorSshEndpoint(ACTOR, "cx-row-1", { sshPort: 2222 });
     expect(mocks.tx.connector.update.mock.calls[0][0].data.sshHostKeyFingerprint).toBeNull();
   });
 

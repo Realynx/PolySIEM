@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { ApiError, handleApi, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guards";
-import { EdgeHostKeyScanError } from "@/lib/integrations/edge-nat/ssh";
+import { ManagedSshError } from "@/lib/ssh/managed-host";
 import { provisionEdgeNatSchema } from "@/lib/validators/edge-nat";
 import { provisionEdgeNatService } from "@/lib/services/edge-networks";
 
@@ -19,8 +19,8 @@ export const POST = handleApi(async (req: NextRequest, ctx: Ctx) => {
       fingerprint,
     ));
   } catch (error) {
-    if (error instanceof EdgeHostKeyScanError) {
-      throw new ApiError(502, error.code, error.message);
+    if (error instanceof ManagedSshError) {
+      throw new ApiError(error.status, error.code, error.message);
     }
     throw error;
   }

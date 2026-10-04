@@ -1,5 +1,5 @@
 import { requirePageAdmin } from "@/lib/auth/guards";
-import { SETTING_KEYS, getSetting } from "@/lib/settings";
+import { SETTING_KEYS, getManagedHostBaseUrl, getSetting } from "@/lib/settings";
 import { isMobileView } from "@/lib/device";
 import { PageHeader } from "@/components/shared/page-header";
 import { InstanceSettingsForm } from "@/components/settings/instance-settings-form";
@@ -11,8 +11,9 @@ export const dynamic = "force-dynamic";
 
 export default async function SystemSettingsPage() {
   await requirePageAdmin();
-  const [instanceName, defaultTheme, staleRemoveThreshold, autoUpdate] = await Promise.all([
+  const [instanceName, managedHostBaseUrl, defaultTheme, staleRemoveThreshold, autoUpdate] = await Promise.all([
     getSetting<string>(SETTING_KEYS.instanceName, "PolySIEM"),
+    getManagedHostBaseUrl(),
     getSetting<string>(SETTING_KEYS.defaultTheme, "blue"),
     getSetting<number>(SETTING_KEYS.staleRemoveThreshold, 3),
     getAutoUpdateConfig(),
@@ -20,7 +21,7 @@ export default async function SystemSettingsPage() {
 
   const form = (
     <InstanceSettingsForm
-      initial={{ instanceName, defaultTheme, staleRemoveThreshold, autoUpdate }}
+      initial={{ instanceName, managedHostBaseUrl, defaultTheme, staleRemoveThreshold, autoUpdate }}
     />
   );
 

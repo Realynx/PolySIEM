@@ -20,7 +20,7 @@ export function registerCredentialTools(server: McpServer): void {
       run("credentials", extra, async () => {
         const items = await listAiCredentials();
         return {
-          credentials: items.map(({ name, description, username, url, updatedAt }) => ({
+          items: items.map(({ name, description, username, url, updatedAt }) => ({
             name,
             description,
             username,
@@ -42,6 +42,8 @@ export function registerCredentialTools(server: McpServer): void {
         name: z.string().min(1).max(64).describe("Credential name (see list_ai_credentials)"),
       },
     },
-    async (args, extra) => run("credentials", extra, (actor) => readCredentialSecret(args.name, actor)),
+    // The one deliberate secret path: admin-shared, separately scoped, audited.
+    async (args, extra) =>
+      run("credentials", extra, (actor) => readCredentialSecret(args.name, actor), { allowSecrets: true, anonymize: false }),
   );
 }

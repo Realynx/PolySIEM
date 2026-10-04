@@ -45,17 +45,17 @@ describe("sync state, in words", () => {
       rules: [rule({ applied: false }), rule({ id: "rule-2", applied: false }), rule({ id: "rule-3" })],
     }));
     expect(summary.tone).toBe("staged");
-    expect(summary.headline).toBe("2 routes staged · not pushed to the edge yet");
+    expect(summary.headline).toBe("2 relayed ports staged · not pushed to the relay yet");
     expect(summary.actionLabel).toBe("Apply changes");
     expect(summary.actionUrgent).toBe(true);
   });
 
   it("reports a saved-but-unpushed change even when nothing reports a drift state", () => {
     expect(edgeSyncSummary(server({ settings: { pendingChanges: true } })).headline)
-      .toBe("Saved changes have not been pushed to the edge yet");
+      .toBe("Saved changes have not been pushed to the relay yet");
   });
 
-  it("says when the edge is running exactly what is saved, and offers only a re-apply", () => {
+  it("says when the relay is running exactly what is saved, and offers only a re-apply", () => {
     const summary = edgeSyncSummary(server({
       settings: { desiredRulesHash: "abc", appliedRulesHash: "abc", lastAppliedAt: new Date().toISOString() },
     }));
@@ -85,14 +85,14 @@ describe("sync state, in words", () => {
     }));
     const labels = facts.map((fact) => fact.label);
     expect(labels).toEqual(expect.arrayContaining([
-      "Saved revision", "Revision on the edge", "Saved ruleset hash", "Ruleset hash on the edge", "Pinned host key",
+      "Saved revision", "Revision on the relay", "Saved ruleset hash", "Ruleset hash on the relay", "Pinned host key",
     ]));
     expect(facts.find((fact) => fact.label === "Saved ruleset hash")?.copy).toBe("e".repeat(64));
-    expect(facts.find((fact) => fact.label === "Ruleset hash on the edge")?.value).toBe("Unknown");
+    expect(facts.find((fact) => fact.label === "Ruleset hash on the relay")?.value).toBe("Unknown");
   });
 
   it("calls forwarding a pending step rather than a fault", () => {
-    const off = edgeSyncFacts(server()).find((fact) => fact.label === "IP forwarding on the edge");
+    const off = edgeSyncFacts(server()).find((fact) => fact.label === "IP forwarding on the relay");
     expect(off?.value).toBe("Enabled by the next apply");
   });
 
@@ -163,7 +163,7 @@ describe("route path", () => {
     expect(edgeRoutePath(rule(), [], "edge-1")).toMatchObject({ kind: "direct", note: null });
   });
 
-  it("names the connector and the address it holds on this edge", () => {
+  it("names the connector and the address it holds on this relay", () => {
     const path = edgeRoutePath(rule({ mode: "connector", connectorId: "conn-1" }), [connector()], "edge-1");
     expect(path.label).toBe("via OPNsense Firewall");
     expect(path.address).toBe("10.9.9.3");

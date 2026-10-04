@@ -146,8 +146,8 @@ function tunnelToastOptions(tunnel: ConnectorTunnelProvisionedDto | null): { des
  * leaving the operator to hunt for it.
  */
 function linkedToastMessage(setup: ManualSetup | null, target: LinkConnectorTarget): string {
-  if (!setup) return "Connector linked. Apply that edge to register its peer.";
-  return `Linked to ${target.server.name}. Its peer settings are on that edge's row under Linked edges.`;
+  if (!setup) return "Connector linked. Apply that relay to register its peer.";
+  return `Linked to ${target.server.name}. Its peer settings are on that relay's row under Linked relays.`;
 }
 
 /**
@@ -198,7 +198,7 @@ function useLinkEnabledMutation(connectorId: string) {
         body: JSON.stringify({ enabled }),
       }),
     onSuccess: (_result, variables) => {
-      toast.success(variables.enabled ? "Link resumed." : "Link paused — apply the edge to drop its peer.");
+      toast.success(variables.enabled ? "Link resumed." : "Link paused — apply the relay to drop its peer.");
       invalidate();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -215,7 +215,7 @@ function useUnlinkMutation(connectorId: string, onDone: () => void, onRefused: (
   return useMutation({
     mutationFn: (linkId: string) => apiFetch(connectorLinkUrl(connectorId, linkId), { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Connector unlinked. Apply that edge to drop its peer.");
+      toast.success("Connector unlinked. Apply that relay to drop its peer.");
       invalidate();
       onDone();
     },
@@ -230,7 +230,7 @@ function useUnlinkMutation(connectorId: string, onDone: () => void, onRefused: (
 export function linkCountLabel(connector: ConnectorDto): string {
   const { total } = connectorLinkSummary(connector);
   if (total === 0) return "not linked";
-  return total === 1 ? "1 edge" : `${total} edges`;
+  return total === 1 ? "1 relay" : `${total} relays`;
 }
 
 function handshakeLabel(link: ConnectorLinkDto): string {
@@ -247,7 +247,7 @@ export function ConnectorLinkKeyRows({
 }) {
   const links = connectorLinks(connector);
   if (links.length === 0) {
-    return <MobileKeyRow label="Edges">Not linked to an edge box yet</MobileKeyRow>;
+    return <MobileKeyRow label="Edges">Not linked to a relay server yet</MobileKeyRow>;
   }
   return (
     <>
@@ -347,7 +347,7 @@ export function ConnectorLinkList({
   if (links.length === 0) {
     return (
       <p className="rounded-xl border border-dashed px-4 py-4 text-center text-xs text-muted-foreground">
-        This connector serves no edge box yet. Link it to one and PolySIEM allocates its tunnel address there.
+        This connector serves no relay server yet. Link it to one and PolySIEM allocates its tunnel address there.
       </p>
     );
   }
@@ -375,7 +375,7 @@ function UnlinkRefusal({ reason }: { reason: string }) {
     <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
       <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
       <span className="min-w-0">
-        <span className="block font-medium">Still in use on this edge</span>
+        <span className="block font-medium">Still in use on this relay</span>
         <span className="mt-0.5 block leading-snug">{reason}</span>
       </span>
     </p>
@@ -432,10 +432,10 @@ function ConnectorLinkActions({
           unlinkMutation.mutate(link.id);
         }}
       >
-        {unlinkMutation.isPending ? <Loader2 className="animate-spin" /> : <Link2Off />} Unlink from this edge
+        {unlinkMutation.isPending ? <Loader2 className="animate-spin" /> : <Link2Off />} Unlink from this relay
       </Button>
       <p className="px-0.5 text-[11px] text-muted-foreground">
-        Unlinking frees the address on this edge only. The connector stays installed and keeps serving every other
+        Unlinking frees the address on this relay only. The connector stays installed and keeps serving every other
         edge it is linked to.
       </p>
     </>
@@ -471,11 +471,11 @@ export function ConnectorLinkSheet({
       open
       onOpenChange={onOpenChange}
       title={`${connector.name} on ${edgeName}`}
-      description="One connector serves several edge boxes; this is what it is on this one."
+      description="One connector serves several relay servers; this is what it is on this one."
     >
       <div className="flex flex-col gap-3 pb-2">
         <MobileList>
-          <MobileKeyRow label="Edge box">{edgeName}</MobileKeyRow>
+          <MobileKeyRow label="Relay server">{edgeName}</MobileKeyRow>
           <MobileKeyRow label="Tunnel address here" mono>
             {link.tunnelAddress}
           </MobileKeyRow>
@@ -483,8 +483,8 @@ export function ConnectorLinkSheet({
           <MobileKeyRow label="Last handshake">{handshakeLabel(link)}</MobileKeyRow>
         </MobileList>
         <p className="px-0.5 text-[11px] text-muted-foreground">
-          Each edge allocates the connector its own address from that edge&apos;s tunnel subnet. The connector holds
-          all of them on one WireGuard interface, with one peer per linked edge.
+          Each relay allocates the connector its own address from that relay&apos;s tunnel subnet. The connector holds
+          all of them on one WireGuard interface, with one peer per linked relay.
         </p>
 
         {isAdmin && (
@@ -513,8 +513,8 @@ function edgeTunnelPendingShort(edge: EdgeNatServer): string | null {
 }
 
 const TUNNEL_PENDING_FOOTNOTE =
-  "An edge box marked that way has no usable WireGuard tunnel yet — PolySIEM stands one up as part of the link, "
-  + "generating its keypair and picking a free tunnel subnet, and that edge then needs an apply.";
+  "A relay server marked that way has no usable WireGuard tunnel yet — PolySIEM stands one up as part of the link, "
+  + "generating its keypair and picking a free tunnel subnet, and that relay then needs an apply.";
 
 /**
  * Base URL, plus what linking will do to an edge that has no tunnel yet. Only
@@ -551,15 +551,15 @@ export function ConnectorEdgePickerSheet({
     <BottomSheet
       open
       onOpenChange={onOpenChange}
-      title={`Link ${connector.name} to an edge`}
-      description="The same connector can serve several edge boxes at once."
+      title={`Link ${connector.name} to a relay`}
+      description="The same connector can serve several relay servers at once."
     >
       <div className="flex flex-col gap-3 pb-2">
         {available.length === 0 ? (
           <MobileEmpty
             icon={<Server />}
-            title="No other edge box"
-            description="This connector already serves every edge box PolySIEM knows about."
+            title="No other relay server"
+            description="This connector already serves every relay server PolySIEM knows about."
           />
         ) : (
           <MobileList>
@@ -578,8 +578,8 @@ export function ConnectorEdgePickerSheet({
           </MobileList>
         )}
         <p className="px-0.5 text-[11px] text-muted-foreground">
-          Linking allocates this connector an address from that edge&apos;s tunnel subnet and marks the edge for apply.
-          Nothing is installed again — one install serves every edge.
+          Linking allocates this connector an address from that relay&apos;s tunnel subnet and marks the relay for apply.
+          Nothing is installed again — one install serves every relay.
         </p>
         {available.some((edge) => edgeTunnelPendingShort(edge) !== null) && (
           <p className="px-0.5 text-[11px] text-muted-foreground">{TUNNEL_PENDING_FOOTNOTE}</p>
@@ -622,7 +622,7 @@ export function EdgeConnectorPickerSheet({
             description={
               isLoading
                 ? undefined
-                : "Every connector you have already serves this edge. Add a connector to install a new one."
+                : "Every connector you have already serves this relay. Add a connector to install a new one."
             }
           />
         ) : (
@@ -645,8 +645,8 @@ export function EdgeConnectorPickerSheet({
         )}
         <EdgeTunnelSetupNote server={server} />
         <p className="px-0.5 text-[11px] text-muted-foreground">
-          A connector is installed once and can serve several edge boxes. Linking gives it an address on this edge, so
-          this edge&apos;s routes can travel through it.
+          A connector is installed once and can serve several relay servers. Linking gives it an address on this relay, so
+          this relay&apos;s routes can travel through it.
         </p>
       </div>
     </BottomSheet>

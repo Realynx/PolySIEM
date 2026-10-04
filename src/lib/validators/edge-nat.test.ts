@@ -4,6 +4,7 @@ import {
   edgeNatRuleSchema,
   edgeNatRulesConflict,
   edgeNatRuleUsesManagementPort,
+  updateEdgeNatRuleSchema,
 } from "./edge-nat";
 
 describe("edgeNatRuleSchema", () => {
@@ -30,6 +31,36 @@ describe("edgeNatRuleSchema", () => {
     expect(edgeNatRuleUsesManagementPort({ ...valid, protocol: "udp" }, 443)).toBe(false);
     expect(edgeNatRulesConflict(valid, { protocol: "tcp", publicPort: 443 })).toBe(true);
     expect(edgeNatRulesConflict(valid, { protocol: "tcp", publicPort: 444 })).toBe(false);
+  });
+});
+
+describe("updateEdgeNatRuleSchema", () => {
+  /**
+   * The bug this guards: built as `.partial()`, a name-only PATCH parsed into
+   * `{ name, enabled: true, mode: "direct" }`. updateEdgeNatRule merges
+   * `mode: patch.mode ?? existing.mode`, so that "direct" won — silently
+   * converting a connector-routed rule into a direct DNAT and re-enabling a
+   * disabled rule.
+   */
+  it("returns ONLY the field that was sent", () => {
+    expect(Object.keys(updateEdgeNatRuleSchema.parse({ name: "Palworld" }))).toEqual(["name"]);
+  });
+
+  it("does not invent enabled or mode", () => {
+    const patch = updateEdgeNatRuleSchema.parse({ targetPort: 8211 }) as Record<string, unknown>;
+    expect("enabled" in patch).toBe(false);
+    expect("mode" in patch).toBe(false);
+  });
+
+  it("rejects an empty body — the guard was previously unreachable", () => {
+    expect(updateEdgeNatRuleSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("still accepts and validates the fields it is given", () => {
+    expect(updateEdgeNatRuleSchema.parse({ enabled: false, mode: "connector" }))
+      .toEqual({ enabled: false, mode: "connector" });
+    expect(updateEdgeNatRuleSchema.safeParse({ mode: "sideways" }).success).toBe(false);
+    expect(updateEdgeNatRuleSchema.safeParse({ targetAddress: "127.0.0.1" }).success).toBe(false);
   });
 });
 

@@ -8,6 +8,7 @@ import {
   connectorInstallCommandView,
   connectorInstallIsHttps,
   connectorInstallOrigin,
+  connectorInstallOriginUnreachable,
   connectorInstallProgress,
   connectorInstallReachabilityCopy,
   connectorInstallReveal,
@@ -402,7 +403,7 @@ describe("route mode mapping", () => {
         },
       },
     })).label).toBe("23.94.251.183:51821/udp");
-    expect(edgeTunnelEndpoint(server({ settings: {} })).label).toBe("the edge public IP on UDP 51820");
+    expect(edgeTunnelEndpoint(server({ settings: {} })).label).toBe("the relay public IP on UDP 51820");
   });
 });
 
@@ -463,7 +464,7 @@ describe("connector SSH management helpers", () => {
     expect(isValidSshPort(65_536)).toBe(false);
   });
 
-  it("reports the edge end of the two-ended install as satisfied only once it is enrolled", () => {
+  it("reports the relay end of the two-ended install as satisfied only once it is enrolled", () => {
     const pending = edgeInstallStep(server({ hostKeyEnrolled: false, settings: { publicKey: "ssh-ed25519 AAAA" } }));
     expect(pending).toMatchObject({ satisfied: false, verified: false, publicKey: "ssh-ed25519 AAAA" });
 
@@ -533,14 +534,14 @@ describe("connector kinds", () => {
     expect(connectorRouteWarning(connector({ kind: "peer" }), undefined, "edge-1")?.detail).toContain("forward");
   });
 
-  it("names the address per edge, and stays honest when the edge is unknown", () => {
+  it("names the address per relay, and stays honest when the relay is unknown", () => {
     const shared = connector({
       kind: "opnsense",
       links: [link(), link({ id: "link-2", integrationId: "edge-2", tunnelAddress: "10.9.10.5" })],
     });
     expect(connectorRouteWarning(shared, { publicPort: 443 }, "edge-2")?.detail).toContain("10.9.10.5");
     expect(connectorRouteWarning(shared, { publicPort: 443 }, "edge-9")?.detail)
-      .toContain("its tunnel address on this edge");
+      .toContain("its tunnel address on this relay");
   });
 
   it("hands the OPNsense operator the real NAT rule, destined for the tunnel address", () => {
@@ -603,7 +604,7 @@ describe("connector kinds", () => {
     // No rule yet (the install dialog) and an edge this peer does not serve.
     const bare = connectorSetupInstructions(connector({ kind: "opnsense" }), undefined, "edge-9");
     const steps = bare?.steps ?? [];
-    expect(setupField(steps, "nat", "Destination").value).toBe("its tunnel address on this edge");
+    expect(setupField(steps, "nat", "Destination").value).toBe("its tunnel address on this relay");
     expect(setupField(steps, "nat", "Destination").mono).toBe(false);
     expect(setupField(steps, "nat", "Redirect target IP").value).toBe("the internal service address");
     expect(setupField(steps, "nat", "Protocol").value).toBe("the rule's protocol");
@@ -755,6 +756,33 @@ describe("connector install command presentation", () => {
     expect(connectorInstallReachabilityCopy("https://polysiem.lan")).toContain("APP_URL");
     expect(connectorInstallReachabilityCopy(null)).toContain("this PolySIEM address");
   });
+
+  /**
+   * An admin browsing a dev server, a port-forward or an SSH tunnel is handed a
+   * one-liner telling the connector to install from ITSELF. The command is not
+   * withheld — a human might legitimately be installing onto this very host —
+   * but a grey footnote is not enough to stop the usual case.
+   */
+  it("turns the reachability line into a warning once the address provably cannot work", () => {
+    const doomed = connectorInstallCommandView({
+      installCommand: "curl -fsSL \"http://localhost:3000/api/network/connectors/install.sh?token=t\" | sudo sh",
+    });
+    expect(doomed?.origin).toBe("http://localhost:3000");
+    expect(doomed?.originUnreachable).toBe(true);
+    const copy = connectorInstallReachabilityCopy(doomed?.origin ?? null);
+    expect(copy).toContain("http://localhost:3000");
+    expect(copy).toContain("connector host");
+    expect(copy).toContain("Settings → System");
+  });
+
+  it("leaves a plausible address as the quiet footnote it always was", () => {
+    const fine = connectorInstallCommandView({ installCommand: PLAIN });
+    expect(fine?.originUnreachable).toBe(false);
+    // A private LAN address is the COMMON correct answer, never a warning.
+    expect(connectorInstallOriginUnreachable("http://10.0.3.9:3000")).toBe(false);
+    expect(connectorInstallOriginUnreachable("http://127.0.0.1:3000")).toBe(true);
+    expect(connectorInstallOriginUnreachable(null)).toBe(false);
+  });
 });
 
 describe("edge tunnel auto-provisioning", () => {
@@ -778,7 +806,7 @@ describe("edge tunnel auto-provisioning", () => {
     expect(connectorTunnelProvisioned({ tunnelProvisioned: { edgeName: "  " } })).toBeNull();
     // A partial payload still means PolySIEM changed the edge, so it is reported.
     expect(connectorTunnelProvisioned({ tunnelProvisioned: { address: "10.9.10.1/24" } }))
-      .toMatchObject({ edgeName: "that edge box", address: "10.9.10.1/24" });
+      .toMatchObject({ edgeName: "that relay server", address: "10.9.10.1/24" });
     expect(connectorTunnelProvisioned({ tunnelProvisioned: { edgeName: "Edge one" } })).toEqual({
       integrationId: "",
       edgeName: "Edge one",
@@ -821,7 +849,7 @@ describe("edge tunnel auto-provisioning", () => {
     expect(disabled).toContain("turned off");
   });
 
-  it("does not promise a subnet another edge box already occupies", () => {
+  it("does not promise a subnet another relay server already occupies", () => {
     const taken = server({ id: "edge-2", name: "Edge two", settings: { wireguard: tunnel() } });
     const notice = edgeTunnelSetupNotice(server({ name: "Edge one" }), [taken, server({ name: "Edge one" })]);
     expect(notice).toContain("on its own subnet");
@@ -842,7 +870,7 @@ describe("manual connector peer block", () => {
     },
   });
 
-  it("derives every far-side value from the edge tunnel and the allocated address", () => {
+  it("derives every far-side value from the relay tunnel and the allocated address", () => {
     expect(deriveConnectorPeerBlock({ server: edge, connector: { tunnelAddress: "10.9.9.4" } })).toEqual({
       edgeEndpoint: "23.94.251.183:51820",
       edgePublicKey: "d8azxthJIMMdDPQzKqVtzLncf1LAYWb36wbvHvT59Vc=",
@@ -898,7 +926,7 @@ describe("manual connector peer block", () => {
     expect(snippet).toContain("PrivateKey = <generated on this device");
   });
 
-  it("resolves the block per edge and refuses to invent one for an unlinked edge", () => {
+  it("resolves the block per relay and refuses to invent one for an unlinked edge", () => {
     const linked = connector({ links: [link({ integrationId: edge.id, tunnelAddress: "10.9.9.4" })] });
     expect(connectorPeerBlockFor({ server: edge, connector: linked })).toMatchObject({
       tunnelAddress: "10.9.9.4",
@@ -914,7 +942,7 @@ describe("manual connector peer block", () => {
  * peer block. The link response carries it; dropping it is the regression these
  * tests exist to catch.
  */
-describe("linking a manual connector hands over the new edge's peer settings", () => {
+describe("linking a manual connector hands over the new relay's peer settings", () => {
   const edgeOne = server({
     id: "edge-1",
     name: "Edge one",
@@ -982,7 +1010,7 @@ describe("linking a manual connector hands over the new edge's peer settings", (
       });
   });
 
-  it("leaves the edge box it already served exactly as it was", () => {
+  it("leaves the relay server it already served exactly as it was", () => {
     const handoff = handoffFor({ connector: opnsense, integrationId: "edge-2", result });
     expect(connectorLinks(handoff.connector)).toHaveLength(2);
     expect(connectorPeerBlockFor({ server: edgeOne, connector: handoff.connector })).toMatchObject({
@@ -991,7 +1019,7 @@ describe("linking a manual connector hands over the new edge's peer settings", (
     });
   });
 
-  it("carries the new edge's link even when the response omits the connector", () => {
+  it("carries the new relay's link even when the response omits the connector", () => {
     const handoff = handoffFor({ connector: opnsense, integrationId: "edge-2", result: { link: newLink } });
     expect(connectorTunnelAddressFor(handoff.connector, "edge-2")).toBe("10.9.10.7");
     expect(handoff.peerConfig).toBeNull();
@@ -1023,7 +1051,7 @@ describe("linking a manual connector hands over the new edge's peer settings", (
     })).toBeNull();
   });
 
-  it("replaces a link to the same edge instead of listing it twice", () => {
+  it("replaces a link to the same relay instead of listing it twice", () => {
     const relinked = connectorWithLink(opnsense, { ...newLink, integrationId: "edge-1", tunnelAddress: "10.9.9.9" });
     expect(connectorLinks(relinked)).toHaveLength(1);
     expect(connectorTunnelAddressFor(relinked, "edge-1")).toBe("10.9.9.9");
@@ -1041,21 +1069,21 @@ describe("linking a manual connector hands over the new edge's peer settings", (
     expect(connectorWithFreshestLink({ connector: fresh, live: stale, integrationId: null })).toBe(stale);
   });
 
-  it("names the edge in every heading and calls the second peer an addition", () => {
+  it("names the relay in every heading and calls the second peer an addition", () => {
     const only = connectorPeerBlockHeading({ connector: opnsense, edgeName: "Edge one", edgeCount: 1 });
     expect(only.title).toBe("Peer settings for Edge one");
-    expect(only.detail).toContain("Link it to another edge box later");
+    expect(only.detail).toContain("Link it to another relay server later");
 
     const second = connectorPeerBlockHeading({
       connector: opnsense, edgeName: "Edge two", edgeCount: 2, justLinked: true,
     });
-    expect(second.title).toBe("Peer settings for Edge two — the edge box you just linked");
+    expect(second.title).toBe("Peer settings for Edge two — the relay server you just linked");
     expect(second.detail).toContain("one more peer");
     expect(second.detail).toContain("does not replace it");
     expect(second.detail).toContain("your OPNsense box");
 
     const third = connectorPeerBlockHeading({ connector: opnsense, edgeName: "Edge three", edgeCount: 3 });
-    expect(third.detail).toContain("the 2 peers already configured for the other 2 edge boxes");
+    expect(third.detail).toContain("the 2 peers already configured for the other 2 relay servers");
     expect(third.detail).toContain("does not replace them");
   });
 
@@ -1070,7 +1098,7 @@ describe("linking a manual connector hands over the new edge's peer settings", (
     expect(source).toContain("onPeerSettings");
   });
 
-  it("labels a per-edge peer settings action so it reads out of context", () => {
+  it("labels a per-relay peer settings action so it reads out of context", () => {
     expect(connectorPeerSettingsAction({ connectorName: "Home OPNsense", edgeName: "Edge two" })).toEqual({
       label: "Peer settings",
       ariaLabel: "Peer settings for Home OPNsense on Edge two",
@@ -1079,7 +1107,7 @@ describe("linking a manual connector hands over the new edge's peer settings", (
   });
 });
 
-describe("connector ↔ edge links", () => {
+describe("connector ↔ relay links", () => {
   const edgeA = server({ id: "edge-1", name: "Edge one" });
   const edgeB = server({ id: "edge-2", name: "Edge two" });
   const shared = connector({
@@ -1089,7 +1117,7 @@ describe("connector ↔ edge links", () => {
     ],
   });
 
-  it("gives one connector a different tunnel address on every edge it serves", () => {
+  it("gives one connector a different tunnel address on every relay it serves", () => {
     expect(connectorTunnelAddressFor(shared, "edge-1")).toBe("10.9.9.3");
     expect(connectorTunnelAddressFor(shared, "edge-2")).toBe("10.9.10.7");
     expect(connectorTunnelAddressFor(shared, "edge-3")).toBeNull();
@@ -1107,7 +1135,7 @@ describe("connector ↔ edge links", () => {
       .toEqual([]);
   });
 
-  it("splits connectors into the ones an edge already uses and the ones it could", () => {
+  it("splits connectors into the ones a relay already uses and the ones it could", () => {
     const local = connector({ id: "row-2", links: [link({ id: "l3", integrationId: "edge-1" })] });
     const pool = [shared, local, connector({ id: "row-3", links: [] })];
     expect(connectorsLinkedTo(pool, "edge-2").map((entry) => entry.id)).toEqual(["row-1"]);
@@ -1116,15 +1144,15 @@ describe("connector ↔ edge links", () => {
     expect(edgesAvailableForConnector(shared, [edgeA, edgeB])).toEqual([]);
   });
 
-  it("counts the edges a connector serves and says so in words", () => {
-    expect(connectorLinkSummary(shared)).toMatchObject({ total: 2, enabled: 2, shared: true, label: "Serving 2 edge boxes" });
-    expect(connectorLinkSummary(connector({ links: [link()] }))).toMatchObject({ shared: false, label: "Serving 1 edge box" });
-    expect(connectorLinkSummary(connector({ links: [] })).label).toBe("Not linked to an edge box yet");
+  it("counts the relays a connector serves and says so in words", () => {
+    expect(connectorLinkSummary(shared)).toMatchObject({ total: 2, enabled: 2, shared: true, label: "Serving 2 relay servers" });
+    expect(connectorLinkSummary(connector({ links: [link()] }))).toMatchObject({ shared: false, label: "Serving 1 relay server" });
+    expect(connectorLinkSummary(connector({ links: [] })).label).toBe("Not linked to a relay server yet");
     expect(connectorLinkSummary(connector({ links: [link(), link({ id: "l2", integrationId: "edge-2", enabled: false })] })))
       .toMatchObject({ total: 2, enabled: 1 });
   });
 
-  it("only lets an edge route through a connector with a live link to it", () => {
+  it("only lets a relay route through a connector with a live link to it", () => {
     expect(isConnectorSelectableFor(shared, "edge-1")).toBe(true);
     expect(isConnectorSelectableFor(shared, "edge-3")).toBe(false);
     const suspended = connector({ links: [link({ enabled: false })] });
@@ -1134,16 +1162,16 @@ describe("connector ↔ edge links", () => {
 
   it("explains why a listed connector cannot carry a route here", () => {
     expect(connectorUnavailableReason(shared, "edge-1")).toBeNull();
-    expect(connectorUnavailableReason(shared, "edge-3")).toBe("not linked to this edge box");
+    expect(connectorUnavailableReason(shared, "edge-3")).toBe("not linked to this relay server");
     expect(connectorUnavailableReason(connector({ links: [link({ enabled: false })] }), "edge-1"))
-      .toBe("link suspended on this edge box");
+      .toBe("link suspended on this relay server");
     expect(connectorUnavailableReason(connector({ status: "disabled" }), "edge-1")).toBe("disabled");
   });
 
-  it("names an edge from the loaded server first, then the link's own copy", () => {
+  it("names a relay from the loaded server first, then the link's own copy", () => {
     expect(connectorLinkEdgeName(link({ integrationId: "edge-1", edgeName: "stale name" }), [edgeA])).toBe("Edge one");
-    expect(connectorLinkEdgeName(link({ integrationId: "edge-9", edgeName: "Remote edge" }), [edgeA])).toBe("Remote edge");
-    expect(connectorLinkEdgeName(link({ integrationId: "edge-9", edgeName: null }), [])).toBe("Edge box");
+    expect(connectorLinkEdgeName(link({ integrationId: "edge-9", edgeName: "Remote relay" }), [edgeA])).toBe("Remote relay");
+    expect(connectorLinkEdgeName(link({ integrationId: "edge-9", edgeName: null }), [])).toBe("Relay server");
     expect(edgeServerForLink([edgeA, edgeB], link({ integrationId: "edge-2" }))?.name).toBe("Edge two");
   });
 
@@ -1274,11 +1302,11 @@ describe("wireguard form without a peer editor", () => {
   });
 });
 
-describe("peer config is fetched and cached per edge", () => {
+describe("peer config is fetched and cached per relay", () => {
   // Unscoped, the API answers with the connector's FIRST enabled link. For a
   // connector serving two edges that is a different edge's public key and
   // endpoint — values an operator would paste into the wrong peer entry.
-  it("scopes the request to the edge whose block is shown", () => {
+  it("scopes the request to the relay whose block is shown", () => {
     expect(connectorPeerConfigUrl("cx1", "edge-2")).toContain("integrationId=edge-2");
     expect(connectorPeerConfigUrl("cx1", "edge-2")).not.toBe(connectorPeerConfigUrl("cx1", "edge-1"));
   });
@@ -1287,11 +1315,11 @@ describe("peer config is fetched and cached per edge", () => {
     expect(connectorPeerConfigUrl("cx1")).not.toContain("integrationId");
   });
 
-  it("url-encodes the edge id rather than concatenating it raw", () => {
+  it("url-encodes the relay id rather than concatenating it raw", () => {
     expect(connectorPeerConfigUrl("cx1", "edge/2 3")).toContain(encodeURIComponent("edge/2 3"));
   });
 
-  it("gives each edge its own cache entry so one cannot overwrite the other", () => {
+  it("gives each relay its own cache entry so one cannot overwrite the other", () => {
     const a = connectorPeerConfigQueryKey("cx1", "edge-1");
     const b = connectorPeerConfigQueryKey("cx1", "edge-2");
     expect(a).not.toEqual(b);

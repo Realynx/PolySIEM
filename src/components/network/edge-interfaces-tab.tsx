@@ -118,7 +118,7 @@ function EdgeInterfacesForm({ server }: { server: EdgeNatServer }) {
           choices={choices}
           customAriaLabel="Custom outbound interface name"
           inputPlaceholder="wg0"
-          help="How the edge reaches the target — the tunnel interface for connector routes. It may legitimately be the same interface as above."
+          help="How the relay reaches the target — the tunnel interface for connector routes. It may legitimately be the same interface as above."
         />
       </div>
       <EdgeInterfacesNote choiceCount={choices.length} snapshotAt={server.settings?.syncedSnapshot?.capturedAt} />

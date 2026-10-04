@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/format";
 import { apiFetch } from "@/components/shared/api-client";
 import { CopyButton } from "@/components/ssh/copy-button";
+import { preferredHostKeyFingerprint } from "@/components/ssh/host-key-selection";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -317,7 +318,7 @@ function ConnectorSshActions({
       </Button>
       {ssh.canManage && linkCount > 1 && (
         <span className="text-xs text-muted-foreground">
-          One push covers all {linkCount} edge boxes this connector serves.
+          One push covers all {linkCount} relay servers this connector serves.
         </span>
       )}
       {!ssh.canManage && (
@@ -375,7 +376,7 @@ function ConnectorSshStatusFacts({ status }: { status: ConnectorSshStatus }) {
         label="Latest handshake"
         value={handshakeAt ? formatRelative(handshakeAt) : "No handshake yet"}
         // One peer per linked edge box, on a single interface.
-        hint={countLabel(status.peers, "edge peer")}
+        hint={countLabel(status.peers, "relay peer")}
       />
       <SshFact
         label="Applied revision"
@@ -460,13 +461,14 @@ function shortHash(value: string): string {
   return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value;
 }
 
-/** The fingerprint the dialog offers to pin, given what has been chosen or is known. */
+/**
+ * The fingerprint the dialog offers to pin, given what has been chosen or is
+ * known. The rule itself is shared with every other enrollment surface; only
+ * the two places a connector's enrolled key can be read from are local.
+ */
 function preferredHostKey(connector: ConnectorDto, scan: ConnectorHostKeyScan | undefined, chosen: string): string {
-  const keys = scan?.keys ?? [];
-  return chosen ||
-    connector.sshHostKeyFingerprint ||
-    scan?.enrolledFingerprint ||
-    (keys.length === 1 ? keys[0].fingerprint : "");
+  const enrolled = connector.sshHostKeyFingerprint || scan?.enrolledFingerprint;
+  return preferredHostKeyFingerprint(chosen, enrolled, scan?.keys ?? []);
 }
 
 /**

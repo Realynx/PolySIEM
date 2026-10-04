@@ -328,6 +328,31 @@ function settingsFromUpdate(existing: IntegrationConfig, data: Prisma.Integratio
   );
 }
 
+/**
+ * Moving an edge server to a different address invalidates its pinned host key.
+ *
+ * The same rule the connector transport enforces (`sshEndpointUpdate` in
+ * `services/connectors.ts`): the fingerprint was confirmed for THAT endpoint, so
+ * carrying it to a new one would let a new address inherit trust nobody granted
+ * it, and `runManagedSsh` would then happily hand PolySIEM's private key to
+ * whatever answers there.
+ *
+ * Unconditional on purpose. Any difference in the stored address counts —
+ * including one that only reshapes the URL (`ssh://edge` → `ssh://edge:22`),
+ * because re-confirming a fingerprint is cheap and mis-trusting an endpoint is
+ * not. `filteredEdgeNatSettings` already refuses to write `hostKeyFingerprint`
+ * from a settings patch, so re-pinning is only ever possible through the
+ * scan-and-confirm flow in `services/edge-networks.ts`.
+ */
+function invalidatePinnedHostKeyOnMove(
+  existing: IntegrationConfig,
+  input: UpdateIntegrationInput,
+  data: Prisma.IntegrationConfigUpdateInput,
+): void {
+  if (input.baseUrl === undefined || input.baseUrl === existing.baseUrl) return;
+  data.settings = inputJson({ ...settingsFromUpdate(existing, data), hostKeyFingerprint: null });
+}
+
 function applyEdgeNatStateChanges(
   existing: IntegrationConfig,
   input: UpdateIntegrationInput,
@@ -343,9 +368,8 @@ function applyEdgeNatStateChanges(
       pendingChanges: true,
     });
   }
-  if (input.baseUrl !== undefined && input.baseUrl !== existing.baseUrl) {
-    data.settings = inputJson({ ...settingsFromUpdate(existing, data), hostKeyFingerprint: null });
-  }
+  // Last, so no later settings merge in this function can put the fingerprint back.
+  invalidatePinnedHostKeyOnMove(existing, input, data);
 }
 
 function applyCloudflareCredentialChange(

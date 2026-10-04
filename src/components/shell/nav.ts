@@ -21,6 +21,7 @@ import {
   Server,
   Shield,
   ShieldAlert,
+  Split,
   Tags,
   Waypoints,
   Wifi,
@@ -69,6 +70,11 @@ export const NAV_GROUPS: NavGroup[] = [
     title: "Network",
     items: [
       { title: "Firewall", href: "/firewall", icon: Shield },
+      // Directly under Firewall because it IS one: an ordered, first-match-wins
+      // list that decides where each flow leaves. `Router` belongs to Edge
+      // networks; `Split` says what this box does — it splits egress between the
+      // WAN and its WireGuard exits.
+      { title: "Privacy router", href: "/network/privacy-router", icon: Split },
       { title: "Access map", href: "/network/access-map", icon: Waypoints },
       { title: "Edge networks", href: "/network/edge-networks", icon: Router },
       // IP addresses and Clients are tabs of the Networks page; these land on them.

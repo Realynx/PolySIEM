@@ -3,6 +3,7 @@ import type { listVms } from "@/lib/services/inventory";
 import type { ListQuery } from "@/lib/validators/inventory";
 import { formatBytes } from "@/lib/format";
 import { PowerBadge, StatusBadge } from "@/components/shared/badges";
+import { GuestFirewallBadges } from "@/components/inventory/guest-firewall";
 import { EntityFormDialog } from "@/components/inventory/entity-form-dialog";
 import { MobilePage } from "@/components/mobile/ui/mobile-page";
 import { MobilePageHeader } from "@/components/mobile/ui/mobile-page-header";
@@ -48,6 +49,7 @@ export function MobileVmsPage({ items, total, query }: VmList & { query: ListQue
                   <>
                     <span className="truncate">{vm.name}</span>
                     <StatusBadge status={vm.status} />
+                    <GuestFirewallBadges metadata={vm.metadata} compact />
                   </>
                 }
                 subtitle={

@@ -20,6 +20,7 @@ import { MobileKeyRow, MobileList } from "@/components/mobile/ui/mobile-list";
 import { MobileStat, MobileStatStrip } from "@/components/mobile/ui/mobile-stats";
 import { MobileCard, MobileInterfaceList, MobileServiceList } from "./detail-bits";
 import { MobileMetadataSheet } from "./metadata-sheet";
+import { GuestFirewallBadges, GuestFirewallPanel, hasGuestFirewallPosture } from "@/components/inventory/guest-firewall";
 
 type ContainerDetail = Awaited<ReturnType<typeof getContainer>>;
 type LogSources = Awaited<ReturnType<typeof listLogSources>>;
@@ -70,6 +71,7 @@ export function MobileContainerDetail({
           </Badge>
           <SourceBadge source={ct.source} />
           <StatusBadge status={ct.status} />
+          <GuestFirewallBadges metadata={ct.metadata} />
           {(ct.vm || ct.host) && (
             <span className="text-[11px] text-muted-foreground">
               on{" "}
@@ -147,6 +149,14 @@ export function MobileContainerDetail({
             />
           </MobileCard>
         </MobileSection>
+
+        {hasGuestFirewallPosture(ct.metadata) && (
+          <MobileSection title="Proxmox firewall">
+            <MobileCard>
+              <GuestFirewallPanel metadata={ct.metadata} />
+            </MobileCard>
+          </MobileSection>
+        )}
 
         <MobileSection title="Tags">
           <MobileCard>

@@ -55,7 +55,7 @@ import { useConnectorsQuery } from "./mobile-connectors";
 
 /** The shared row state as a sentence, for the detail sheet. */
 const ROUTE_STATE_LABEL: Record<EdgeRouteRowState, string> = {
-  live: "Live on the edge",
+  live: "Live on the relay",
   staged: "Saved here, not pushed yet",
   disabled: "Disabled — saved but not installed",
   failed: "The last apply failed for this route",
@@ -154,7 +154,7 @@ function EdgeRuleDeleteDialog({
     mutationFn: (ruleId: string) =>
       apiFetch(`/api/network/edge-networks/servers/${server.id}/rules/${ruleId}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("NAT rule removed. Apply changes to update the server.");
+      toast.success("Relayed port removed. Apply changes to update the relay server.");
       void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
       onDeleted();
     },
@@ -167,7 +167,7 @@ function EdgeRuleDeleteDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Remove {rule?.name}?</AlertDialogTitle>
           <AlertDialogDescription>
-            The rule will be removed from PolySIEM, then must be applied before the edge server&apos;s firewall
+            The rule will be removed from PolySIEM, then must be applied before the relay server&apos;s firewall
             changes.
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -232,7 +232,7 @@ function EdgeRuleFacts({
         <MobileKeyRow label="Route">{path.label}</MobileKeyRow>
         {viaConnector && (
           <MobileKeyRow label="Tunnel hop here" mono>
-            {path.address ? `${path.address}:${rule.publicPort}` : "Connector not linked to this edge"}
+            {path.address ? `${path.address}:${rule.publicPort}` : "Connector not linked to this relay"}
           </MobileKeyRow>
         )}
         <MobileKeyRow label={viaConnector ? "Internal target" : "Private target"} mono>
@@ -288,7 +288,7 @@ function EdgeRuleDetailSheet({
     <BottomSheet
       open={rule !== null}
       onOpenChange={onOpenChange}
-      title={rule?.name ?? "NAT rule"}
+      title={rule?.name ?? "Relayed port"}
       description={`Published on ${server.name}`}
     >
       {rule && (
@@ -333,7 +333,7 @@ export function EdgeRoutesPanel({
     <>
       {server.rules.length === 0 ? (
         <p className="rounded-xl border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
-          No ports are published. This server exposes no lab targets until a rule is added and applied.
+          Nothing is relayed yet. Nothing at home is reachable through this relay server until you relay a port and apply it.
         </p>
       ) : (
         <MobileList>

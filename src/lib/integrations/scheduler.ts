@@ -3,6 +3,7 @@ import { runSync } from "./engine";
 import { getDriver } from "./index";
 import { refreshTunnelDnsIfStale } from "@/lib/services/tunnel-dns";
 import { runBandwidthPollIfDue } from "@/lib/services/bandwidth";
+import { runPrivacyRouterTrafficPollIfDue } from "@/lib/services/privacy-router-traffic";
 import { cleanupCensysData } from "@/lib/services/censys";
 import { cleanupSecurityTrailsData } from "@/lib/services/securitytrails";
 
@@ -48,6 +49,10 @@ export function startSyncScheduler(): void {
     // Bandwidth counter polling — self-throttled per integration via its
     // bandwidthPollMinutes setting; also fire-and-forget.
     void runBandwidthPollIfDue().catch((err) => console.error("[sync-scheduler] bandwidth poll failed:", err));
+    // Per-service traffic off the privacy routers — a separate path over PrivacyRouter
+    // rows rather than an extension of the OPNsense poller above, self-throttled
+    // by privacy_router_traffic_poll_minutes, and fire-and-forget like its siblings.
+    void runPrivacyRouterTrafficPollIfDue().catch((err) => console.error("[sync-scheduler] privacy router traffic poll failed:", err));
     // Censys responses are hard-expired after four days; usage history is
     // retained only long enough for operational visibility.
     void cleanupCensysData().catch((err) => console.error("[sync-scheduler] Censys cache cleanup failed:", err));

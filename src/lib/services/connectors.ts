@@ -14,7 +14,6 @@ import {
   type ConnectorTunnel,
 } from "@/lib/integrations/connector";
 import {
-  ConnectorSshError,
   buildConnectorApplyProtocol,
   connectorApplyExitReason,
   parseConnectorApplyResponse,
@@ -24,7 +23,7 @@ import {
   storedConnectorSshCredentialsSchema,
   type ConnectorSshStatus,
 } from "@/lib/integrations/connector/ssh";
-import { EdgeHostKeyScanError, parseEdgeSshUrl } from "@/lib/integrations/edge-nat/ssh";
+import { ManagedSshError, parseSshUrl, sshEndpointMoved } from "@/lib/ssh/managed-host";
 import { encryptSecret } from "@/lib/crypto";
 import { generateEd25519Keypair } from "@/lib/ssh/keys";
 import { edgeNatSettingsSchema, type EdgeNatSettings } from "@/lib/validators/integrations";
@@ -39,7 +38,8 @@ import {
   type UpdateConnectorInput,
 } from "@/lib/validators/edge-nat";
 import { TunnelAllocationError, allocateTunnelAddress, tunnelSubnetFrom } from "@/lib/connectors/allocate";
-import { SETTING_KEYS, getSetting } from "@/lib/settings";
+import { managedHostBaseUrlIssue, normalizeManagedHostBaseUrl } from "@/lib/managed-host-url";
+import { SETTING_KEYS, getManagedHostBaseUrl, getSetting } from "@/lib/settings";
 // Type-only: reading the certificate must not drag the TLS store (and its
 // filesystem helpers) into this service's module graph.
 import type { WebCertificateSetting } from "@/lib/tls/store";
@@ -444,6 +444,49 @@ export function resolveConnectorBaseUrl(headers?: Headers | null): string {
   return "http://localhost:3000";
 }
 
+/**
+ * The base URL to hand a MANAGED HOST, with the operator's declared answer
+ * winning over the derived one.
+ *
+ * Precedence, highest first:
+ *
+ *  1. the `managed_host_base_url` AppSetting, when an operator has set it,
+ *  2. a base URL the caller already resolved (a route's request headers),
+ *  3. {@link resolveConnectorBaseUrl} — `APP_URL`, else the admin's own request.
+ *
+ * The setting outranks even `APP_URL` deliberately. `APP_URL` answers "where is
+ * PolySIEM served", which is usually but NOT always the same question; the
+ * setting answers only this one, and an operator who fills it in has already
+ * decided that the derived value was wrong. A setting that could be silently
+ * overruled by the environment would be a worse footgun than the one it exists
+ * to close.
+ *
+ * This does NOT validate — {@link assertManagedHostCanReach} does, at the points
+ * where a bad value would leave the machine.
+ */
+export async function resolveManagedHostBaseUrl(
+  requested?: string | null,
+  headers?: Headers | null,
+): Promise<string> {
+  const declared = await getManagedHostBaseUrl();
+  if (declared) return declared;
+  return normalizeManagedHostBaseUrl(requested) || resolveConnectorBaseUrl(headers ?? null);
+}
+
+/**
+ * Refuse a base URL that the named far end cannot possibly reach.
+ *
+ * Called BEFORE the URL is written into a remote box's configuration, because
+ * afterwards the only symptom is a download that could not connect, on a machine
+ * the operator is not looking at, with nothing naming the cause. The message
+ * says which address was resolved, why that address means the wrong machine, and
+ * where to state the right one.
+ */
+export function assertManagedHostCanReach(baseUrl: string, subject: string): void {
+  const issue = managedHostBaseUrlIssue(baseUrl, subject);
+  if (issue) throw new ApiError(409, "managed_host_base_url_unreachable", issue);
+}
+
 export interface ConnectorInstallInstructions {
   installToken: string;
   /** Ready-to-paste one-liner (Cloudflare-style `cloudflared service install <token>`). */
@@ -628,7 +671,7 @@ function edgeParams(baseUrl: string, settings: EdgeNatSettings): ConnectorEdgePa
   if (!publicKey) {
     throw new ApiError(409, "wireguard_not_configured", "The edge WireGuard tunnel has no key yet; configure it before enrolling connectors");
   }
-  const { host } = parseEdgeSshUrl(baseUrl);
+  const { host } = parseSshUrl(baseUrl);
   const listenPort = settings.wireguard?.listenPort ?? 51820;
   return {
     endpoint: wireguardEndpoint(host, listenPort),
@@ -769,7 +812,7 @@ function connectorPeerConfig(
   tunnelAddress: string,
 ): ConnectorPeerConfig {
   const subnet = tunnelSubnetForEdge(settings);
-  const { host } = parseEdgeSshUrl(integration.baseUrl);
+  const { host } = parseSshUrl(integration.baseUrl);
   return buildConnectorPeerConfig({
     kind: normalizeConnectorKind(row.kind),
     connectorId: row.connectorId,
@@ -1158,7 +1201,7 @@ export async function createConnector(
   return {
     connector: toConnectorDto(row),
     ...(token
-      ? await resolvedInstallInstructions(options.baseUrl ?? resolveConnectorBaseUrl(null), token)
+      ? await resolvedInstallInstructions(await resolveManagedHostBaseUrl(options.baseUrl), token)
       : NO_INSTALL),
     peerConfig,
     tunnelProvisioned: provisioned,
@@ -1266,7 +1309,7 @@ export async function linkConnector(
     link: toConnectorLinkDto(created.link),
     peerConfig: created.peerConfig,
     tunnelProvisioned: created.provisioned,
-    tlsSelfSigned: await connectorTlsSelfSigned(options.baseUrl ?? resolveConnectorBaseUrl(null)),
+    tlsSelfSigned: await connectorTlsSelfSigned(await resolveManagedHostBaseUrl(options.baseUrl)),
     recommendedInstallCommand: null,
   };
 }
@@ -1384,8 +1427,11 @@ function sshEndpointUpdate(
 ): { data: Prisma.ConnectorUpdateInput; hostKeyCleared: boolean } {
   const nextHost = patch.sshHost === undefined ? existing.sshHost : patch.sshHost?.trim() || null;
   const nextPort = patch.sshPort ?? existing.sshPort;
-  const endpointMoved = nextHost !== existing.sshHost || nextPort !== existing.sshPort;
-  const hostKeyCleared = endpointMoved && existing.sshHostKeyFingerprint !== null;
+  const moved = sshEndpointMoved(
+    { host: existing.sshHost ?? undefined, port: existing.sshPort },
+    { host: nextHost ?? undefined, port: nextPort },
+  );
+  const hostKeyCleared = moved && existing.sshHostKeyFingerprint !== null;
   return {
     data: {
       ...(patch.sshHost === undefined ? {} : { sshHost: nextHost }),
@@ -1609,7 +1655,7 @@ export async function rotateConnectorToken(
   });
   return {
     connector: toConnectorDto(row),
-    ...(await resolvedInstallInstructions(options.baseUrl ?? resolveConnectorBaseUrl(null), token)),
+    ...(await resolvedInstallInstructions(await resolveManagedHostBaseUrl(options.baseUrl), token)),
     // Informational for an agent connector, and only when it already serves an
     // edge; a standalone connector simply has no far-side block yet.
     peerConfig: await getConnectorPeerConfig(id).catch(() => null),
@@ -1867,11 +1913,16 @@ async function connectorRow(id: string) {
   return row;
 }
 
-/** Translate transport-level failures into HTTP-shaped errors the UI can act on. */
+/**
+ * Translate transport-level failures into HTTP-shaped errors the UI can act on.
+ *
+ * One mapper, because every managed-SSH failure now carries the status its own
+ * concern deserves: 409 for a connector row that is not provisioned yet, 502 for
+ * a host-key scan PolySIEM could not complete.
+ */
 function asApiError(error: unknown): never {
   if (error instanceof ApiError) throw error;
-  if (error instanceof ConnectorSshError) throw new ApiError(409, error.code, error.message);
-  if (error instanceof EdgeHostKeyScanError) throw new ApiError(502, error.code, error.message);
+  if (error instanceof ManagedSshError) throw new ApiError(error.status, error.code, error.message);
   throw error;
 }
 

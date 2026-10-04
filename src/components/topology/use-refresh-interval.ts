@@ -34,6 +34,16 @@ export function parseRefreshMs(raw: string | null): number {
     : DEFAULT_REFRESH_MS;
 }
 
+function readStoredRefreshMs(storageKey: string): number {
+  let stored: string | null = null;
+  try {
+    stored = window.localStorage.getItem(storageKey);
+  } catch {
+    // private mode — the session still polls at the default rate
+  }
+  return parseRefreshMs(stored);
+}
+
 // localStorage must not be read during render: the server renders the default
 // rate, so a storage-seeded first client render would diverge and trip React's
 // hydration check. See use-saved-positions.ts for the same constraint.
@@ -45,17 +55,16 @@ const useClientLayoutEffect = typeof window === "undefined" ? useEffect : useLay
  */
 export function useRefreshInterval(
   storageKey = REFRESH_STORAGE_KEY,
+  { clientOnly = false } = {},
 ): readonly [number, (ms: number) => void] {
-  const [refreshMs, setRefreshMs] = useState<number>(DEFAULT_REFRESH_MS);
+  // Client-only maps read the stored rate on first render so pollers don't
+  // start at the default cadence and immediately restart at the stored one.
+  const [refreshMs, setRefreshMs] = useState<number>(() =>
+    clientOnly && typeof window !== "undefined" ? readStoredRefreshMs(storageKey) : DEFAULT_REFRESH_MS,
+  );
 
   useClientLayoutEffect(() => {
-    let stored: string | null = null;
-    try {
-      stored = window.localStorage.getItem(storageKey);
-    } catch {
-      // private mode — the session still polls at the default rate
-    }
-    setRefreshMs(parseRefreshMs(stored));
+    setRefreshMs(readStoredRefreshMs(storageKey));
   }, [storageKey]);
 
   const update = useCallback((ms: number) => {

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Database,
   DatabaseBackup,
   EyeOff,
   Info,
@@ -34,6 +35,7 @@ export const ACCOUNT_ITEMS: SettingsNavItem[] = [
 /** Admin-only settings; System (instance-wide defaults) leads the section. */
 export const ADMIN_ITEMS: SettingsNavItem[] = [
   { title: "System", href: "/settings/system", icon: SlidersHorizontal },
+  { title: "Database", href: "/settings/database", icon: Database },
   { title: "Users", href: "/settings/users", icon: Users },
   { title: "Integrations", href: "/settings/integrations", icon: Plug },
   { title: "AI assistant", href: "/settings/ai", icon: Sparkles },

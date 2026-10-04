@@ -5,6 +5,7 @@ import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { THEME_COLORS } from "@/lib/types";
+import { managedHostBaseUrlIssue } from "@/lib/managed-host-url";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -21,6 +22,8 @@ import { apiFetch } from "@/components/shared/api-client";
 
 interface InstanceSettingsView {
   instanceName: string;
+  /** Origin managed hosts use to reach PolySIEM. "" = derive it per request. */
+  managedHostBaseUrl: string;
   defaultTheme: string;
   staleRemoveThreshold: number;
   autoUpdate: {
@@ -30,12 +33,60 @@ interface InstanceSettingsView {
   };
 }
 
+/**
+ * The address PolySIEM hands to machines it manages.
+ *
+ * Left blank, PolySIEM works it out from the address the admin is browsing on —
+ * which is right until the admin reaches PolySIEM some way the managed host
+ * cannot: a dev server on localhost, a VPN-only name, an SSH tunnel. This field
+ * is where an operator states the truth instead. It validates as you type
+ * against the same rule the router apply enforces, so an address that could
+ * never work is caught here rather than on a box across the network.
+ */
+function ManagedHostBaseUrlField({
+  value,
+  onChange,
+  issue,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  issue: string | null;
+}) {
+  return (
+    <div className="grid gap-2 border-t pt-4">
+      <Label htmlFor="managed-host-base-url">PolySIEM address for managed hosts</Label>
+      <Input
+        id="managed-host-base-url"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="https://polysiem.lan:3000"
+        maxLength={255}
+        inputMode="url"
+        spellCheck={false}
+        aria-invalid={issue ? true : undefined}
+        aria-describedby="managed-host-base-url-help"
+        className="max-w-md"
+      />
+      <p id="managed-host-base-url-help" className="text-xs text-muted-foreground">
+        Where privacy routers and connectors reach this instance — they download the SNI proxy and the installer from
+        it, and connectors poll it. Leave blank to use APP_URL, or the address you are browsing PolySIEM on.
+      </p>
+      {issue && <p className="text-xs text-destructive">{issue}</p>}
+    </div>
+  );
+}
+
 export function InstanceSettingsForm({ initial }: { initial: InstanceSettingsView }) {
   const router = useRouter();
   const [instanceName, setInstanceName] = useState(initial.instanceName);
+  const [managedHostBaseUrl, setManagedHostBaseUrl] = useState(initial.managedHostBaseUrl);
   const [defaultTheme, setDefaultTheme] = useState(initial.defaultTheme);
   const [threshold, setThreshold] = useState(String(initial.staleRemoveThreshold));
   const [autoUpdate, setAutoUpdate] = useState(initial.autoUpdate.enabled);
+
+  // Blank is the documented "unset" value, so it is never an error.
+  const trimmedBaseUrl = managedHostBaseUrl.trim();
+  const baseUrlIssue = trimmedBaseUrl ? managedHostBaseUrlIssue(trimmedBaseUrl) : null;
 
   const save = useMutation({
     mutationFn: () => {
@@ -44,6 +95,7 @@ export function InstanceSettingsForm({ initial }: { initial: InstanceSettingsVie
         method: "PATCH",
         body: JSON.stringify({
           instanceName: instanceName.trim() || "PolySIEM",
+          managedHostBaseUrl: trimmedBaseUrl,
           defaultTheme,
           staleRemoveThreshold: Number.isFinite(parsed) ? parsed : initial.staleRemoveThreshold,
           autoUpdate,
@@ -82,6 +134,11 @@ export function InstanceSettingsForm({ initial }: { initial: InstanceSettingsVie
             />
             <p className="text-xs text-muted-foreground">Shown in the sidebar and browser title.</p>
           </div>
+          <ManagedHostBaseUrlField
+            value={managedHostBaseUrl}
+            onChange={setManagedHostBaseUrl}
+            issue={baseUrlIssue}
+          />
           <div className="flex max-w-2xl items-start justify-between gap-5 border-t pt-4">
             <div className="space-y-1">
               <Label htmlFor="auto-update">Automatic updates</Label>
@@ -133,7 +190,7 @@ export function InstanceSettingsForm({ initial }: { initial: InstanceSettingsVie
           </div>
         </CardContent>
         <CardFooter>
-          <Button type="submit" disabled={save.isPending}>
+          <Button type="submit" disabled={save.isPending || baseUrlIssue !== null}>
             {save.isPending ? "Saving…" : "Save"}
           </Button>
         </CardFooter>

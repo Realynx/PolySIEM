@@ -65,7 +65,7 @@ function ConnectorEdgeField({
   const selected = edges.find((edge) => edge.id === value) ?? null;
   return (
     <div className="grid gap-1.5">
-      <Label>Link it to an edge box</Label>
+      <Label>Link it to a relay server</Label>
       <Select value={value} onValueChange={onChange}>
         <SelectTrigger className="w-full">
           <SelectValue />
@@ -80,7 +80,7 @@ function ConnectorEdgeField({
         </SelectContent>
       </Select>
       <p className="text-xs text-muted-foreground">
-        A connector is not owned by one edge. This just creates its first link — you can link it to more edge boxes
+        A connector is not owned by one relay. This just creates its first link — you can link it to more relay servers
         afterwards, and it holds a separate tunnel address on each.
       </p>
       <EdgeTunnelSetupNote server={selected} servers={edges} />
@@ -143,7 +143,7 @@ export function ConnectorCreateSheet({
       open
       onOpenChange={onOpenChange}
       title="Add connector"
-      description="Pick what sits at the far end of the tunnel, then name it. PolySIEM assigns its address on every edge you link it to."
+      description="Pick what sits at the far end of the tunnel, then name it. PolySIEM assigns its address on every relay you link it to."
     >
       <form onSubmit={submit} className="flex flex-col gap-4 pb-2">
         <div className="grid gap-1.5">
@@ -173,7 +173,7 @@ export function ConnectorCreateSheet({
             spellCheck={false}
             className={cn(name && !nameValid && "border-destructive")}
           />
-          <p className="text-xs text-muted-foreground">Names are unique across PolySIEM, not per edge box.</p>
+          <p className="text-xs text-muted-foreground">Names are unique across PolySIEM, not per relay server.</p>
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="m-cx-notes">
@@ -193,7 +193,7 @@ export function ConnectorCreateSheet({
         <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
           {manual
             ? "The next screen shows the tunnel settings to paste into the far side, and takes its public key back. No install token and no SSH key are issued for this kind."
-            : "The next screen shows what to run on the edge server and on this machine. Nothing inbound is opened at home — the connector dials out to the edge."}
+            : "The next screen shows what to run on the relay server and on this machine. Nothing inbound is opened at home — the connector dials out to the relay."}
         </p>
         <Button type="submit" className="w-full" disabled={mutation.isPending || !nameValid}>
           {mutation.isPending ? <Loader2 className="animate-spin" /> : <Plus />} Create connector
@@ -204,7 +204,7 @@ export function ConnectorCreateSheet({
 }
 
 function createdMessage(manual: boolean, linked: boolean): string {
-  if (!linked) return "Connector created. Link it to an edge box when you are ready.";
+  if (!linked) return "Connector created. Link it to a relay server when you are ready.";
   return manual
     ? "Connector created — copy the peer settings into the far side."
     : "Connector created — run the install command on the machine.";
@@ -249,7 +249,7 @@ export function ConnectorEditSheet({
       open
       onOpenChange={onOpenChange}
       title={`Rename ${connector.name}`}
-      description="Only the label and notes change — the connector ID and its per-edge addresses stay fixed."
+      description="Only the label and notes change — the connector ID and its per-relay addresses stay fixed."
     >
       <form onSubmit={submit} className="flex flex-col gap-4 pb-2">
         <div className="grid gap-1.5">
@@ -293,8 +293,8 @@ function deleteConsequence(connector: ConnectorDto | null, routeCount: number, e
       : "";
   const far =
     connector && isManualConnector(connector)
-      ? "Its WireGuard peer drops off each edge on the next apply. The far side keeps its own configuration until you remove it there."
-      : "Its WireGuard peer drops off each edge on the next apply, the agent on that machine stops enrolling, and the SSH key PolySIEM held for it is destroyed.";
+      ? "Its WireGuard peer drops off each relay on the next apply. The far side keeps its own configuration until you remove it there."
+      : "Its WireGuard peer drops off each relay on the next apply, the agent on that machine stops enrolling, and the SSH key PolySIEM held for it is destroyed.";
   return `${edges}${routes}${far}`;
 }
 
@@ -321,7 +321,7 @@ export function ConnectorDeleteDialog({
   const mutation = useMutation({
     mutationFn: (id: string) => apiFetch(connectorUrl(id), { method: "DELETE" }),
     onSuccess: () => {
-      toast.success("Connector removed. Apply each edge it served to drop its peer.");
+      toast.success("Connector removed. Apply each relay it served to drop its peer.");
       invalidate();
       onDeleted();
     },

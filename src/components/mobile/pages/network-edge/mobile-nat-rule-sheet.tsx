@@ -134,7 +134,7 @@ function NatRuleRouteModePicker({
             disabledHint={
               connectorsLoading
                 ? "Loading connectors…"
-                : "Link a connector to this edge first — an existing one will do; a connector can serve several edges."
+                : "Link a connector to this relay first — an existing one will do; a connector can serve several relays."
             }
           />
         ))}
@@ -179,8 +179,8 @@ function NatRuleConnectorField({
         </SelectContent>
       </Select>
       <p className="text-xs text-muted-foreground">
-        Only connectors linked to {server.name} are listed. The edge hands the port to
-        {address ? ` ${address}, this connector's address on this edge.` : " the connector's address on this edge."}{" "}
+        Only connectors linked to {server.name} are listed. The relay hands the port to
+        {address ? ` ${address}, this connector's address on this relay.` : " the connector's address on this relay."}{" "}
         The port is preserved across the tunnel.
       </p>
       {selected && (
@@ -224,12 +224,12 @@ function NatRuleLinkConnectorField({ server }: { server: EdgeNatServer }) {
       {linkable.length === 0 ? (
         <p className="text-xs text-info">
           Add a connector from the Connectors section of Edge networks, then come back — a connector is installed once
-          and can serve any edge box you link it to.
+          and can serve any relay server you link it to.
         </p>
       ) : (
         <>
           <p className="text-xs text-info">
-            One of your existing connectors can serve this edge too. Link it and it appears in the picker.
+            One of your existing connectors can serve this relay too. Link it and it appears in the picker.
           </p>
           <Select value={choice} onValueChange={setChoice}>
             <SelectTrigger className="w-full">
@@ -250,7 +250,7 @@ function NatRuleLinkConnectorField({ server }: { server: EdgeNatServer }) {
             disabled={!chosen || mutation.isPending}
             onClick={() => chosen && mutation.mutate({ connector: chosen, server })}
           >
-            {mutation.isPending ? <Loader2 className="animate-spin" /> : <Link2 />} Link to this edge
+            {mutation.isPending ? <Loader2 className="animate-spin" /> : <Link2 />} Link to this relay
           </Button>
           {tunnelPending && <p className="text-[11px] leading-snug text-info/80">{tunnelPending}</p>}
         </>
@@ -284,7 +284,7 @@ function NatRuleEndpointFields({
           </Select>
         </div>
         <div className="grid gap-1.5">
-          <Label htmlFor="m-nat-public">Edge port</Label>
+          <Label htmlFor="m-nat-public">Relay port</Label>
           <Input
             id="m-nat-public"
             inputMode="numeric"
@@ -369,7 +369,7 @@ export function MobileNatRuleSheet({
         { method: rule ? "PATCH" : "POST", body: JSON.stringify(input) },
       ),
     onSuccess: () => {
-      toast.success(`${rule ? "Updated" : "Added"} NAT rule. Apply changes when ready.`);
+      toast.success(`${rule ? "Updated" : "Added"} relayed port. Apply changes when ready.`);
       onOpenChange(false);
       void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
@@ -390,8 +390,8 @@ export function MobileNatRuleSheet({
     <BottomSheet
       open
       onOpenChange={onOpenChange}
-      title={`${rule ? "Edit" : "Add"} NAT rule`}
-      description={`Publish one listener on ${server.name}, straight from the edge or over a connector.`}
+      title={rule ? "Edit relayed port" : "Relay a port"}
+      description={`Publish one listener on ${server.name}, straight from the relay or over a connector.`}
     >
       <form onSubmit={submit} className="flex flex-col gap-4 pb-2">
         <div className="grid gap-1.5">

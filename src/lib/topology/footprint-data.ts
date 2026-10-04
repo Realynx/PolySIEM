@@ -36,6 +36,58 @@ function deviceKind(kind: string): FpMachine["kind"] {
 
 /** Load everything the footprint derivation needs. */
 export async function loadFootprintInput(): Promise<FootprintInput> {
+  // Inbound vectors don't depend on the machine/network wave below, so start
+  // them now instead of after that wave's queries and CPU work finish.
+  const inboundRows = Promise.all([
+    prisma.portForward.findMany({
+      where: notRemoved,
+      orderBy: { sequence: "asc" },
+      select: {
+        id: true,
+        protocol: true,
+        destSpec: true,
+        destPort: true,
+        targetIp: true,
+        targetPort: true,
+        descriptionText: true,
+        enabled: true,
+        sourceSpec: true,
+      },
+    }),
+    prisma.dyndnsHost.findMany({
+      where: notRemoved,
+      orderBy: { hostname: "asc" },
+      select: { id: true, hostname: true, service: true, enabled: true, currentIp: true, metadata: true },
+    }),
+    prisma.tunnel.findMany({
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        provider: true,
+        originIp: true,
+        ingressHostnames: true,
+        hostnames: {
+          select: { hostname: true, resolvedIps: true, proxied: true, metadata: true },
+        },
+      },
+    }),
+    prisma.networkGateway.findMany({
+      where: notRemoved,
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, interfaceName: true, ipAddress: true, isDefault: true, online: true },
+    }),
+    prisma.integrationConfig.findMany({
+      where: { type: "ELASTICSEARCH", enabled: true },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, name: true, settings: true },
+    }),
+    listStoredCloudflareSnapshots(),
+  ]);
+  // If the first wave throws we never reach the await below; don't let this
+  // promise's own rejection surface as an unhandled one.
+  inboundRows.catch(() => undefined);
+
   const [devices, vms, containers, networks, rules, pveRules, aliases, pveAddressSets, ips, assetInterfaces, switchConfigs, leases, neighbors, tailscaleSnapshots] =
     await Promise.all([
     prisma.device.findMany({
@@ -200,11 +252,18 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
     ...proxmoxNetworkEvidence.inferredNetworks,
     ...tailscaleNetworks,
   ];
+  // Most-specific CIDR first, computed once; every lease, ARP neighbour and
+  // asset address resolves through here (several times each), so memoise.
+  const cidrNetworks = allNetworks
+    .filter((network) => network.cidr)
+    .sort((a, b) => Number(b.cidr?.split("/")[1] ?? 0) - Number(a.cidr?.split("/")[1] ?? 0));
+  const networkIdByAddress = new Map<string, string | null>();
   const networkIdForAddress = (address: string): string | null => {
-    const candidates = allNetworks
-      .filter((network) => network.cidr && cidrContains(network.cidr, address))
-      .sort((a, b) => Number(b.cidr?.split("/")[1] ?? 0) - Number(a.cidr?.split("/")[1] ?? 0));
-    return candidates[0]?.id ?? null;
+    const cached = networkIdByAddress.get(address);
+    if (cached !== undefined) return cached;
+    const id = cidrNetworks.find((network) => cidrContains(network.cidr!, address))?.id ?? null;
+    networkIdByAddress.set(address, id);
+    return id;
   };
 
   // The access graph provides both reachability and each network's category.
@@ -568,52 +627,7 @@ export async function loadFootprintInput(): Promise<FootprintInput> {
 
   // ----- inbound vectors + gateways -----
 
-  const [pfRows, ddRows, tunnelRows, gwRows, elasticRows, cloudflareSnapshots] = await Promise.all([
-    prisma.portForward.findMany({
-      where: notRemoved,
-      orderBy: { sequence: "asc" },
-      select: {
-        id: true,
-        protocol: true,
-        destSpec: true,
-        destPort: true,
-        targetIp: true,
-        targetPort: true,
-        descriptionText: true,
-        enabled: true,
-        sourceSpec: true,
-      },
-    }),
-    prisma.dyndnsHost.findMany({
-      where: notRemoved,
-      orderBy: { hostname: "asc" },
-      select: { id: true, hostname: true, service: true, enabled: true, currentIp: true, metadata: true },
-    }),
-    prisma.tunnel.findMany({
-      orderBy: { name: "asc" },
-      select: {
-        id: true,
-        name: true,
-        provider: true,
-        originIp: true,
-        ingressHostnames: true,
-        hostnames: {
-          select: { hostname: true, resolvedIps: true, proxied: true, metadata: true },
-        },
-      },
-    }),
-    prisma.networkGateway.findMany({
-      where: notRemoved,
-      orderBy: { name: "asc" },
-      select: { id: true, name: true, interfaceName: true, ipAddress: true, isDefault: true, online: true },
-    }),
-    prisma.integrationConfig.findMany({
-      where: { type: "ELASTICSEARCH", enabled: true },
-      orderBy: { createdAt: "asc" },
-      select: { id: true, name: true, settings: true },
-    }),
-    listStoredCloudflareSnapshots(),
-  ]);
+  const [pfRows, ddRows, tunnelRows, gwRows, elasticRows, cloudflareSnapshots] = await inboundRows;
 
   const isUnrestricted = (spec: string | null): boolean =>
     !spec || spec.trim() === "" || spec.trim() === "*" || spec.trim().toLowerCase() === "any";

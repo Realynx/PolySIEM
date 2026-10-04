@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { patchSchema } from "@/lib/validators/patch";
 
 /**
  * Documented ingress tunnels (e.g. cloudflared connectors). Identifiers only —
@@ -16,8 +17,14 @@ export const createTunnelSchema = z.object({
   notes: z.string().max(10_000).nullish(),
 });
 
-/** All keys optional; absent keys must stay absent (zod v4 .partial() gotcha — callers drop unsent keys). */
-export const updateTunnelSchema = createTunnelSchema.partial();
+/**
+ * All keys optional and absent keys genuinely absent. `patchSchema`, not
+ * `.partial()`: `.partial()` keeps the `provider` and `ingressHostnames`
+ * defaults, and the PATCH route spreads the parsed body straight into a Prisma
+ * `update`, so an omitted key would have reset the provider to "cloudflare" and
+ * emptied the hostname list.
+ */
+export const updateTunnelSchema = patchSchema(createTunnelSchema);
 
 export type CreateTunnelInput = z.infer<typeof createTunnelSchema>;
 export type UpdateTunnelInput = z.infer<typeof updateTunnelSchema>;

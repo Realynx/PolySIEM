@@ -161,7 +161,7 @@ export function CreateConnectorDialog({
           <DialogHeader>
             <DialogTitle>Add connector</DialogTitle>
             <DialogDescription>
-              Anything that dials out to an edge box over WireGuard is a connector. {CONNECTOR_INDEPENDENCE_COPY}
+              Anything that dials out to a relay server over WireGuard is a connector. {CONNECTOR_INDEPENDENCE_COPY}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-1">
@@ -202,8 +202,8 @@ export function CreateConnectorDialog({
             </div>
             <p className="rounded-lg border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
               {manual
-                ? <>Nothing is installed and no token is issued. PolySIEM reserves an identity, allocates a tunnel address on each edge box you link, and shows the exact settings to enter on {kindCopy.farSide}.</>
-                : <>Nothing is installed yet. Creating the connector only reserves its identity — the machine enrolls itself when you run the install command, and it gets one tunnel address per edge box you link it to.</>}
+                ? <>Nothing is installed and no token is issued. PolySIEM reserves an identity, allocates a tunnel address on each relay server you link, and shows the exact settings to enter on {kindCopy.farSide}.</>
+                : <>Nothing is installed yet. Creating the connector only reserves its identity — the machine enrolls itself when you run the install command, and it gets one tunnel address per relay server you link it to.</>}
             </p>
           </div>
           <DialogFooter>
@@ -260,10 +260,10 @@ function CreateConnectorEdgeField({
   const selected = servers.find((server) => server.id === value) ?? null;
   return (
     <div className="grid gap-1.5">
-      <Label htmlFor="connector-edge">Start serving an edge box</Label>
+      <Label htmlFor="connector-edge">Start serving a relay server</Label>
       <Select value={value} onValueChange={onChange}>
         <SelectTrigger id="connector-edge" className="w-full">
-          <SelectValue placeholder="Choose an edge box" />
+          <SelectValue placeholder="Choose a relay server" />
         </SelectTrigger>
         <SelectContent>
           {servers.map((server) => (
@@ -275,7 +275,7 @@ function CreateConnectorEdgeField({
         </SelectContent>
       </Select>
       <p className="text-xs text-muted-foreground">
-        You can link the same connector to more edge boxes at any time; each one gives it its own tunnel address.
+        You can link the same connector to more relay servers at any time; each one gives it its own tunnel address.
       </p>
       <EdgeTunnelSetupNote server={selected} servers={servers} />
     </div>
@@ -347,7 +347,7 @@ export function EditConnectorDialog({
     mutationFn: (input: UpdateConnectorInput) =>
       apiFetch<ConnectorDto>(connectorUrl(connector.id), { method: "PATCH", body: JSON.stringify(input) }),
     onSuccess: () => {
-      toast.success(`${name.trim()} updated. Apply changes on each edge box to push it.`);
+      toast.success(`${name.trim()} updated. Apply changes on each relay server to push it.`);
       refresh();
       onOpenChange(false);
     },
@@ -370,8 +370,8 @@ export function EditConnectorDialog({
           <DialogHeader>
             <DialogTitle>Edit {connector.name}</DialogTitle>
             <DialogDescription>
-              Rename the connector or record what it reaches. Its connector ID, kind, and per-edge tunnel addresses are
-              fixed — link and unlink edge boxes from the connector row instead.
+              Rename the connector or record what it reaches. Its connector ID, kind, and per-relay tunnel addresses are
+              fixed — link and unlink relay servers from the connector row instead.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-1">
@@ -407,7 +407,7 @@ export function EditConnectorDialog({
               <div>
                 <Label htmlFor={`edit-connector-enabled-${connector.id}`}>Connector enabled</Label>
                 <p className="text-xs text-muted-foreground">
-                  Disabling keeps the record but drops its tunnel peer from every linked edge box on the next apply.
+                  Disabling keeps the record but drops its tunnel peer from every linked relay server on the next apply.
                 </p>
               </div>
               <Switch
@@ -446,7 +446,7 @@ function EditConnectorFacts({ connector, servers }: { connector: ConnectorDto; s
         Connector ID <code className="ml-1 font-mono text-foreground">{connector.connectorId}</code>
       </p>
       {links.length === 0 ? (
-        <p className="text-muted-foreground">Not linked to an edge box yet — no tunnel address is allocated.</p>
+        <p className="text-muted-foreground">Not linked to a relay server yet — no tunnel address is allocated.</p>
       ) : (
         links.map((link) => (
           <p key={link.id} className="text-muted-foreground">
@@ -525,7 +525,7 @@ export function DeleteConnectorDialog({
   const mutation = useMutation({
     mutationFn: () => apiFetch(connectorUrl(connector.id), { method: "DELETE" }),
     onSuccess: () => {
-      toast.success(`${connector.name} removed. Apply changes on each edge box to drop it.`);
+      toast.success(`${connector.name} removed. Apply changes on each relay server to drop it.`);
       refresh();
       onOpenChange(false);
     },
@@ -539,14 +539,14 @@ export function DeleteConnectorDialog({
           <AlertDialogTitle>Remove {connector.name} everywhere?</AlertDialogTitle>
           <AlertDialogDescription>
             {linkCount > 1
-              ? `This connector serves ${linkCount} edge boxes — deleting it removes it from all of them. To stop using it on just one, unlink it there instead. `
+              ? `This connector serves ${linkCount} relay servers — deleting it removes it from all of them. To stop using it on just one, unlink it there instead. `
               : ""}
             {routeCount > 0
               ? `${routeCount} route${routeCount === 1 ? "" : "s"} published through this connector will be removed with it. `
               : ""}
             {isManualConnector(connector)
-              ? "The far side keeps its WireGuard config until you remove it there, but every linked edge drops its tunnel peer after the next apply."
-              : "The machine keeps running its agent until you uninstall it there, but every linked edge drops its tunnel peer after the next apply."}
+              ? "The far side keeps its WireGuard config until you remove it there, but every linked relay drops its tunnel peer after the next apply."
+              : "The machine keeps running its agent until you uninstall it there, but every linked relay drops its tunnel peer after the next apply."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -648,14 +648,14 @@ export function LinkConnectorToEdgeDialog({
           <DialogTitle>Link a connector to {server.name}</DialogTitle>
           <DialogDescription>
             Reuse a connector that is already installed. Nothing is installed again — PolySIEM allocates it an address
-            on this edge&apos;s tunnel subnet and adds it as a peer on the next apply.
+            on this relay&apos;s tunnel subnet and adds it as a peer on the next apply.
           </DialogDescription>
         </DialogHeader>
 
         {connectors.length === 0 ? (
           <Alert>
             <Link2 />
-            <AlertTitle>Every connector already serves this edge box</AlertTitle>
+            <AlertTitle>Every connector already serves this relay server</AlertTitle>
             <AlertDescription>
               There is nothing left to link here. Use <span className="font-medium">Add connector</span> to install a
               new one.
@@ -735,28 +735,28 @@ export function LinkEdgeToConnectorDialog({
     <Dialog open={open} onOpenChange={(next) => { if (next) setIntegrationId(""); onOpenChange(next); }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Link {connector.name} to an edge box</DialogTitle>
+          <DialogTitle>Link {connector.name} to a relay server</DialogTitle>
           <DialogDescription>
-            One installed connector can serve any number of edge boxes. Each link gives it another tunnel address —
-            allocated from that edge&apos;s own subnet — on the same WireGuard interface.
+            One installed connector can serve any number of relay servers. Each link gives it another tunnel address —
+            allocated from that relay&apos;s own subnet — on the same WireGuard interface.
           </DialogDescription>
         </DialogHeader>
 
         {available.length === 0 ? (
           <Alert>
             <Server />
-            <AlertTitle>Already serving every edge box</AlertTitle>
+            <AlertTitle>Already serving every relay server</AlertTitle>
             <AlertDescription>
-              {connector.name} is linked to all {servers.length} edge box{servers.length === 1 ? "" : "es"} PolySIEM
+              {connector.name} is linked to all {servers.length} relay server{servers.length === 1 ? "" : "es"} PolySIEM
               manages.
             </AlertDescription>
           </Alert>
         ) : (
           <div className="grid gap-1.5">
-            <Label htmlFor={`link-edge-${connector.id}`}>Edge box</Label>
+            <Label htmlFor={`link-edge-${connector.id}`}>Relay server</Label>
             <Select value={integrationId} onValueChange={setIntegrationId}>
               <SelectTrigger id={`link-edge-${connector.id}`} className="w-full">
-                <SelectValue placeholder="Choose an edge box" />
+                <SelectValue placeholder="Choose a relay server" />
               </SelectTrigger>
               <SelectContent>
                 {available.map((server) => (
@@ -767,10 +767,10 @@ export function LinkEdgeToConnectorDialog({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              After linking, that edge box can publish routes through {connector.name}. Apply changes there to bring the
+              After linking, that relay server can publish routes through {connector.name}. Apply changes there to bring the
               peer up.
               {isManualConnector(connector)
-                ? ` PolySIEM shows you ${selected ? `${selected.name}'s` : "the new edge box's"} peer settings straight after — one more peer to add on the far side, next to the one it already has.`
+                ? ` PolySIEM shows you ${selected ? `${selected.name}'s` : "the new relay server's"} peer settings straight after — one more peer to add on the far side, next to the one it already has.`
                 : ""}
             </p>
             <EdgeTunnelSetupNote server={selected} servers={servers} />
@@ -791,7 +791,7 @@ export function LinkEdgeToConnectorDialog({
             })}
           >
             {mutation.isPending ? <Loader2 className="animate-spin" /> : <Link2 />}
-            Link edge box
+            Link relay server
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -840,8 +840,8 @@ export function UnlinkConnectorDialog({
           <AlertDialogTitle>Stop {connector.name} serving {edgeName}?</AlertDialogTitle>
           <AlertDialogDescription>
             The connector itself stays installed{remaining > 0
-              ? ` and keeps serving ${remaining} other edge box${remaining === 1 ? "" : "es"}`
-              : ""}. It loses its {link.tunnelAddress} address on {edgeName}, and that edge drops its tunnel peer after
+              ? ` and keeps serving ${remaining} other relay server${remaining === 1 ? "" : "es"}`
+              : ""}. It loses its {link.tunnelAddress} address on {edgeName}, and that relay drops its tunnel peer after
             the next apply.
           </AlertDialogDescription>
         </AlertDialogHeader>

@@ -12,7 +12,7 @@ import {
 import { formatBytes, formatRelative } from "@/lib/format";
 import { isLiveQueryType, type IntegrationTypeValue, type SyncStatusValue } from "@/lib/types";
 import type { FootprintGraph } from "@/lib/topology/footprint";
-import { FootprintMap } from "@/components/topology/footprint-map";
+import { FootprintMapLazy } from "@/components/topology/footprint-map-lazy";
 import { SyncStatusBadge } from "@/components/shared/badges";
 import { SyncNowButton } from "@/components/dashboard/sync-now-button";
 import { Badge } from "@/components/ui/badge";
@@ -145,7 +145,7 @@ export function MobileHome({
         >
           {hasFootprint ? (
             <div className="-mx-3.5 h-[42svh]">
-              <FootprintMap
+              <FootprintMapLazy
                 graph={footprint}
                 chromeless
                 heightClassName="h-full rounded-none border-x-0"

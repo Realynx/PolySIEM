@@ -22,6 +22,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/format";
 import { apiFetch } from "@/components/shared/api-client";
+import { preferredHostKeyFingerprint } from "@/components/ssh/host-key-selection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -144,7 +145,7 @@ function ConnectorLinksBlock({
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2 px-0.5">
         <span className="flex items-center gap-1.5 font-mono text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
-          <Link2 className="size-3.5" /> Linked edges
+          <Link2 className="size-3.5" /> Linked relays
         </span>
         <span className="text-[11px] text-muted-foreground">{connectorLinkSummary(connector).label}</span>
       </div>
@@ -158,13 +159,13 @@ function ConnectorLinksBlock({
           per-row action explains itself and this would be noise. */}
       {perEdgePeerSetup && linked > 1 && (
         <p className="px-0.5 text-[11px] text-muted-foreground">
-          Each edge box has its own peer settings — its own endpoint, key and address — so the far side ends up with one
+          Each relay server has its own peer settings — its own endpoint, key and address — so the far side ends up with one
           peer per row above.
         </p>
       )}
       {isAdmin && linked < edges.length && (
         <Button variant="outline" size="sm" className="w-full" onClick={() => onLinkEdge(connector)}>
-          <Link2 /> Link to another edge
+          <Link2 /> Link to another relay
         </Button>
       )}
     </div>
@@ -176,7 +177,7 @@ function ConnectorManualPanel() {
   return (
     <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
       PolySIEM does not manage this far end: no install token, no SSH key, no pushed rules. It is a WireGuard peer of
-      every edge it is linked to, and you configure it yourself — tap Peer settings on an edge above for that
+      every relay it is linked to, and you configure it yourself — tap Peer settings on a relay above for that
       edge&apos;s paste-ready block.
     </p>
   );
@@ -215,7 +216,7 @@ function ConnectorAdminActions({
         body: JSON.stringify({ disabled } satisfies UpdateConnectorInput),
       }),
     onSuccess: (_result, variables) => {
-      toast.success(variables.disabled ? "Connector disabled. Apply to drop its edge peer." : "Connector enabled.");
+      toast.success(variables.disabled ? "Connector disabled. Apply to drop its relay peer." : "Connector enabled.");
       invalidate();
     },
     onError: (error: Error) => toast.error(error.message),
@@ -252,8 +253,8 @@ function ConnectorAdminActions({
       </div>
       <p className="px-0.5 text-[11px] text-muted-foreground">
         {manual
-          ? "Disabling drops this peer from every linked edge on the next apply; the far side keeps its own config until you remove it there."
-          : "Rotating issues a fresh one-time token and a new install command; the old one stops working. One install still serves every linked edge."}
+          ? "Disabling drops this peer from every linked relay on the next apply; the far side keeps its own config until you remove it there."
+          : "Rotating issues a fresh one-time token and a new install command; the old one stops working. One install still serves every linked relay."}
       </p>
     </>
   );
@@ -301,8 +302,8 @@ export function ConnectorDetailSheet({
       title={connector?.name ?? "Connector"}
       description={
         manual
-          ? "A WireGuard peer you configure by hand — it can serve several edge boxes"
-          : "One reverse tunnel agent, serving every edge box it is linked to"
+          ? "A WireGuard peer you configure by hand — it can serve several relay servers"
+          : "One reverse tunnel agent, serving every relay server it is linked to"
       }
     >
       {connector && (
@@ -721,17 +722,6 @@ export function ConnectorSshEndpointSheet({
   );
 }
 
-/** Which fingerprint the enroll button would pin, before the operator picks one. */
-function resolveHostKeySelection(
-  chosen: string,
-  enrolled: string | null | undefined,
-  keys: readonly ObservedConnectorHostKey[],
-): string {
-  if (chosen) return chosen;
-  if (enrolled) return enrolled;
-  return keys.length === 1 ? keys[0]?.fingerprint ?? "" : "";
-}
-
 /** One scanned host key, as a phone-sized radio row. */
 function HostKeyOption({
   hostKey,
@@ -842,7 +832,7 @@ export function ConnectorHostKeySheet({
     retry: false,
   });
   const keys = scanQuery.data?.keys ?? [];
-  const selected = resolveHostKeySelection(selectedFingerprint, scanQuery.data?.enrolledFingerprint, keys);
+  const selected = preferredHostKeyFingerprint(selectedFingerprint, scanQuery.data?.enrolledFingerprint, keys);
 
   const enrollMutation = useMutation({
     mutationFn: (fingerprint: string) =>

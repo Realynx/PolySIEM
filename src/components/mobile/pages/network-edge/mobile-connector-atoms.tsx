@@ -230,7 +230,16 @@ export function ConnectorInstallCommands({ view }: { view: ConnectorInstallComma
           />
         </div>
       )}
-      <p className="px-0.5 text-[11px] leading-snug text-muted-foreground">
+      {/* Warning treatment once the baked-in address provably cannot resolve
+          from the connector; a footnote otherwise. Same decision as desktop. */}
+      <p
+        className={cn(
+          "text-[11px] leading-snug",
+          view.originUnreachable
+            ? "rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-warning"
+            : "px-0.5 text-muted-foreground",
+        )}
+      >
         {connectorInstallReachabilityCopy(view.origin)}
       </p>
     </div>

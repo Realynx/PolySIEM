@@ -21,7 +21,7 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/format";
-import { buildEdgeBootstrapCommand } from "@/lib/integrations/edge-nat/bootstrap";
+import { buildSshBootstrapCommand } from "@/lib/ssh/bootstrap";
 import { apiFetch } from "@/components/shared/api-client";
 import { copyText } from "@/components/shared/clipboard";
 import { CopyButton } from "@/components/ssh/copy-button";
@@ -236,7 +236,7 @@ function AgentInstallDialog({
 
 /** Where the connector has to be able to reach outbound, if we know an edge. */
 function outboundLabel(server: EdgeNatServer | null): string {
-  return server ? edgeTunnelEndpoint(server).label : "your edge box on its WireGuard UDP port";
+  return server ? edgeTunnelEndpoint(server).label : "your relay server on its WireGuard UDP port";
 }
 
 function TokenOnceNotice() {
@@ -264,14 +264,14 @@ function AgentEdgeStep({ server, onSetupEdgeSsh }: { server: EdgeNatServer; onSe
   const edgeCommand = useMemo(() => {
     if (!edge.publicKey) return null;
     try {
-      return buildEdgeBootstrapCommand(edge.publicKey);
+      return buildSshBootstrapCommand(edge.publicKey);
     } catch {
       return null;
     }
   }, [edge.publicKey]);
 
   return (
-    <InstallStep number="1" title="On your edge server" satisfied={edge.satisfied} hint={server.name}>
+    <InstallStep number="1" title="On your relay server" satisfied={edge.satisfied} hint={server.name}>
       {edge.satisfied ? (
         <div className="rounded-lg border border-success/40 bg-success/5 p-3">
           <p className="flex items-center gap-2 text-sm font-medium text-success">
@@ -297,8 +297,8 @@ function AgentEdgeStep({ server, onSetupEdgeSsh }: { server: EdgeNatServer; onSe
             <>
               <CommandBlock
                 command={edgeCommand}
-                caption="Run as your existing edge administrator"
-                copyLabel="Copy edge command"
+                caption="Run as your existing relay administrator"
+                copyLabel="Copy relay command"
               />
               <p className="text-xs text-muted-foreground">
                 This authorizes one temporary setup connection. PolySIEM then installs the restricted{" "}
@@ -309,13 +309,13 @@ function AgentEdgeStep({ server, onSetupEdgeSsh }: { server: EdgeNatServer; onSe
           ) : (
             <p className="flex items-start gap-1.5 text-xs text-warning">
               <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-              This edge server has no generated key yet. Open <span className="font-medium">Set up SSH</span> on the
+              This relay server has no generated key yet. Open <span className="font-medium">Set up SSH</span> on the
               server card to issue one.
             </p>
           )}
           {onSetupEdgeSsh && (
             <Button type="button" variant="outline" size="sm" onClick={onSetupEdgeSsh}>
-              <LockKeyhole /> Set up SSH on the edge
+              <LockKeyhole /> Set up SSH on the relay
             </Button>
           )}
         </>
@@ -327,14 +327,14 @@ function AgentEdgeStep({ server, onSetupEdgeSsh }: { server: EdgeNatServer; onSe
 /** Step ① when the connector serves no edge box yet: give it one to dial. */
 function AgentNoEdgeStep({ onLinkEdge }: { onLinkEdge?: () => void }) {
   return (
-    <InstallStep number="1" title="Give it an edge box to dial">
+    <InstallStep number="1" title="Give it a relay server to dial">
       <p className="text-sm text-muted-foreground">
-        This connector is not linked to an edge box yet, so it has nowhere to dial and no tunnel address. Link it to
+        This connector is not linked to a relay server yet, so it has nowhere to dial and no tunnel address. Link it to
         one — you can add more later, and each one allocates its own address on the same interface.
       </p>
       {onLinkEdge && (
         <Button type="button" variant="outline" size="sm" onClick={onLinkEdge}>
-          <Link2 /> Link to an edge box
+          <Link2 /> Link to a relay server
         </Button>
       )}
     </InstallStep>
@@ -379,13 +379,13 @@ function AgentConnectorStep({
         <li className="flex items-start gap-1.5">
           <Check className="mt-0.5 size-3.5 shrink-0 text-success" aria-hidden="true" />
           Creates the <code className="font-mono">{sshUsername}</code> account and installs PolySIEM&apos;s key for
-          it, so this end can be managed exactly like the edge.
+          it, so this end can be managed exactly like the relay.
         </li>
         <li className="flex items-start gap-1.5">
           <Check className="mt-0.5 size-3.5 shrink-0 text-success" aria-hidden="true" />
           Generates one WireGuard key on the machine and brings up{" "}
           <code className="font-mono">{connectorInterfaceName(connector)}</code> — a single interface that carries one
-          peer per edge box you link, so you never run this command twice.
+          peer per relay server you link, so you never run this command twice.
         </li>
       </ul>
     </InstallStep>
@@ -446,7 +446,7 @@ function AgentStatusStep({
         <p className="text-xs text-muted-foreground">
           Next: set this connector&apos;s SSH address under <span className="font-medium">SSH management</span>, so
           PolySIEM can push config the moment you change a route instead of waiting for the next poll. One push covers
-          every edge box it serves.
+          every relay server it serves.
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">
@@ -474,7 +474,7 @@ function ConnectorEdgeScope({
     <div className="rounded-lg border bg-muted/20 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="flex items-center gap-1.5 text-sm font-medium">
-          <Server className="size-4 text-primary" aria-hidden="true" /> Edge boxes this one install serves
+          <Server className="size-4 text-primary" aria-hidden="true" /> Relay servers this one install serves
         </p>
         {onLinkEdge && servers.length > links.length && (
           <Button type="button" variant="ghost" size="sm" className="h-7" onClick={onLinkEdge}>
@@ -487,7 +487,7 @@ function ConnectorEdgeScope({
           <li key={link.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
             <span className="font-medium">{connectorLinkEdgeName(link, servers)}</span>
             <code className="font-mono text-muted-foreground">{link.tunnelAddress}</code>
-            <span className="text-muted-foreground">· allocated from that edge&apos;s subnet</span>
+            <span className="text-muted-foreground">· allocated from that relay&apos;s subnet</span>
           </li>
         ))}
       </ul>
@@ -578,7 +578,7 @@ function ManualPeerDialog({
           <DialogDescription>
             {focused
               ? `PolySIEM has allocated ${current.name} a tunnel address on ${focused.name}. Enter the values below on ${kind.farSide} to add ${focused.name} as a peer there, then paste that side's public key back here if PolySIEM does not hold it yet.`
-              : `PolySIEM has reserved this connector's identity and a tunnel address on every edge box it serves. Enter the values below on ${kind.farSide}, then paste its public key back here. Nothing is installed and no token exists — this kind of connector is a plain WireGuard peer.`}
+              : `PolySIEM has reserved this connector's identity and a tunnel address on every relay server it serves. Enter the values below on ${kind.farSide}, then paste its public key back here. Nothing is installed and no token exists — this kind of connector is a plain WireGuard peer.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -658,11 +658,11 @@ function ManualPeerAdditionalNote({
       <Waypoints />
       <AlertTitle>Add {edge.name} alongside the {others === 1 ? "peer" : "peers"} already on {farSide}</AlertTitle>
       <AlertDescription>
-        {connector.name} now serves {edgeCount} edge boxes, and each one is its own peer entry with its own tunnel
-        address. Nothing you configured for the other {others === 1 ? "edge box" : "edge boxes"} changes —{" "}
+        {connector.name} now serves {edgeCount} relay servers, and each one is its own peer entry with its own tunnel
+        address. Nothing you configured for the other {others === 1 ? "relay server" : "relay servers"} changes —{" "}
         {opnsense
-          ? "give the instance you already created this edge's tunnel address as well, and add this edge under Peers next to the existing one."
-          : "keep the interface and keypair you already have, add this edge's tunnel address to it, and add this edge as one more peer."}
+          ? "give the instance you already created this relay's tunnel address as well, and add this relay under Peers next to the existing one."
+          : "keep the interface and keypair you already have, add this relay's tunnel address to it, and add this relay as one more peer."}
       </AlertDescription>
     </Alert>
   );
@@ -683,9 +683,9 @@ function ManualPeerDialHint({
     <>
       <Alert>
         <Radio />
-        <AlertTitle>{opnsense ? "OPNsense dials in; the edge only listens" : "The far side dials in; the edge only listens"}</AlertTitle>
+        <AlertTitle>{opnsense ? "OPNsense dials in; the relay only listens" : "The far side dials in; the relay only listens"}</AlertTitle>
         <AlertDescription>
-          An edge box never initiates the tunnel and never needs to reach {farSide}. That side connects outbound to each
+          A relay server never initiates the tunnel and never needs to reach {farSide}. That side connects outbound to each
           edge it should serve and holds the tunnel open with keepalive, so a dynamic or CGNAT address at that end is
           fine.
         </AlertDescription>
@@ -708,14 +708,14 @@ function ManualPeerDialHint({
 function manualPeerValuesIntro(input: { opnsense: boolean; edgeCount: number; focused: boolean }): string {
   if (input.focused) {
     return input.opnsense
-      ? "VPN → WireGuard: the local instance keeps its own keypair and gains this edge's tunnel address; this edge goes under Peers with the public key, endpoint, allowed IPs, and keepalive below."
-      : "Keep the WireGuard interface and keypair that device already has, add this edge's tunnel address to it, and add this edge as a peer with the values below.";
+      ? "VPN → WireGuard: the local instance keeps its own keypair and gains this relay's tunnel address; this relay goes under Peers with the public key, endpoint, allowed IPs, and keepalive below."
+      : "Keep the WireGuard interface and keypair that device already has, add this relay's tunnel address to it, and add this relay as a peer with the values below.";
   }
   const base = input.opnsense
-    ? "VPN → WireGuard → Instances: add a local instance and let OPNsense generate its keypair. Give that one instance the tunnel address for every edge box below, and add each edge under Peers with its own public key, endpoint, allowed IPs, and keepalive."
-    : "Create ONE WireGuard interface, let that device generate its own keypair, then give it the tunnel address for every edge box below and add each edge as a peer.";
+    ? "VPN → WireGuard → Instances: add a local instance and let OPNsense generate its keypair. Give that one instance the tunnel address for every relay server below, and add each relay under Peers with its own public key, endpoint, allowed IPs, and keepalive."
+    : "Create ONE WireGuard interface, let that device generate its own keypair, then give it the tunnel address for every relay server below and add each relay as a peer.";
   return input.edgeCount > 1
-    ? `${base} The same keypair is used for all of them — that is what lets one peer serve several edge boxes.`
+    ? `${base} The same keypair is used for all of them — that is what lets one peer serve several relay servers.`
     : base;
 }
 
@@ -782,15 +782,15 @@ function ManualPeerNoEdgeStep({
     <InstallStep number="1" title={title} hint={connector.name}>
       <Alert>
         <Link2 />
-        <AlertTitle>No edge box to peer with yet</AlertTitle>
+        <AlertTitle>No relay server to peer with yet</AlertTitle>
         <AlertDescription>
-          A tunnel address is allocated per edge box, so there is nothing to paste until this connector is linked to
+          A tunnel address is allocated per relay server, so there is nothing to paste until this connector is linked to
           one.
         </AlertDescription>
       </Alert>
       {onLinkEdge && (
         <Button type="button" variant="outline" size="sm" onClick={onLinkEdge}>
-          <Link2 /> Link to an edge box
+          <Link2 /> Link to a relay server
         </Button>
       )}
     </InstallStep>
@@ -815,7 +815,7 @@ function ManualPeerOtherEdges({ connector, servers }: { connector: ConnectorDto;
           </code>
         </Badge>
       ))}
-      <span>· open Peer settings on that edge&apos;s row to read its block.</span>
+      <span>· open Peer settings on that relay&apos;s row to read its block.</span>
     </p>
   );
 }
@@ -856,12 +856,12 @@ function ManualPeerEdgeBlock({
       <PeerField
         label="Tunnel address to assign there"
         value={block.tunnelAddressCidr}
-        hint="Allocated by PolySIEM for this edge box — do not pick your own"
+        hint="Allocated by PolySIEM for this relay server — do not pick your own"
         emphasized
       />
       <div className="grid gap-2 sm:grid-cols-2">
-        <PeerField label="Edge endpoint" value={block.edgeEndpoint} />
-        <PeerField label="Edge public key" value={block.edgePublicKey} emptyHint="Generate the edge key first" />
+        <PeerField label="Relay endpoint" value={block.edgeEndpoint} />
+        <PeerField label="Relay public key" value={block.edgePublicKey} emptyHint="Generate the relay key first" />
         <PeerField label={opnsense ? "Allowed IPs (on the peer)" : "AllowedIPs"} value={block.allowedIps.join(", ")} />
         <PeerField label="Persistent keepalive" value={String(block.persistentKeepalive)} />
       </div>
@@ -882,7 +882,7 @@ function ManualPeerKeyStep({ connector, opnsense }: { connector: ConnectorDto; o
     mutationFn: (input: UpdateConnectorInput) =>
       apiFetch<ConnectorDto>(connectorUrl(connector.id), { method: "PATCH", body: JSON.stringify(input) }),
     onSuccess: () => {
-      toast.success(`${connector.name} registered. Apply changes on each linked edge box to add it as a peer.`);
+      toast.success(`${connector.name} registered. Apply changes on each linked relay server to add it as a peer.`);
       setPublicKey("");
       void queryClient.invalidateQueries({ queryKey: CONNECTORS_QUERY_PREFIX });
       void queryClient.invalidateQueries({ queryKey: connectorPeerConfigQueryKey(connector.id) });
@@ -897,10 +897,10 @@ function ManualPeerKeyStep({ connector, opnsense }: { connector: ConnectorDto; o
         {registered
           ? "PolySIEM already holds a public key for this peer. Paste a new one only if you regenerated the keypair on that side."
           : `Copy the PUBLIC key ${opnsense ? "OPNsense" : "that device"} generated. PolySIEM never asks for a private key — that half stays on the far side.`}{" "}
-        One key identifies this connector on every edge box it serves.
+        One key identifies this connector on every relay server it serves.
       </p>
       {connector.publicKey && (
-        <PeerField label="Registered public key" value={connector.publicKey} hint="Currently trusted by every linked edge" />
+        <PeerField label="Registered public key" value={connector.publicKey} hint="Currently trusted by every linked relay" />
       )}
       <div className="grid gap-1.5">
         <Label htmlFor={`peer-key-${connector.id}`}>
@@ -951,7 +951,7 @@ function ManualPeerApplyStep({
   const configured = progress.state === "configured";
   const links = connectorLinks(connector);
   return (
-    <InstallStep number="3" title="Apply on each edge box">
+    <InstallStep number="3" title="Apply on each relay server">
       <div
         className={cn(
           "rounded-lg border p-3 transition-colors",
@@ -973,8 +973,8 @@ function ManualPeerApplyStep({
         </div>
       </div>
       <p className="text-xs text-muted-foreground">
-        Publishing a port through this connector? Each edge forwards it to the address this peer holds on{" "}
-        <span className="font-medium">that</span> edge
+        Publishing a port through this connector? Each relay forwards it to the address this peer holds on{" "}
+        <span className="font-medium">that</span> relay
         {links.length > 0 && (
           <> — {links.map((link) => `${connectorLinkEdgeName(link, servers)} → ${link.tunnelAddress}`).join(", ")}</>
         )}{" "}
@@ -996,7 +996,7 @@ function ManualPeerScopePanel({ farSide }: { farSide: string }) {
       <ul className="mt-2 grid gap-1.5 text-xs">
         <li className="flex items-start gap-1.5">
           <Check className="mt-0.5 size-3.5 shrink-0 text-success" aria-hidden="true" />
-          <span>Registers this peer on every edge box you link it to, allocates its tunnel address on each, and forwards the routes you publish to it.</span>
+          <span>Registers this peer on every relay server you link it to, allocates its tunnel address on each, and forwards the routes you publish to it.</span>
         </li>
         <li className="flex items-start gap-1.5">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -1027,7 +1027,7 @@ function IdentityFooter({ connector, servers }: { connector: ConnectorDto; serve
           Tunnel {links.length === 1 ? "address" : "addresses"}
         </p>
         {links.length === 0 ? (
-          <p className="text-xs text-muted-foreground italic">Allocated when you link it to an edge box</p>
+          <p className="text-xs text-muted-foreground italic">Allocated when you link it to a relay server</p>
         ) : (
           links.map((link) => (
             <p key={link.id} className="flex flex-wrap items-baseline gap-1.5">

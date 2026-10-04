@@ -1,34 +1,27 @@
-const ADMIN_USERNAME = /^[a-z_][a-z0-9_-]{0,31}$/i;
-
-export function assertEdgeBootstrapUsername(username: string): string {
-  const value = username.trim();
-  if (!ADMIN_USERNAME.test(value)) {
-    throw new Error("Use a Linux administrator username (letters, numbers, underscores, and hyphens only)");
-  }
-  if (value === "polysiem-edge") {
-    throw new Error("Use your existing administrator account, not the restricted polysiem-edge service account");
-  }
-  return value;
-}
+import { assertBootstrapUsername, bootstrapAuthorizedKey, buildSshBootstrapCommand } from "@/lib/ssh/bootstrap";
 
 /**
- * Temporary authorization used only during provisioning. OpenSSH ignores the
- * command requested by the client and runs this forced installer command.
+ * Edge NAT's view of the shared bootstrap authorization (`src/lib/ssh/bootstrap.ts`).
+ *
+ * The mechanism itself is not edge-specific — every PolySIEM-managed box is
+ * provisioned by pushing an installer through a temporary forced-command
+ * authorization — so it moved to the shared SSH module, alongside the transport
+ * that uses it. What is left here is the one genuinely edge-specific fact: which
+ * restricted service account the operator must NOT bootstrap through.
+ *
+ * The names below are aliases of the shared definitions, not copies, and are
+ * re-exported unchanged because the setup walkthroughs import them by name.
+ * Same pattern as `./ssh.ts`.
  */
-export function edgeBootstrapAuthorizedKey(publicKey: string): string {
-  if (!/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}(?: .*)?$/.test(publicKey)) {
-    throw new Error("Invalid Edge NAT public key");
-  }
-  return `restrict,command="if test $(id -u) -eq 0; then exec sh -s; else exec sudo -n sh -s; fi" ${publicKey}`;
+
+/** The restricted account the edge installer creates and locks down. */
+const EDGE_SERVICE_ACCOUNT = "polysiem-edge";
+
+export function assertEdgeBootstrapUsername(username: string): string {
+  return assertBootstrapUsername(username, EDGE_SERVICE_ACCOUNT);
 }
 
-function singleQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-/** A short command the operator runs while signed in as the chosen admin. */
-export function buildEdgeBootstrapCommand(publicKey: string): string {
-  const line = edgeBootstrapAuthorizedKey(publicKey);
-  const quoted = singleQuote(line);
-  return `umask 077;d=$HOME/.ssh;mkdir -p "$d";chmod 700 "$d";printf '%s\\n' ${quoted} >>"$d/authorized_keys";chmod 600 "$d/authorized_keys"`;
-}
+export {
+  bootstrapAuthorizedKey as edgeBootstrapAuthorizedKey,
+  buildSshBootstrapCommand as buildEdgeBootstrapCommand,
+};

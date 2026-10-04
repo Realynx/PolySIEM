@@ -4,6 +4,8 @@
  * No server imports allowed here (client components import these types).
  */
 
+import type { GuestFirewallPosture } from "./guest-firewall";
+
 export type SecuritySeverity = "critical" | "high" | "medium" | "low" | "info";
 
 /** Display order, worst first. */
@@ -44,7 +46,7 @@ export const SECURITY_CATEGORIES: SecurityCategoryDef[] = [
   {
     id: "firewall",
     label: "Firewall hygiene",
-    blurb: "Rule quality on the edge firewall and the Proxmox guest firewall.",
+    blurb: "Rule quality on the edge firewall, Proxmox guest-firewall coverage and IP-spoofing protection.",
     ceiling: 55,
   },
   {
@@ -236,6 +238,17 @@ export interface SnapshotGuest {
   firewallEnabled: boolean;
   /** Documented SSH keys deployed to this guest (0 = likely password auth). */
   sshKeyCount: number;
+  /**
+   * Proxmox guest-firewall posture (datacenter switch, guest switch, IP/MAC
+   * filter, per-NIC firewall=1). Absent/null for non-Proxmox guests or rows
+   * synced before posture collection.
+   */
+  pveFirewall?: GuestFirewallPosture | null;
+  /**
+   * Other internal networks the gateway (OPNsense) lets this guest's network
+   * reach on SSH. null/absent = no gateway rule evidence for this guest.
+   */
+  sshEgressNetworks?: string[] | null;
 }
 
 export interface SnapshotHost {

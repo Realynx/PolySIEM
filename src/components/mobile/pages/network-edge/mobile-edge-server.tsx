@@ -42,6 +42,13 @@ import {
 } from "./mobile-edge-tabs";
 import { MobileNatRuleSheet } from "./mobile-nat-rule-sheet";
 import { MobileWireguardBlock } from "./mobile-wireguard";
+import { MobileRelaySetupNext } from "./mobile-relay-setup";
+import { RelayPathCompact } from "@/components/network/edge-relay-path";
+import {
+  relayHealthPath,
+  relaySetupProgress,
+  type RelaySetupAction,
+} from "@/components/network/edge-relay-presentation";
 
 function ServerStateBadge({ state }: { state: ReturnType<typeof edgeServerState> }) {
   const label = { online: "Online", offline: "Offline", unverified: "Unverified", disabled: "Disabled" }[state];
@@ -64,11 +71,9 @@ function ServerStateBadge({ state }: { state: ReturnType<typeof edgeServerState>
 function EdgeServerAlerts({
   server,
   summary,
-  isAdmin,
 }: {
   server: EdgeNatServer;
   summary: EdgeSyncSummary;
-  isAdmin: boolean;
 }) {
   const failure = server.settings?.lastApplyError ?? server.lastSyncError;
   const alert = edgeSyncAlert(summary);
@@ -84,11 +89,6 @@ function EdgeServerAlerts({
         <p className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
           {alert}
-        </p>
-      )}
-      {isAdmin && server.enabled && !server.hostKeyEnrolled && (
-        <p className="rounded-xl border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
-          SSH enrollment is not finished. Complete the guided setup from the desktop view before applying rules.
         </p>
       )}
     </>
@@ -114,10 +114,10 @@ function EdgeApplyActions({
   const applyMutation = useMutation({
     mutationFn: () => apiFetch(`/api/network/edge-networks/servers/${server.id}/apply`, { method: "POST" }),
     onSuccess: () => {
-      toast.success(`Applied NAT rules on ${server.name}`);
+      toast.success(`Applied relayed ports on ${server.name}`);
       void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
     },
-    onError: (error: Error) => toast.error(`Could not apply rules: ${error.message}`),
+    onError: (error: Error) => toast.error(`Could not apply to ${server.name}: ${error.message}`),
   });
 
   return (
@@ -133,7 +133,7 @@ function EdgeApplyActions({
         {summary.actionLabel ?? "Apply rules"}
       </Button>
       <Button variant="outline" size="sm" onClick={onAddRule}>
-        <Plus /> Add rule
+        <Plus /> Relay a port
       </Button>
       <Button variant="outline" size="sm" aria-label={`More actions for ${server.name}`} onClick={onMore}>
         <MoreHorizontal />
@@ -154,17 +154,22 @@ function EdgeApplyActions({
 function EdgeServerOverview({
   server,
   summary,
+  connectors,
   isAdmin,
   expanded,
   onAddRule,
+  onSetupAction,
 }: {
   server: EdgeNatServer;
   summary: EdgeSyncSummary;
+  connectors: readonly ConnectorDto[];
   isAdmin: boolean;
   expanded: boolean;
   onAddRule: () => void;
+  onSetupAction: (action: RelaySetupAction) => void;
 }) {
   const [sheet, setSheet] = useState<"none" | "more" | "details">("none");
+  const context = { connectors };
   return (
     <>
       <MobileList>
@@ -186,7 +191,11 @@ function EdgeServerOverview({
         <EdgeSyncRow summary={summary} onOpenDetails={() => setSheet("details")} />
       </MobileList>
 
-      <EdgeServerAlerts server={server} summary={summary} isAdmin={isAdmin} />
+      {server.enabled && <RelayPathCompact hops={relayHealthPath(server, context)} />}
+      {server.enabled && (
+        <MobileRelaySetupNext progress={relaySetupProgress(server, context)} isAdmin={isAdmin} onAction={onSetupAction} />
+      )}
+      <EdgeServerAlerts server={server} summary={summary} />
 
       {isAdmin && server.enabled && (
         <EdgeApplyActions server={server} summary={summary} onAddRule={onAddRule} onMore={() => setSheet("more")} />
@@ -211,17 +220,17 @@ function EdgeServerOverview({
   );
 }
 
-/** Rule count for the Routes segment: "none", "1 route", "6 routes". */
+/** Rule count for the Ports segment: "none", "1 port", "6 ports". */
 function routesBadge(count: number): string {
   if (count === 0) return "none";
-  return count === 1 ? "1 route" : `${count} routes`;
+  return count === 1 ? "1 port" : `${count} ports`;
 }
 
-/** On / Incomplete / Off, from the same helper the tunnel block's badge uses. */
+/** On / Needs key / Off, from the same helper the tunnel block's badge uses. */
 function tunnelBadge(server: EdgeNatServer): { badge: string; tone: "muted" | "success" | "warning" } {
   const status = edgeWireguardStatus(server.settings?.wireguard);
   if (status.tone === "on") return { badge: "On", tone: "success" };
-  return status.tone === "pending" ? { badge: "Incomplete", tone: "warning" } : { badge: "Off", tone: "muted" };
+  return status.tone === "pending" ? { badge: "Needs key", tone: "warning" } : { badge: "Off", tone: "muted" };
 }
 
 /**
@@ -236,7 +245,7 @@ function edgeServerTabs(
   const tunnel = tunnelBadge(server);
   const detected = edgeInterfaceOptions(server).length;
   return [
-    { key: "routes", label: "Routes", badge: routesBadge(server.rules.length) },
+    { key: "routes", label: "Ports", badge: routesBadge(server.rules.length) },
     {
       key: "connectors",
       label: "Connectors",
@@ -269,8 +278,8 @@ function EdgeServerTabContent({
 }
 
 /**
- * One edge server on a phone. Identity, the sync line, the alerts and the
- * primary action stay pinned; Routes / Connectors / Tunnel / Interfaces switch
+ * One relay server on a phone. Identity, the sync line, the relay-path health,
+ * the next setup step, the alerts and the primary action stay pinned; Routes / Connectors / Tunnel / Interfaces switch
  * below them in the same order as the desktop card, and only the selected one
  * renders.
  *
@@ -305,6 +314,17 @@ export function MobileEdgeServerSection({
     setTab("routes");
     setRuleForm({ open: true, rule });
   };
+  const openTab = (next: EdgeServerTab) => {
+    setExpanded(true);
+    setTab(next);
+  };
+  // `ssh` and `apply` have no button on a phone: the setup card points SSH at
+  // the desktop, and Apply already sits right under it.
+  const runSetupAction = (action: RelaySetupAction) => {
+    if (action === "tunnel") openTab("tunnel");
+    else if (action === "connectors") openTab("connectors");
+    else if (action === "add-port") openRuleForm(null);
+  };
 
   return (
     <MobileSection title={server.name}>
@@ -312,9 +332,11 @@ export function MobileEdgeServerSection({
         <EdgeServerOverview
           server={server}
           summary={summary}
+          connectors={connectors}
           isAdmin={isAdmin}
           expanded={expanded}
           onAddRule={() => openRuleForm(null)}
+          onSetupAction={runSetupAction}
         />
 
         <MobileCollapseBody>

@@ -27,6 +27,7 @@ import {
 import { EntityFormDialog } from "@/components/inventory/entity-form-dialog";
 import { bytesToGibString } from "@/components/inventory/entity-configs";
 import { MetadataCard } from "@/components/inventory/metadata-card";
+import { GuestFirewallBadges, GuestFirewallPanel, hasGuestFirewallPosture } from "@/components/inventory/guest-firewall";
 import {
   InterfacesTable,
   ServicesTable,
@@ -89,6 +90,7 @@ function ContainerHeader({ ct, initial }: { ct: Container; initial: ReturnType<t
         <Badge variant="secondary" className="uppercase">{ct.runtime}</Badge>
         <SourceBadge source={ct.source} />
         <StatusBadge status={ct.status} />
+        <GuestFirewallBadges metadata={ct.metadata} />
         {parentHref && (
           <span className="text-xs text-muted-foreground">
             on{" "}<Link href={parentHref} className="font-medium text-foreground hover:text-primary hover:underline underline-offset-4">
@@ -136,6 +138,11 @@ function ContainerSide({ ct }: { ct: Container }) {
           <SpecItem label="Updated">{formatRelative(ct.updatedAt)}</SpecItem>
         </SpecList>
       </SectionCard>
+      {hasGuestFirewallPosture(ct.metadata) && (
+        <SectionCard title="Proxmox firewall">
+          <GuestFirewallPanel metadata={ct.metadata} />
+        </SectionCard>
+      )}
       <SectionCard title="Tags">
         <TagPicker entityType="container" entityId={ct.id} assigned={ct.tags.map(({ tag }) => ({ id: tag.id, name: tag.name, color: tag.color }))} />
       </SectionCard>

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   decryptSecretWithAppSecret,
@@ -6,10 +8,10 @@ import {
 } from "@/lib/crypto";
 import { encodeArchive } from "./export";
 import { decodeArchive, previewRestore } from "./import";
-import { currentSecretFingerprint, revive } from "./revive";
+import { DEFERRED_FK_COLUMNS, FIELD_TYPES, currentSecretFingerprint, revive, tableName } from "./revive";
 import { decodeEncryptedBackup, encodeEncryptedBackup, isEncryptedBackup } from "./archive-crypto";
 import { rewrapArchiveSecrets } from "./portable-secrets";
-import { BACKUP_FORMAT_VERSION, type BackupArchive } from "./types";
+import { BACKUP_FORMAT_VERSION, BACKUP_MODELS, type BackupArchive, type BackupModel } from "./types";
 
 /**
  * Pure, DB-free coverage of the backup engine: the gzip+JSON round-trip, the
@@ -59,6 +61,139 @@ function makeArchive(overrides: Partial<BackupArchive["manifest"]> = {}): Backup
     },
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* Schema coverage                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A model missing from BACKUP_MODELS is SILENTLY skipped — no error, no warning,
+ * it simply is not in the archive and is not wiped by an instance reset. That has
+ * already shipped twice here (edgeNatRule and connectorEdgeLink were both added
+ * to the schema without being registered). These tests read prisma/schema.prisma
+ * directly so the next omission fails in CI instead of in someone's restore.
+ */
+
+interface SchemaModel {
+  /** Prisma model name, e.g. "PrivacyRouter". */
+  name: string;
+  /** camelCase delegate name, which is also the BackupModel key. */
+  key: string;
+  bigint: string[];
+  date: string[];
+  json: string[];
+}
+
+/** Field lines are `  name  Type[?]  …`; relation and attribute lines are not. */
+const FIELD_LINE = /^\s{2,}(\w+)\s+(\w+)(\[\])?(\?)?(\s|$)/;
+
+function parseSchemaModels(source: string): SchemaModel[] {
+  const models: SchemaModel[] = [];
+  let current: SchemaModel | null = null;
+  for (const raw of source.split(/\r?\n/)) {
+    const line = raw.replace(/\/\/.*$/, "");
+    const start = /^model\s+(\w+)\s*\{/.exec(line);
+    if (start) {
+      current = { name: start[1], key: start[1][0].toLowerCase() + start[1].slice(1), bigint: [], date: [], json: [] };
+      continue;
+    }
+    if (!current) continue;
+    if (/^\}/.test(line)) {
+      models.push(current);
+      current = null;
+      continue;
+    }
+    const field = FIELD_LINE.exec(line);
+    if (!field || field[3] === "[]") continue;
+    const [, name, type] = field;
+    if (type === "BigInt") current.bigint.push(name);
+    else if (type === "DateTime") current.date.push(name);
+    else if (type === "Json") current.json.push(name);
+  }
+  return models;
+}
+
+const SCHEMA_MODELS = parseSchemaModels(
+  readFileSync(resolve(process.cwd(), "prisma/schema.prisma"), "utf8"),
+);
+
+/**
+ * Models deliberately left out of backups. Both are pre-existing and are listed
+ * here so the sweep below is meaningful rather than disabled — NOT as an
+ * endorsement. `workflowRunLog` is per-run console output and `otxPulseRead` is
+ * per-user read receipts for a cache that is itself rebuildable; if either is
+ * meant to survive a restore, register it rather than extending this list.
+ */
+const UNBACKED_UP_MODELS = new Set(["workflowRunLog", "otxPulseRead"]);
+
+const PRIVACY_ROUTER_MODELS = [
+  "managedHost",
+  "privacyRouter",
+  "vpnExit",
+  "privacyRoutingRule",
+  "serviceTrafficSample",
+  "serviceTrafficRollup",
+] as const;
+
+describe("BACKUP_MODELS covers the Prisma schema", () => {
+  it("parsed the schema at all (guards the parser itself)", () => {
+    expect(SCHEMA_MODELS.length).toBeGreaterThan(40);
+    const device = SCHEMA_MODELS.find((m) => m.key === "device");
+    expect(device?.bigint).toContain("memoryBytes");
+    expect(device?.json).toContain("metadata");
+  });
+
+  it("registers every schema model", () => {
+    const registered = new Set<string>(BACKUP_MODELS);
+    const missing = SCHEMA_MODELS
+      .map((m) => m.key)
+      .filter((key) => !registered.has(key) && !UNBACKED_UP_MODELS.has(key));
+    expect(missing).toEqual([]);
+  });
+
+  it("registers no model that the schema does not define", () => {
+    const defined = new Set(SCHEMA_MODELS.map((m) => m.key));
+    expect(BACKUP_MODELS.filter((model) => !defined.has(model))).toEqual([]);
+  });
+
+  it.each(PRIVACY_ROUTER_MODELS)("includes the privacy router model %s", (model) => {
+    expect(BACKUP_MODELS).toContain(model);
+  });
+
+  it("orders the privacy router models so referenced rows are inserted first", () => {
+    const at = (model: string) => BACKUP_MODELS.indexOf(model as BackupModel);
+    expect(at("managedHost")).toBeLessThan(at("privacyRouter"));
+    expect(at("privacyRouter")).toBeLessThan(at("vpnExit"));
+    expect(at("vpnExit")).toBeLessThan(at("privacyRoutingRule"));
+    expect(at("privacyRouter")).toBeLessThan(at("serviceTrafficSample"));
+    expect(at("privacyRouter")).toBeLessThan(at("serviceTrafficRollup"));
+    // PrivacyRouter.defaultExitId points forward at VpnExit, so it MUST be deferred
+    // to restore's second UPDATE pass or the insert violates the FK.
+    expect(DEFERRED_FK_COLUMNS.privacyRouter).toContain("defaultExitId");
+  });
+
+  it("lists every BigInt and DateTime column of every backed-up model", () => {
+    const gaps: string[] = [];
+    for (const model of SCHEMA_MODELS) {
+      if (!(model.key in FIELD_TYPES)) continue;
+      const declared = FIELD_TYPES[model.key as BackupModel];
+      for (const column of model.bigint) {
+        if (!declared.bigint?.includes(column)) gaps.push(`${model.key}.${column} (BigInt)`);
+      }
+      for (const column of model.date) {
+        if (!declared.date?.includes(column)) gaps.push(`${model.key}.${column} (DateTime)`);
+      }
+    }
+    // A missing entry means the value stays a string/ISO text on restore and
+    // Prisma rejects the insert — the archive looks fine until you use it.
+    expect(gaps).toEqual([]);
+  });
+
+  it("maps every model to its real table name for the truncate", () => {
+    const tables = new Set(SCHEMA_MODELS.map((m) => m.name));
+    expect(BACKUP_MODELS.filter((model) => !tables.has(tableName(model)))).toEqual([]);
+  });
+});
 
 describe("encodeArchive / decodeArchive round-trip", () => {
   it("gzips and restores the exact manifest + data", () => {

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { MANAGED_SETTING_NAMES } from "@/lib/postgres-tuning/catalog";
 
 const installer = readFileSync(resolve(process.cwd(), "deploy/install-vm.sh"), "utf8");
 const releaseWorkflow = readFileSync(resolve(process.cwd(), ".github/workflows/release.yml"), "utf8");
@@ -83,5 +84,20 @@ describe("native installer release contract", () => {
     expect(readme).toContain("bash -s -- --source");
     expect(readme).toContain("bash -s -- --force");
     expect(readme).toContain("bash -s -- --uninstall");
+  });
+  it("grants exactly the tuned PostgreSQL parameters and installs the restart helper", () => {
+    const match = /^POSTGRES_TUNING_PARAMETERS="([^"]+)"$/m.exec(installer);
+    expect(match?.[1].split(" ").sort()).toEqual([...MANAGED_SETTING_NAMES].sort());
+    expect(installer).toContain("GRANT ALTER SYSTEM ON PARAMETER ${parameter} TO polysiem;");
+    expect(installer).toContain("GRANT EXECUTE ON FUNCTION pg_catalog.pg_reload_conf() TO polysiem;");
+    expect(installer).toContain('if [ "$pg_version_num" -lt 150000 ]; then');
+    expect(installer).toContain("PathExists=${PG_RESTART_REQUEST}");
+    expect(installer).toContain("ExecStart=/bin/systemctl restart postgresql");
+    expect(installer).toContain('PG_RESTART_REQUEST="${BASE_DIR}/data/postgres-restart.request"');
+    // Grants run before the "already healthy" early exit so updates pick them up.
+    expect(installer.indexOf("    configure_postgres_tuning\n")).toBeLessThan(
+      installer.indexOf("if current_release_is_healthy; then"),
+    );
+    expect(installer).toContain('rm -f "$PG_RESTART_PATH_UNIT" "$PG_RESTART_SERVICE_UNIT"');
   });
 });

@@ -27,3 +27,7 @@ deploy/*
 *.log
 Thumbs.db
 .DS_Store
+
+# Rust build output and local proxy binary (proxy-builder stage compiles from source)
+native/*/target
+assets

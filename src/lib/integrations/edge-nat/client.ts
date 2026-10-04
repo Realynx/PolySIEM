@@ -1,6 +1,6 @@
 import "server-only";
-import { isIP } from "node:net";
 import type { DriverConfig, TestResult } from "../types";
+import { isIP } from "@/lib/net/ip";
 import { edgeNatSettingsSchema, edgeNatSnapshotSchema, wireguardKeyRegex, type EdgeNatSettings, type EdgeNatSnapshot } from "@/lib/validators/integrations";
 import { parseEdgeSshUrl, runVerifiedSsh, type CommandRunner } from "./ssh";
 

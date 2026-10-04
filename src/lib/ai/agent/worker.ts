@@ -18,7 +18,6 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { runInvestigation } from "@/lib/ai/agent/runtime";
 import { accumulateEvent, emptyAccumulator, shouldFlush, type ProgressAccumulator } from "@/lib/ai/agent/progress";
 import type { InvestigationProgress, InvestigationReport } from "@/lib/ai/agent/contract";
 
@@ -85,6 +84,11 @@ async function processTicket(ticketId: string): Promise<void> {
 
   try {
     const { seedFromTicket } = await import("@/lib/ai/agent/investigate");
+    // Loaded on demand: the runtime pulls in LangChain + every model provider
+    // (tens of MB of heap). Boot imports this module for the straggler sweep,
+    // and that must not pin the agent stack in memory on boxes that never
+    // run an investigation.
+    const { runInvestigation } = await import("@/lib/ai/agent/runtime");
     const input = await seedFromTicket(ticketId);
     const gen = runInvestigation(input, { role: "ADMIN", signal: controller.signal, ticketId });
     for (;;) {

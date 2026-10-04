@@ -25,6 +25,7 @@ import { ListCard } from "@/components/inventory/list-card";
 import { PaginationNav } from "@/components/inventory/pagination-nav";
 import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { TagList } from "@/components/inventory/tag-badge";
+import { GuestFirewallBadges } from "@/components/inventory/guest-firewall";
 import { ProvisionContainerDialog } from "@/components/inventory/provision-container-dialog";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
 import { MobileContainersPage } from "@/components/mobile/pages/inventory/mobile-containers-page";
@@ -117,6 +118,7 @@ export default async function ContainersPage({
                           {ct.name}
                         </Link>
                         <StatusBadge status={ct.status} />
+                        <GuestFirewallBadges metadata={ct.metadata} compact />
                       </div>
                       {ct.osName && <p className="mt-0.5 text-xs text-muted-foreground">{ct.osName}</p>}
                     </TableCell>

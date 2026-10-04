@@ -8,6 +8,7 @@ import { Activity, Cloud, Globe, Pin, Radar, ShieldAlert, ShieldCheck, Wifi } fr
 import { cn } from "@/lib/utils";
 import { formatCount } from "@/lib/format";
 import { TopologyCanvas } from "@/components/topology/topology-canvas";
+import { FOOTPRINT_MAP_HEIGHT } from "@/components/topology/footprint-map-lazy";
 import { RoutedEdge } from "@/components/topology/routed-edge";
 import { MapLegend } from "@/components/topology/map-legend";
 import { EdgeDetails, type EdgeDetail, type EdgeDetailRow } from "@/components/topology/edge-details";
@@ -144,8 +145,21 @@ function selectedMapDetail(
   return selectedEdgeId ? (details.get(selectedEdgeId) ?? null) : null;
 }
 
+/**
+ * Keep the previous graph object while a refresh delivers identical content.
+ * Every background `router.refresh()` deserialises a brand-new graph; without
+ * this the full dagre + trace-routing pass re-ran each minute even when
+ * nothing in the lab had changed.
+ */
+function useStableGraph(graph: FootprintGraph): FootprintGraph {
+  const raw = useMemo(() => JSON.stringify(graph), [graph]);
+  const [stable, setStable] = useState({ raw, graph });
+  if (stable.raw !== raw) setStable({ raw, graph });
+  return stable.raw === raw ? stable.graph : graph;
+}
+
 export function FootprintMap({
-  graph,
+  graph: incomingGraph,
   heightClassName,
   storageKey = "polysiem:footprint:positions:v12",
   initialFocusId = null,
@@ -161,6 +175,7 @@ export function FootprintMap({
   chromeless?: boolean;
 }) {
   const router = useRouter();
+  const graph = useStableGraph(incomingGraph);
   const draggingRef = useRef(false);
   const trafficRawRef = useRef<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -171,24 +186,31 @@ export function FootprintMap({
   const [trafficPayload, setTrafficPayload] = useState<TunnelTrafficPayload | null>(null);
   const [refreshMs, setRefreshMs] = useRefreshInterval(
     FOOTPRINT_REFRESH_STORAGE_KEY,
+    { clientOnly: true },
   );
   const [isRefreshing, startRefresh] = useTransition();
   const backgroundRefreshMs = footprintBackgroundRefreshMs(refreshMs);
   // v6 introduces Proxmox-derived VLAN lanes. Older child positions were
   // relative to "Unassigned" and would be invalid under their new parents.
   const { positions, savePosition, clearPositions, hasSaved } =
-    useSavedPositions(storageKey);
+    useSavedPositions(storageKey, { clientOnly: true });
 
   // Structural data is expensive: a page refresh replaces the graph prop and
   // reruns dagre + route geometry. Keep it fresh in the background without
   // coupling that work to the 1–10s live-metric cadence.
+  const isRefreshingRef = useRef(isRefreshing);
+  useEffect(() => {
+    isRefreshingRef.current = isRefreshing;
+  }, [isRefreshing]);
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (isRefreshing) return;
+      // Skip hidden tabs: nobody is looking, and each refresh re-runs every
+      // dashboard query on the server.
+      if (isRefreshingRef.current || document.visibilityState === "hidden") return;
       startRefresh(() => router.refresh());
     }, backgroundRefreshMs);
     return () => window.clearInterval(timer);
-  }, [backgroundRefreshMs, isRefreshing, router]);
+  }, [backgroundRefreshMs, router]);
 
   // Live tunnel traffic loads after the map paints — DNS/exposure is already
   // baked into `graph`, so the map is fully useful before this resolves.
@@ -384,7 +406,7 @@ export function FootprintMap({
       }}
       fitPadding={0.08}
       onlyRenderVisibleElements
-      heightClassName={heightClassName ?? "h-[clamp(600px,72vh,820px)]"}
+      heightClassName={heightClassName ?? FOOTPRINT_MAP_HEIGHT}
     >
       {/* Attack-surface summary */}
       <DesktopOverlay chromeless={chromeless}>

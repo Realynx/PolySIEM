@@ -24,6 +24,7 @@ import { ListCard } from "@/components/inventory/list-card";
 import { PaginationNav } from "@/components/inventory/pagination-nav";
 import { TableToolbar } from "@/components/inventory/table-toolbar";
 import { TagList } from "@/components/inventory/tag-badge";
+import { GuestFirewallBadges } from "@/components/inventory/guest-firewall";
 import { parseListParams, type PageSearchParams } from "@/components/inventory/query";
 import { MobileVmsPage } from "@/components/mobile/pages/inventory/mobile-vms-page";
 
@@ -106,6 +107,7 @@ export default async function VmsPage({ searchParams }: { searchParams: Promise<
                           {vm.name}
                         </Link>
                         <StatusBadge status={vm.status} />
+                        <GuestFirewallBadges metadata={vm.metadata} compact />
                       </div>
                       {vm.vmid != null && (
                         <p className="mt-0.5 text-xs text-muted-foreground">VMID {vm.vmid}</p>

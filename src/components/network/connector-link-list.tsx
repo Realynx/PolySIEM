@@ -53,18 +53,18 @@ export function ConnectorEdgeLinks({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/20 px-3 py-2">
         <p className="flex items-center gap-1.5 text-xs font-medium">
           <Server className="size-3.5 text-muted-foreground" aria-hidden="true" />
-          Edge boxes it serves
+          Relay servers it serves
           <Badge variant="secondary" className="font-normal tabular-nums">{links.length}</Badge>
         </p>
         {isAdmin && canLinkMore && (
           <Button type="button" variant="ghost" size="sm" className="h-7" onClick={onLink}>
-            <Link2 /> Link to an edge box
+            <Link2 /> Link to a relay server
           </Button>
         )}
       </div>
       {links.length === 0 ? (
         <p className="px-3 py-2.5 text-xs text-muted-foreground">
-          Not serving any edge box yet. Link it to one and PolySIEM allocates its tunnel address there — the same
+          Not serving any relay server yet. Link it to one and PolySIEM allocates its tunnel address there — the same
           connector can serve as many as you need.
         </p>
       ) : (
@@ -84,10 +84,10 @@ export function ConnectorEdgeLinks({
           </ul>
           {manual && (
             <p className="border-t px-3 py-2 text-xs text-muted-foreground">
-              Every edge box above is its own peer entry on {farSide}, with its own tunnel address — they sit alongside
+              Every relay server above is its own peer entry on {farSide}, with its own tunnel address — they sit alongside
               each other, so adding one never replaces another.
               {isAdmin && onPeerSettings && (
-                <> Open <span className="font-medium">Peer settings</span> on a row for exactly that edge&apos;s values.</>
+                <> Open <span className="font-medium">Peer settings</span> on a row for exactly that relay&apos;s values.</>
               )}
             </p>
           )}

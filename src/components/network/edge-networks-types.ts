@@ -1,9 +1,19 @@
+import { managedHostBaseUrlIssue, managedHostBaseUrlProblem } from "@/lib/managed-host-url";
+
 export type NatProtocol = "tcp" | "udp";
 
 /**
  * How a published port reaches its target. Mirrors `edgeRouteModeSchema` in
- * `src/lib/validators/edge-nat.ts`; it is re-declared here so client bundles
- * never pull in that node:net-based module.
+ * `src/lib/validators/edge-nat.ts`; it is re-declared here to keep this module
+ * free of zod, which client bundles do not otherwise need.
+ *
+ * It used to say "so client bundles never pull in that node:net-based module".
+ * That warning was the ONLY thing protecting the constraint, and a comment
+ * protects nothing: a later change reached `node:net` through
+ * `validators/privacy-router.ts` anyway and broke the app at load. The validators
+ * are browser-safe now (`@/lib/net/ip` replaced the builtin) and
+ * `src/test/client-bundle-safety.test.ts` walks the import graph to keep them
+ * that way.
  *
  * "direct"    — the edge DNATs straight to a target it can already reach. This
  *               is the original behaviour and stays the default.
@@ -590,7 +600,7 @@ export function buildOpnsenseWireguardConfig(input: {
     "",
     "[Peer]",
     "# PolySIEM edge (listener)",
-    `PublicKey = ${input.edgePublicKey ?? "<generate the edge key first>"}`,
+    `PublicKey = ${input.edgePublicKey ?? "<generate the relay key first>"}`,
     `Endpoint = ${input.edgeEndpoint}`,
     `AllowedIPs = ${allowed}`,
     `PersistentKeepalive = ${input.keepalive}`,
@@ -603,8 +613,11 @@ export function edgeWireguardStatus(tunnel: WireguardTunnelDto | undefined): {
   tone: "on" | "off" | "pending";
 } {
   if (!tunnel || !tunnel.enabled) return { label: "Off", tone: "off" };
-  if (!tunnel.hasPrivateKey || !tunnel.peer) return { label: "Incomplete", tone: "pending" };
-  return { label: "Enabled", tone: "on" };
+  // Peers are connectors now; the legacy single `peer` is no longer required,
+  // so a keyed, enabled tunnel is simply on. The overview copy carries a public
+  // key rather than `hasPrivateKey`.
+  if (!(tunnel.hasPrivateKey ?? Boolean(tunnel.publicKey))) return { label: "Needs key", tone: "pending" };
+  return { label: "On", tone: "on" };
 }
 
 /** Derived, display-ready values shared by the desktop and mobile tunnel views. */
@@ -944,6 +957,11 @@ export interface ConnectorInstallCommandView {
   selfSigned: boolean;
   /** Origin baked into the command, e.g. "https://polysiem.lan:3000". Null if unparsable. */
   origin: string | null;
+  /**
+   * True when that origin can never resolve to PolySIEM from another machine.
+   * Renderers turn the reachability line into a warning rather than a footnote.
+   */
+  originUnreachable: boolean;
 }
 
 /** Everything `connectorInstallCommandView` needs. A reveal satisfies it, as does a raw response. */
@@ -985,11 +1003,30 @@ export function connectorInstallIsHttps(command: string | null | undefined): boo
 }
 
 /**
- * One plain line about reachability. The installer URL is baked from `APP_URL`
- * (falling back to the address the operator is browsing), so a connector on
- * another VLAN pointed at `localhost` can never install.
+ * True when the origin baked into the command cannot possibly work from another
+ * machine — `localhost`, a `127.x` literal, `::1`, a single-label hostname.
+ *
+ * The same rule the privacy router apply REFUSES on. It is not refused here,
+ * because the connector installer is pasted by a human who can see the command
+ * and might legitimately be installing onto this very host; what it must never
+ * do is hand over a doomed one-liner without saying so.
+ */
+export function connectorInstallOriginUnreachable(origin: string | null): boolean {
+  return origin !== null && managedHostBaseUrlProblem(origin) !== null;
+}
+
+/**
+ * One line about reachability — a warning when the address is provably wrong,
+ * and a plain note otherwise.
+ *
+ * The installer URL is baked from `APP_URL` (falling back to the address the
+ * operator is browsing), so an admin on a dev server or an SSH tunnel gets a
+ * command that tells the connector to install from ITSELF. That case is worth
+ * naming outright rather than leaving in a general caution nobody reads.
  */
 export function connectorInstallReachabilityCopy(origin: string | null): string {
+  const issue = origin ? managedHostBaseUrlIssue(origin, "connector host") : null;
+  if (issue) return issue;
   const target = origin ? `${origin} ` : "this PolySIEM address ";
   return `The connector host has to reach ${target}itself — that address comes from APP_URL, or from whatever `
     + "address you are browsing PolySIEM on. A connector on another VLAN or another machine cannot install from a "
@@ -1075,12 +1112,14 @@ export function connectorInstallCommandView(
   if (!primary) return null;
   const skipsTls = installCommandSkipsTls(primary, insecure);
   const alternate = pickInstallAlternate(primary, plain, insecure, skipsTls);
+  const origin = connectorInstallOrigin(primary);
   return {
     primary,
     primaryNote: installPrimaryNote(selfSigned, skipsTls, alternate?.command === insecure && insecure !== null),
     alternate,
     selfSigned,
-    origin: connectorInstallOrigin(primary),
+    origin,
+    originUnreachable: connectorInstallOriginUnreachable(origin),
   };
 }
 
@@ -1109,7 +1148,7 @@ export function connectorTunnelProvisioned(source: unknown): ConnectorTunnelProv
   if (!integrationId && !edgeName && !address) return null;
   return {
     integrationId: integrationId ?? "",
-    edgeName: edgeName ?? "that edge box",
+    edgeName: edgeName ?? "that relay server",
     interfaceName: trimmedOrNull(value.interfaceName) ?? WIREGUARD_DEFAULTS.interfaceName,
     address: address ?? WIREGUARD_DEFAULTS.address,
     listenPort: typeof value.listenPort === "number" && Number.isFinite(value.listenPort)
@@ -1158,7 +1197,7 @@ export function edgeTunnelSetupNotice(
     (other) => other.id !== server.id && other.settings?.wireguard?.address === WIREGUARD_DEFAULTS.address,
   );
   const where = defaultTaken
-    ? `(${WIREGUARD_DEFAULTS.interfaceName}, on its own subnet so it cannot collide with your other edge boxes)`
+    ? `(${WIREGUARD_DEFAULTS.interfaceName}, on its own subnet so it cannot collide with your other relay servers)`
     : `(${WIREGUARD_DEFAULTS.interfaceName}, ${WIREGUARD_DEFAULTS.address})`;
   return `${server.name} has no WireGuard tunnel yet. PolySIEM sets one up ${where} when you link this connector, `
     + "then apply changes there to bring it up.";
@@ -1318,7 +1357,7 @@ export const CONNECTOR_INTERFACE_DEFAULT = "wg0";
 
 /** The one sentence every connector surface should make obvious. */
 export const CONNECTOR_INDEPENDENCE_COPY =
-  "A connector is installed once and can serve several edge boxes — link it to as many as you like, and any of them can route through it.";
+  "A connector is installed once and can serve several relay servers — link it to as many as you like, and any of them can route through it.";
 
 export function connectorInterfaceName(connector: Pick<ConnectorDto, "interfaceName">): string {
   return connector.interfaceName?.trim() || CONNECTOR_INTERFACE_DEFAULT;
@@ -1407,10 +1446,10 @@ export function connectorLinkSummary(connector: ConnectorDto): ConnectorLinkSumm
     enabled,
     shared: total > 1,
     label: total === 0
-      ? "Not linked to an edge box yet"
+      ? "Not linked to a relay server yet"
       : total === 1
-        ? "Serving 1 edge box"
-        : `Serving ${total} edge boxes`,
+        ? "Serving 1 relay server"
+        : `Serving ${total} relay servers`,
   };
 }
 
@@ -1427,7 +1466,7 @@ export function connectorLinkEdgeName(
   link: ConnectorLinkDto,
   servers: readonly EdgeNatServer[] = [],
 ): string {
-  return edgeServerForLink(servers, link)?.name ?? link.edgeName?.trim() ?? "Edge box";
+  return edgeServerForLink(servers, link)?.name ?? link.edgeName?.trim() ?? "Relay server";
 }
 
 // ---------------------------------------------------------------------------
@@ -1522,7 +1561,7 @@ export function connectorStatusPresentation(
         label: "Configured",
         tone: "success",
         variant: "secondary",
-        hint: "Its public key is registered — the edge accepts the tunnel once you apply changes.",
+        hint: "Its public key is registered — the relay accepts the tunnel once you apply changes.",
       };
     case "stale":
       return { label: "Not checking in", tone: "warning", variant: "outline", hint: "Enrolled, but PolySIEM has not heard from the agent recently." };
@@ -1581,8 +1620,8 @@ export function isConnectorSelectableFor(connector: ConnectorDto, integrationId:
 /** Why a linked connector cannot carry a route on this edge — null when it can. */
 export function connectorUnavailableReason(connector: ConnectorDto, integrationId: string): string | null {
   const link = connectorLinkFor(connector, integrationId);
-  if (!link) return "not linked to this edge box";
-  if (!isConnectorLinkEnabled(link)) return "link suspended on this edge box";
+  if (!link) return "not linked to this relay server";
+  if (!isConnectorLinkEnabled(link)) return "link suspended on this relay server";
   if (!isConnectorSelectable(connector)) return connectorStatusPresentation(connector).label.toLowerCase();
   return null;
 }
@@ -1725,14 +1764,14 @@ export function connectorPeerProgress(
     return {
       state: "disabled",
       label: "Disabled",
-      detail: "Re-enable this connector before configuring the far side; the edge drops its peer while it is off.",
+      detail: "Re-enable this connector before configuring the far side; the relay drops its peer while it is off.",
     };
   }
   if (connector.publicKey) {
     return {
       state: "configured",
       label: "Public key registered",
-      detail: `The edge trusts ${farSide} as a peer. Use Apply on this server to push it, then the tunnel comes up when ${farSide} dials in.`,
+      detail: `The relay trusts ${farSide} as a peer. Use Apply on this server to push it, then the tunnel comes up when ${farSide} dials in.`,
     };
   }
   return {
@@ -1893,8 +1932,8 @@ export function buildConnectorPeerSnippet(
 ): string {
   const kind = options.kind ?? "peer";
   const heading = kind === "opnsense"
-    ? "# OPNsense: VPN → WireGuard → Instances (local) and Peers (the edge)."
-    : "# The far side of the tunnel. It dials the edge; the edge only listens.";
+    ? "# OPNsense: VPN → WireGuard → Instances (local) and Peers (the relay)."
+    : "# The far side of the tunnel. It dials the relay; the relay only listens.";
   return [
     "[Interface]",
     heading,
@@ -1904,7 +1943,7 @@ export function buildConnectorPeerSnippet(
     "",
     "[Peer]",
     "# PolySIEM edge (listener)",
-    `PublicKey = ${block.edgePublicKey ?? "<generate the edge key first>"}`,
+    `PublicKey = ${block.edgePublicKey ?? "<generate the relay key first>"}`,
     `Endpoint = ${block.edgeEndpoint}`,
     `AllowedIPs = ${block.allowedIps.join(", ")}`,
     `PersistentKeepalive = ${block.persistentKeepalive}`,
@@ -2025,23 +2064,23 @@ export function connectorPeerBlockHeading(input: {
 }): ConnectorPeerBlockHeading {
   const farSide = connectorKindPresentation(connectorKindOf(input.connector)).farSide;
   const title = input.justLinked
-    ? `Peer settings for ${input.edgeName} — the edge box you just linked`
+    ? `Peer settings for ${input.edgeName} — the relay server you just linked`
     : `Peer settings for ${input.edgeName}`;
   const others = Math.max(0, input.edgeCount - 1);
   if (others === 0) {
     return {
       title,
-      detail: `These are ${input.connector.name}'s values on ${input.edgeName}. Link it to another edge box later and `
-        + `that edge gets a peer entry of its own here, next to this one.`,
+      detail: `These are ${input.connector.name}'s values on ${input.edgeName}. Link it to another relay server later and `
+        + `that relay gets a peer entry of its own here, next to this one.`,
     };
   }
   const them = others === 1 ? "it" : "them";
   const peers = others === 1 ? "the peer" : `the ${others} peers`;
-  const boxes = others === 1 ? "the other edge box" : `the other ${others} edge boxes`;
+  const boxes = others === 1 ? "the other relay server" : `the other ${others} relay servers`;
   return {
     title,
     detail: `Add this on ${farSide} as one more peer, alongside ${peers} already configured for ${boxes} — it does `
-      + `not replace ${them}. One interface, one keypair, one peer entry per edge box.`,
+      + `not replace ${them}. One interface, one keypair, one peer entry per relay server.`,
   };
 }
 
@@ -2283,7 +2322,7 @@ export function edgeInstallStep(server: EdgeNatServer): EdgeInstallStep {
       ? verified
         ? "Its restricted key is installed and the host key is pinned — nothing to do on this end."
         : "The host key is pinned. Run Verify SSH on the server card if you want to confirm the agent answers."
-      : "This edge server has not been enrolled yet. Install its restricted key and pin its host key first — the connector needs the edge side working.",
+      : "This relay server has not been enrolled yet. Install its restricted key and pin its host key first — the connector needs the relay side working.",
   };
 }
 
@@ -2329,12 +2368,12 @@ export const ROUTE_MODE_CHOICES: ReadonlyArray<{ value: EdgeRouteMode; title: st
   {
     value: "direct",
     title: "Direct (edge → target)",
-    detail: "The edge forwards straight to an address it can already reach.",
+    detail: "The relay forwards straight to an address it can already reach.",
   },
   {
     value: "connector",
     title: "Via connector (reverse tunnel)",
-    detail: "The edge hands traffic to a connector inside your network, which makes the last hop.",
+    detail: "The relay hands traffic to a connector inside your network, which makes the last hop.",
   },
 ];
 
@@ -2358,7 +2397,7 @@ export function edgeTunnelEndpoint(server: EdgeNatServer): { host: string | null
   const settings = server.settings ?? {};
   const host = settings.syncedSnapshot?.publicIp ?? settings.publicIp ?? null;
   const port = settings.wireguard?.listenPort ?? WIREGUARD_DEFAULTS.listenPort;
-  return { host, port, label: host ? `${host}:${port}/udp` : `the edge public IP on UDP ${port}` };
+  return { host, port, label: host ? `${host}:${port}/udp` : `the relay public IP on UDP ${port}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -2463,10 +2502,10 @@ function connectorSetupValues(
   const protocol = rule?.protocol ? String(rule.protocol).trim().toUpperCase() : null;
   return {
     name: connector.name,
-    address: setupValue(connectorTunnelAddressFor(connector, integrationId), "its tunnel address on this edge"),
-    edge: setupValue(connectorLinkFor(connector, integrationId)?.edgeName, "this edge"),
+    address: setupValue(connectorTunnelAddressFor(connector, integrationId), "its tunnel address on this relay"),
+    edge: setupValue(connectorLinkFor(connector, integrationId)?.edgeName, "this relay"),
     protocol: setupValue(protocol, "the rule's protocol"),
-    publicPort: setupValue(rule?.publicPort, "the published port"),
+    publicPort: setupValue(rule?.publicPort, "the relayed port"),
     targetAddress: setupValue(rule?.targetAddress, "the internal service address"),
     targetPort: setupValue(rule?.targetPort, "the service port"),
   };
@@ -2481,11 +2520,11 @@ function setupListener(values: ConnectorSetupValues): string {
 function connectorSetupSummary(kind: ConnectorKind, values: ConnectorSetupValues): string {
   const listener = setupListener(values);
   const lead = values.publicPort.known
-    ? `The edge forwards this port to ${values.address.text} over the tunnel.`
-    : `The edge forwards every port you publish through this connector to ${values.address.text} over the tunnel.`;
+    ? `The relay forwards this port to ${values.address.text} over the tunnel.`
+    : `The relay forwards every port you publish through this connector to ${values.address.text} over the tunnel.`;
   return kind === "opnsense"
     ? `${lead} Finish the path with a destination NAT rule on ${values.name}, from its WireGuard interface on ${listener} to the service on your LAN.`
-    : `${lead} ${values.name} must forward ${listener} onward to the service itself — PolySIEM only manages the edge end.`;
+    : `${lead} ${values.name} must forward ${listener} onward to the service itself — PolySIEM only manages the relay end.`;
 }
 
 /**
@@ -2533,7 +2572,7 @@ function opnsenseNatStep(values: ConnectorSetupValues): ConnectorSetupStep {
         label: "Destination port range",
         value: range.text,
         mono: range.known,
-        note: "From and to are both the published port.",
+        note: "From and to are both the relayed port.",
       },
       { label: "Redirect target IP", value: values.targetAddress.text, mono: values.targetAddress.known },
       { label: "Redirect target port", value: values.targetPort.text, mono: values.targetPort.known },

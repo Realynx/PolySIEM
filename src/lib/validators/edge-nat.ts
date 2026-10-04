@@ -1,6 +1,8 @@
-import { isIP } from "node:net";
 import { z } from "zod";
+import { isIP } from "@/lib/net/ip";
+import { sshHostSchema, sshPortSchema, sshUsernameSchema } from "@/lib/ssh/target";
 import { wireguardKeyRegex } from "@/lib/validators/integrations";
+import { patchSchema } from "@/lib/validators/patch";
 
 function isIpv4Cidr(value: string): boolean {
   const [address, prefix, extra] = value.split("/");
@@ -64,7 +66,16 @@ export function edgeNatRulesConflict(
   return left.protocol === right.protocol && left.publicPort === right.publicPort;
 }
 
-export const updateEdgeNatRuleSchema = edgeNatRuleBaseSchema.partial().refine(
+/**
+ * PATCH body for one rule. Built with `patchSchema`, not `.partial()`: a plain
+ * `.partial()` still applies the `enabled` and `mode` defaults, which made
+ * `updateEdgeNatRule` merge `mode: patch.mode ?? existing.mode` against a
+ * `"direct"` that the client never sent — silently converting a
+ * connector-routed rule into a direct DNAT and re-enabling a disabled rule.
+ * With the defaults stripped, absent keys stay absent and the "at least one
+ * field" guard below can actually fail (on `.partial()` it never could).
+ */
+export const updateEdgeNatRuleSchema = patchSchema(edgeNatRuleBaseSchema).refine(
   (value) => Object.keys(value).length > 0,
   "Provide at least one field",
 );
@@ -104,37 +115,18 @@ export const createConnectorSchema = z.object({
 export type CreateConnectorInput = z.infer<typeof createConnectorSchema>;
 
 /**
- * Where PolySIEM reaches this connector over SSH (phase 2). Hostname or IP —
- * the connector box normally has no public address, so this is a LAN/VPN address
- * reachable from the PolySIEM server itself.
+ * Where PolySIEM reaches this connector over SSH (phase 2), and which account it
+ * logs in as. Both are the shared managed-host encodings — a connector is one
+ * kind of managed box, not its own dialect.
  */
-const connectorSshHostSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(253)
-  .refine(
-    (value) =>
-      isIP(value) !== 0 ||
-      /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(value),
-    "Use a hostname or IP address reachable from the PolySIEM server",
-  );
-
-/**
- * The Linux account whose `authorized_keys` carries the restricted PolySIEM key.
- * Defaults to `polysiem-connector`; kept configurable only for hosts that must
- * use a different service account.
- */
-const connectorSshUsernameSchema = z
-  .string()
-  .trim()
-  .regex(/^[a-z_][a-z0-9_-]{0,31}$/, "Use a Linux service account name");
+const connectorSshHostSchema = sshHostSchema;
+const connectorSshUsernameSchema = sshUsernameSchema;
 
 /** Body of the SSH half of PATCH /api/network/connectors/[id]. */
 export const connectorSshEndpointSchema = z
   .object({
     sshHost: connectorSshHostSchema.nullable().optional(),
-    sshPort: z.number().int().min(1).max(65535).optional(),
+    sshPort: sshPortSchema.optional(),
     sshUsername: connectorSshUsernameSchema.optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "Provide at least one field");
@@ -147,7 +139,7 @@ const updateConnectorBaseSchema = z.object({
   disabled: z.boolean().optional(),
   /** SSH management endpoint (phase 2). Clearing the host disables SSH push. */
   sshHost: connectorSshHostSchema.nullable().optional(),
-  sshPort: z.number().int().min(1).max(65535).optional(),
+  sshPort: sshPortSchema.optional(),
   sshUsername: connectorSshUsernameSchema.optional(),
   /**
    * WireGuard public key for a manual ("opnsense"/"peer") connector — this is the

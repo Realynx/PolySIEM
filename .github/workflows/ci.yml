@@ -49,6 +49,91 @@ jobs:
           DATABASE_URL: postgresql://build:build@localhost:5432/build
           APP_SECRET: build-secret-placeholder-32-characters
 
+  privacy-proxy:
+    name: Privacy router SNI proxy (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: native/privacy-proxy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # The ubuntu-latest image ships a rustup-managed stable toolchain, so this
+      # only has to guarantee the two components and the musl target are present.
+      # Note that `rust:1-alpine` - what deploy/Dockerfile builds with - ships
+      # NEITHER clippy nor rustfmt, which is why the lint gate lives here rather
+      # than in the image build.
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+          rustup target add x86_64-unknown-linux-musl
+          rustc --version && cargo clippy --version && cargo fmt --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/privacy-proxy/target
+          key: privacy-proxy-${{ runner.os }}-${{ hashFiles('native/privacy-proxy/Cargo.lock') }}
+          restore-keys: privacy-proxy-${{ runner.os }}-
+
+      - name: Format
+        run: cargo fmt --check
+
+      # `--all-targets` so the test files are linted too, and `-D warnings` so a
+      # new clippy release cannot land a warning unnoticed. The parser's own
+      # `deny(indexing_slicing, unwrap_used, panic, ...)` is enforced here.
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      # Includes the proptest suite: the "arbitrary bytes never panic the
+      # parser" property is the reason this crate is Rust rather than C.
+      - name: Tests
+        run: cargo test --locked
+
+      # musl-tools supplies musl-gcc, the linker for the static target. This is
+      # the artefact deploy/Dockerfile ships to routers, so a musl-only break
+      # must fail here rather than at image build time.
+      - name: Static musl build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          cargo build --release --target x86_64-unknown-linux-musl --locked
+
+      - name: Verify the artefact is a static binary that runs
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/release/polysiem-privacy-proxy
+          file "$BIN"
+          # No dynamic interpreter: the whole point of musl here.
+          if ldd "$BIN" 2>&1 | grep -qv 'not a dynamic executable'; then
+            echo "::error::proxy binary is dynamically linked"; ldd "$BIN"; exit 1
+          fi
+          "$BIN" --version
+          "$BIN" --check tests/fixtures/reference.conf
+
+      # The datapath test moves real bytes through the real binary with netfilter
+      # genuinely redirecting into it, which needs NET_ADMIN to install the
+      # REDIRECT rule and root to bind port 443 - hence a container rather than
+      # the runner. It is the only test that covers `splice`, `SO_ORIGINAL_DST`,
+      # `SO_BINDTODEVICE` and the killswitch at all.
+      #
+      # POLYSIEM_DATAPATH_TESTS=required turns the test's own self-skip into a
+      # failure. Without it a missing capability would look exactly like a pass,
+      # and the datapath would quietly stop being covered.
+      - name: Datapath integration test (real sockets, nftables, splice)
+        run: |
+          docker run --rm --cap-add=NET_ADMIN \
+            -v "$PWD:/src:ro" \
+            -e CARGO_TARGET_DIR=/tmp/target \
+            -e POLYSIEM_DATAPATH_TESTS=required \
+            -w /src rust:1-alpine \
+            sh -c "apk add --no-cache musl-dev nftables iproute2 \
+                   && cargo test --locked --test datapath -- --nocapture"
+
   shellcheck:
     name: Shellcheck deploy scripts
     runs-on: ubuntu-latest

@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { scenarioOptionsFromMockUrl } from "@/lib/demo/catalog";
+import { managedHostBaseUrlIssue, normalizeManagedHostBaseUrl } from "@/lib/managed-host-url";
+import { sshBaseUrlSchema, sshHostKeyFingerprintSchema } from "@/lib/ssh/target";
 
 /** Credentials shapes stored encrypted inside IntegrationConfig.encryptedCredentials. */
 export const proxmoxCredentialsSchema = z.object({
@@ -265,7 +267,7 @@ export const edgeNatSettingsSchema = z.object({
   publicKeyFingerprint: z.string().startsWith("SHA256:").max(128).optional(),
   authorizedKey: z.string().startsWith("restrict,command=").max(12_000).optional(),
   installScript: z.string().max(100_000).optional(),
-  hostKeyFingerprint: z.string().startsWith("SHA256:").max(128).nullable().default(null),
+  hostKeyFingerprint: sshHostKeyFingerprintSchema.nullable().default(null),
   // These describe traffic direction, not trusted/untrusted network zones.
   // A public target reached through the server's WAN route legitimately uses
   // the same Linux interface for both values (for example eth0 -> eth0).
@@ -458,18 +460,12 @@ const baseIntegration = {
   enabled: z.boolean().default(true),
 };
 
-const edgeNatBaseUrlSchema = z.string().trim().superRefine((value, ctx) => {
-  try {
-    const url = new URL(value);
-    const port = url.port ? Number(url.port) : 22;
-    if (url.protocol !== "ssh:" || !url.hostname || url.username || url.password || !["", "/"].includes(url.pathname) || url.search || url.hash) {
-      throw new Error();
-    }
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error();
-  } catch {
-    ctx.addIssue({ code: "custom", message: "Use ssh://hostname:port (for example ssh://edge.example.com:22)" });
-  }
-});
+/**
+ * An edge server address is a managed-host `ssh://` address; the encoding is
+ * shared so the validator and the transport that parses the stored value cannot
+ * disagree about what a valid endpoint is.
+ */
+const edgeNatBaseUrlSchema = sshBaseUrlSchema;
 
 const censysBaseUrlSchema = z.string().trim().superRefine((value, ctx) => {
   try {
@@ -730,8 +726,30 @@ export const embeddingConfigSchema = z.object({
 });
 export type EmbeddingConfigInput = z.infer<typeof embeddingConfigSchema>;
 
+/**
+ * The operator's explicit answer to "what address do managed hosts reach
+ * PolySIEM at?" — empty string means "unset; keep deriving it".
+ *
+ * Refused here rather than at apply time for the same reason the apply refuses
+ * it: an address that is unreachable by construction cannot become reachable
+ * later, and storing one only moves the failure onto a remote box. The message
+ * is the shared one, so the settings field and the router apply say the same
+ * thing about the same value.
+ */
+export const managedHostBaseUrlSchema = z
+  .string()
+  .max(255)
+  .transform(normalizeManagedHostBaseUrl)
+  .superRefine((value, ctx) => {
+    if (value === "") return;
+    const issue = managedHostBaseUrlIssue(value);
+    if (issue) ctx.addIssue({ code: "custom", message: issue });
+  });
+
 export const instanceSettingsSchema = z.object({
   instanceName: z.string().min(1).max(64).optional(),
+  /** Unset by default; see {@link managedHostBaseUrlSchema}. */
+  managedHostBaseUrl: managedHostBaseUrlSchema.optional(),
   developerMode: z
     .object({
       enabled: z.boolean(),

@@ -7,7 +7,7 @@ import {
   connectorClientKey,
   connectorInstallContext,
   connectorMachineRateLimited,
-  resolveConnectorBaseUrl,
+  resolveManagedHostBaseUrl,
 } from "@/lib/services/connectors";
 
 export const dynamic = "force-dynamic";
@@ -50,8 +50,13 @@ export const GET = handleApi(async (req: NextRequest) => {
   // `polysiem-connector` account and plants that authorized_keys line, so
   // PolySIEM can manage this end over SSH as well as by polling. A phase-1 row
   // without one gets the original token/poll-only script, unchanged.
+  // The base URL is baked into `/etc/polysiem-connector/config` and the agent
+  // polls it FOREVER, so a declared managed-host address outranks the Host
+  // header this request happened to arrive with — which, when the operator
+  // pasted the command through a port-forward or an SSH tunnel, names an address
+  // that stops existing the moment they close it.
   return script(buildConnectorInstallScript({
-    baseUrl: resolveConnectorBaseUrl(req.headers),
+    baseUrl: await resolveManagedHostBaseUrl(null, req.headers),
     token: context.token,
     connectorId: context.connectorId,
     interfaceName: context.interfaceName,

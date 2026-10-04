@@ -89,7 +89,7 @@ export function EdgeWireguardCard({ server, isAdmin }: { server: EdgeNatServer; 
     <div className="space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <p className="min-w-0 flex-1 text-xs text-muted-foreground">
-          The edge box only <span className="font-medium text-foreground">listens</span>. Every peer — a PolySIEM
+          The relay server only <span className="font-medium text-foreground">listens</span>. Every peer — a PolySIEM
           connector, an OPNsense box, any other WireGuard endpoint — dials in from its side and holds the tunnel open
           with keepalive, so nothing at home needs a public IP or an inbound port.
         </p>
@@ -152,7 +152,7 @@ function WireguardBody({
 
       {isAdmin && !settings.hasPrivateKey && (
         <p className="rounded-lg border border-info/30 bg-info/5 px-3 py-2 text-xs text-info">
-          No edge key yet. Open <span className="font-medium">Set up tunnel</span> to generate the edge keypair — the
+          No relay key yet. Open <span className="font-medium">Set up tunnel</span> to generate the relay keypair — the
           private half never leaves the server, and peers need the public half below.
         </p>
       )}
@@ -184,9 +184,9 @@ function EdgeTunnelIdentity({
         <Waypoints className="size-4 text-primary" aria-hidden="true" />
         <p className="text-sm font-medium">What peers dial</p>
       </div>
-      <CopyField label="Edge public key" value={edgePublicKey} emptyHint="Generate the edge key to reveal it" mono emphasized />
+      <CopyField label="Relay public key" value={edgePublicKey} emptyHint="Generate the relay key to reveal it" mono emphasized />
       <div className="grid gap-2 sm:grid-cols-3">
-        <CopyField label="Edge endpoint" value={peerConfig.edgeEndpoint} mono />
+        <CopyField label="Relay endpoint" value={peerConfig.edgeEndpoint} mono />
         <CopyField label="Allowed IPs (on the peer)" value={peerConfig.allowedIps.join(", ")} mono />
         <CopyField label="Persistent keepalive" value={String(keepalive)} mono />
       </div>
@@ -194,7 +194,7 @@ function EdgeTunnelIdentity({
         <PlugZap className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" />
         Adding an OPNsense box or another WireGuard endpoint? Add it in the{" "}
         <span className="font-medium text-foreground">Connectors</span> tab and pick its kind — or link a connector you
-        already run elsewhere. Either way PolySIEM allocates its tunnel address on this edge box and hands you a
+        already run elsewhere. Either way PolySIEM allocates its tunnel address on this relay server and hands you a
         paste-ready block for that side.
       </p>
     </div>
@@ -293,7 +293,7 @@ function WireguardConfigDialog({
         body: JSON.stringify(input),
       }),
     onSuccess: (result, variables) => {
-      toast.success(variables.regenerateKey ? "Edge key generated. Apply changes to push it." : "WireGuard tunnel saved. Apply changes to push it.");
+      toast.success(variables.regenerateKey ? "Relay key generated. Apply changes to push it." : "WireGuard tunnel saved. Apply changes to push it.");
       queryClient.setQueryData([WIREGUARD_QUERY_KEY, server.id], result);
       void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY });
       if (!variables.regenerateKey) onOpenChange(false);
@@ -318,7 +318,7 @@ function WireguardConfigDialog({
           <DialogHeader>
             <DialogTitle>WireGuard tunnel — {server.name}</DialogTitle>
             <DialogDescription>
-              The edge&apos;s own half of the tunnel: which interface it brings up, which UDP port it listens on, and the
+              The relay&apos;s own half of the tunnel: which interface it brings up, which UDP port it listens on, and the
               subnet peers are addressed from. Peers themselves are added as connectors.
             </DialogDescription>
           </DialogHeader>
@@ -327,7 +327,7 @@ function WireguardConfigDialog({
             <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
               <div>
                 <Label htmlFor="wg-enabled">Tunnel enabled</Label>
-                <p className="text-xs text-muted-foreground">When enabled, the edge routes NAT targets over this interface.</p>
+                <p className="text-xs text-muted-foreground">When enabled, the relay routes NAT targets over this interface.</p>
               </div>
               <Switch id="wg-enabled" checked={form.enabled} onCheckedChange={(enabled) => update({ enabled })} />
             </div>
@@ -362,7 +362,7 @@ function WireguardConfigDialog({
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
-                <Label htmlFor="wg-address">Edge tunnel address</Label>
+                <Label htmlFor="wg-address">Relay tunnel address</Label>
                 <ConfigSelect
                   id="wg-address"
                   value={form.address}
@@ -374,8 +374,8 @@ function WireguardConfigDialog({
                   invalid={Boolean(form.address) && !looksLikeCidr(form.address)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Every connector linked to this edge box gets an address from this subnet automatically (10.9.9.2, .3,
-                  …) — you never assign one. It is separate from the address that connector holds on any other edge box.
+                  Every connector linked to this relay server gets an address from this subnet automatically (10.9.9.2, .3,
+                  …) — you never assign one. It is separate from the address that connector holds on any other relay server.
                 </p>
               </div>
               <div className="grid gap-1.5">
@@ -396,7 +396,7 @@ function WireguardConfigDialog({
                 />
                 <p className="text-xs text-muted-foreground">
                   {settings.peer
-                    ? "How often the manually entered peer re-announces itself so the edge keeps its mapping open."
+                    ? "How often the manually entered peer re-announces itself so the relay keeps its mapping open."
                     : "Connectors dial in every 25 seconds; PolySIEM sets that for them. This applies to a manually entered peer only."}
                 </p>
               </div>
@@ -406,12 +406,12 @@ function WireguardConfigDialog({
               <Radio />
               <AlertTitle>The far side always initiates</AlertTitle>
               <AlertDescription>
-                The edge only listens on the port above. Connectors, OPNsense boxes, and any other peer dial in from
+                The relay only listens on the port above. Connectors, OPNsense boxes, and any other peer dial in from
                 their dynamic address and hold the tunnel open with keepalive — no inbound port at home.
               </AlertDescription>
             </Alert>
 
-            {edgePublicKey && <CopyField label="Edge public key (peers trust this)" value={edgePublicKey} mono emphasized />}
+            {edgePublicKey && <CopyField label="Relay public key (peers trust this)" value={edgePublicKey} mono emphasized />}
           </div>
 
           <DialogFooter className="gap-2 sm:justify-between">

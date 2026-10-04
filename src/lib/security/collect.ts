@@ -2,6 +2,10 @@ import "server-only";
 
 import { prisma } from "@/lib/db";
 import { verifyPassword } from "@/lib/auth/password";
+import { deriveAccessGraph, type AccessGraph } from "@/lib/topology/access";
+import { containingPveNetwork } from "@/lib/topology/pve-access";
+import { sshEgressTargets } from "./egress";
+import { readGuestFirewallPosture } from "./guest-firewall";
 import type {
   SecuritySnapshot,
   SnapshotDyndnsHost,
@@ -45,6 +49,51 @@ function guestFirewallMeta(metadata: unknown): { present: boolean; enabled: bool
   return { present: false, enabled: false };
 }
 
+const guestInterfaceSelect = {
+  select: { ip: { select: { address: true, networkId: true } } },
+} as const;
+
+/** OPNsense inter-network reachability, or null when no gateway rules are synced. */
+async function loadGatewayGraph(): Promise<{
+  graph: AccessGraph;
+  networks: { id: string; name: string; cidr: string | null }[];
+} | null> {
+  try {
+    const [networks, rules, aliases] = await Promise.all([
+      prisma.network.findMany({
+        where: { status: { not: "REMOVED" } },
+        select: { id: true, name: true, vlanId: true, cidr: true, gateway: true, externalId: true, purpose: true },
+      }),
+      prisma.firewallRule.findMany({
+        where: { status: { not: "REMOVED" }, enabled: true, source: { not: "PROXMOX" } },
+        orderBy: { sequence: "asc" },
+        select: {
+          id: true,
+          externalId: true,
+          action: true,
+          enabled: true,
+          sequence: true,
+          protocol: true,
+          sourceSpec: true,
+          destSpec: true,
+          destPort: true,
+          descriptionText: true,
+          metadata: true,
+        },
+      }),
+      prisma.firewallAlias.findMany({
+        where: { status: { not: "REMOVED" }, aliasType: { notIn: ["pve-ipset", "pve-alias"] } },
+        select: { name: true, aliasType: true, content: true },
+      }),
+    ]);
+    if (rules.length === 0 || networks.length === 0) return null;
+    return { graph: deriveAccessGraph(networks, rules, aliases), networks };
+  } catch (err) {
+    console.error("[security] gateway graph failed, skipping egress evidence:", err);
+    return null;
+  }
+}
+
 function metaFlag(metadata: unknown, key: string): unknown {
   if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
     return (metadata as Record<string, unknown>)[key];
@@ -73,6 +122,7 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
     devices,
     sshKeyDeployments,
     services,
+    gateway,
   ] = await Promise.all([
     detectDefaultAdminPassword(),
     prisma.user.findMany({
@@ -152,6 +202,7 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
         lastSeenAt: true,
         description: true,
         metadata: true,
+        interfaces: guestInterfaceSelect,
       },
     }),
     prisma.container.findMany({
@@ -165,6 +216,7 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
         lastSeenAt: true,
         description: true,
         metadata: true,
+        interfaces: guestInterfaceSelect,
       },
     }),
     prisma.device.findMany({
@@ -186,6 +238,7 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
       where: notRemoved,
       select: { id: true, name: true, status: true, port: true, protocol: true, url: true },
     }),
+    loadGatewayGraph(),
   ]);
 
   const sessionsByUser = new Map(sessionCounts.map((s) => [s.userId, s._count._all]));
@@ -207,6 +260,22 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
     plaintextHttp: (s.url ?? "").trim().toLowerCase().startsWith("http://"),
   }));
 
+  // Lateral SSH evidence: which other internal networks the gateway lets each
+  // guest's network reach on tcp/22. null = no gateway data / unmapped guest.
+  const sshEgress = (
+    interfaces: { ip: { address: string; networkId: string | null } | null }[],
+  ): string[] | null => {
+    if (!gateway) return null;
+    const networkIds = new Set<string>();
+    for (const iface of interfaces) {
+      if (!iface.ip) continue;
+      const id = iface.ip.networkId ?? containingPveNetwork(iface.ip.address, gateway.networks)?.id;
+      if (id) networkIds.add(id);
+    }
+    if (networkIds.size === 0) return null;
+    return sshEgressTargets(gateway.graph, [...networkIds]);
+  };
+
   const guests: SnapshotGuest[] = [
     ...vms.map((vm): SnapshotGuest => {
       const fw = guestFirewallMeta(vm.metadata);
@@ -222,6 +291,8 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
         firewallPresent: fw.present,
         firewallEnabled: fw.enabled,
         sshKeyCount: keysByEntity.get(vm.id) ?? 0,
+        pveFirewall: readGuestFirewallPosture(vm.metadata),
+        sshEgressNetworks: sshEgress(vm.interfaces),
       };
     }),
     ...containers.map((ct): SnapshotGuest => {
@@ -238,6 +309,8 @@ export async function collectSecuritySnapshot(): Promise<SecuritySnapshot> {
         firewallPresent: fw.present,
         firewallEnabled: fw.enabled,
         sshKeyCount: keysByEntity.get(ct.id) ?? 0,
+        pveFirewall: readGuestFirewallPosture(ct.metadata),
+        sshEgressNetworks: sshEgress(ct.interfaces),
       };
     }),
   ];

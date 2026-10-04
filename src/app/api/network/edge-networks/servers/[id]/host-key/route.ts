@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { ApiError, handleApi, jsonOk } from "@/lib/api";
 import { requireAdmin } from "@/lib/auth/guards";
-import { EdgeHostKeyScanError } from "@/lib/integrations/edge-nat/ssh";
+import { ManagedSshError } from "@/lib/ssh/managed-host";
 import { enrollEdgeHostKeySchema } from "@/lib/validators/edge-nat";
 import { enrollEdgeHostKey, inspectEdgeHostKeys } from "@/lib/services/edge-networks";
 
@@ -11,8 +11,8 @@ async function withHostKeyScanError<T>(operation: () => Promise<T>): Promise<T> 
   try {
     return await operation();
   } catch (error) {
-    if (error instanceof EdgeHostKeyScanError) {
-      throw new ApiError(502, error.code, error.message);
+    if (error instanceof ManagedSshError) {
+      throw new ApiError(error.status, error.code, error.message);
     }
     throw error;
   }

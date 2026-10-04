@@ -336,17 +336,17 @@ function ConnectorsSummaryCards({
       {/* Not "how many are shared" as a bare number — that reads as a score.
           It answers "am I running duplicate installs I do not need?" */}
       <SummaryTile
-        label="Shared by several edges"
+        label="Shared by several relays"
         value={`${summary.shared}/${summary.total}`}
         detail={edgeCount === 1
-          ? "One install can serve every edge box you add"
-          : `One install can serve all ${edgeCount} edge boxes`}
+          ? "One install can serve every relay server you add"
+          : `One install can serve all ${edgeCount} relay servers`}
         icon={Share2}
       />
       <SummaryTile
         label="Not linked yet"
         value={String(summary.unlinked)}
-        detail="Installed, but no edge box routes through them"
+        detail="Installed, but no relay server routes through them"
         icon={Link2}
       />
     </div>
@@ -383,7 +383,7 @@ function ConnectorsTabEmpty({ isAdmin, onAdd }: { isAdmin: boolean; onAdd: () =>
     <EmptyState
       icon={PlugZap}
       title="No connectors installed"
-      description="A connector runs inside your network and dials out to your edge boxes, so nothing at home needs a public IP or an inbound port. Install one and link it to as many edge boxes as you like — you never need a second copy for a second edge."
+      description="A connector runs inside your network and dials out to your relay servers, so nothing at home needs a public IP or an inbound port. Install one and link it to as many relay servers as you like — you never need a second copy for a second relay."
       action={isAdmin ? <Button onClick={onAdd}><Plus className="size-4" /> Add connector</Button> : undefined}
     />
   );
@@ -504,7 +504,7 @@ function ConnectorCardIdentity({
  * says which it is rather than competing with them.
  */
 function peerSettingsLabel(connector: ConnectorDto): string {
-  return connectorLinkSummary(connector).total > 1 ? "Peer settings (all edges)" : "Peer settings";
+  return connectorLinkSummary(connector).total > 1 ? "Peer settings (all relays)" : "Peer settings";
 }
 
 function ConnectorCardActions({
@@ -530,7 +530,7 @@ function ConnectorCardActions({
     <div className="flex flex-wrap gap-2">
       {canLinkMore && (
         <Button variant="outline" size="sm" onClick={onLink}>
-          <Link2 /> Link to an edge box
+          <Link2 /> Link to a relay server
         </Button>
       )}
       {/* The per-edge blocks live on the rows below; this one shows every edge. */}
@@ -550,7 +550,7 @@ function ConnectorCardActions({
         size="icon-sm"
         className="text-destructive hover:text-destructive"
         aria-label={`Delete ${connector.name}`}
-        title={`Remove ${connector.name} from every edge box`}
+        title={`Remove ${connector.name} from every relay server`}
         onClick={onDelete}
       >
         <Trash2 />
@@ -574,7 +574,7 @@ function ConnectorCardFacts({ connector, manual }: { connector: ConnectorDto; ma
       <ConnectorFact
         label="Tunnel interface"
         value={connectorInterfaceName(connector)}
-        hint="One interface, one peer per edge box"
+        hint="One interface, one peer per relay server"
         mono
       />
       <ConnectorFact
@@ -632,7 +632,7 @@ function ManualConnectorNote({
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2">
       <p className="min-w-0 flex-1 text-xs text-muted-foreground">
         {connector.publicKey
-          ? <>Configured by hand on {kind.farSide}. Every edge box it serves trusts the same public key — but each one gives it a different tunnel address, so the far side needs one interface address per edge.</>
+          ? <>Configured by hand on {kind.farSide}. Every relay server it serves trusts the same public key — but each one gives it a different tunnel address, so the far side needs one interface address per relay.</>
           : <>PolySIEM is waiting for {kind.farSide}&apos;s public key. Until then it is not a tunnel peer anywhere and cannot carry a route.</>}
       </p>
       {isAdmin && (
@@ -640,7 +640,7 @@ function ManualConnectorNote({
           type="button"
           variant="outline"
           size="sm"
-          title="Every edge box this connector serves, each with its own block"
+          title="Every relay server this connector serves, each with its own block"
           onClick={onSetup}
         >
           <Waypoints /> {connector.publicKey ? peerSettingsLabel(connector) : "Finish setup"}

@@ -201,7 +201,7 @@ export function ConnectorsCard({
         <p className="min-w-0 flex-1 text-xs text-muted-foreground">
           A connector <span className="font-medium text-foreground">dials out</span> from inside your network and holds
           the tunnel open. Routes set to <span className="font-medium text-foreground">Via connector</span> hand the last
-          hop to it, so the target only has to be reachable from the connector — not from the edge.{" "}
+          hop to it, so the target only has to be reachable from the connector — not from the relay.{" "}
           <span className="font-medium text-foreground">{CONNECTOR_INDEPENDENCE_COPY}</span>
         </p>
         {isAdmin && (connectors.length > 0 || connectorsQuery.isError) && (
@@ -351,7 +351,7 @@ function ConnectorCardDialogSet({
           key={dialogs.unlinking.link.id}
           connector={dialogs.unlinking.connector}
           link={dialogs.unlinking.link}
-          edgeName={servers.find((entry) => entry.id === dialogs.unlinking?.link.integrationId)?.name ?? "this edge box"}
+          edgeName={servers.find((entry) => entry.id === dialogs.unlinking?.link.integrationId)?.name ?? "this relay server"}
           onOpenChange={(open) => !open && onClose()}
         />
       )}
@@ -422,8 +422,8 @@ function ConnectorsListBody({
             ))}
           </ul>
           <p className="text-xs text-muted-foreground">
-            Tunnel addresses are allocated by PolySIEM, one per edge box a connector serves — you never assign one.
-            Linking, unlinking, disabling, or removing a connector takes effect on the edge after{" "}
+            Tunnel addresses are allocated by PolySIEM, one per relay server a connector serves — you never assign one.
+            Linking, unlinking, disabling, or removing a connector takes effect on the relay after{" "}
             <span className="font-medium">Apply</span>.
           </p>
         </>
@@ -448,12 +448,12 @@ function ConnectorsEmptyState({
       <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-primary/10 text-primary">
         <PlugZap className="size-5" aria-hidden="true" />
       </div>
-      <p className="mt-3 font-medium">This edge box has no connectors</p>
+      <p className="mt-3 font-medium">This relay server has no connectors</p>
       <p className="mx-auto mt-1 max-w-prose text-sm text-muted-foreground">
         A connector dials out from inside your network, so nothing needs a public IP or an inbound port — like a
         Cloudflare tunnel connector.{" "}
         {linkableCount > 0
-          ? "You already have one installed elsewhere: link it here instead of installing another. One connector can serve every edge box you run."
+          ? "You already have one installed elsewhere: link it here instead of installing another. One connector can serve every relay server you run."
           : "Install PolySIEM's agent on a machine that can already reach the service you want to publish, or add your OPNsense box (or any other WireGuard endpoint) and configure that side by hand."}
       </p>
       {isAdmin && (
@@ -615,7 +615,7 @@ function ConnectorRowActions({
         size="icon-sm"
         className="text-destructive hover:text-destructive"
         aria-label={`Delete ${connector.name}`}
-        title={`Remove ${connector.name} from every edge box`}
+        title={`Remove ${connector.name} from every relay server`}
         onClick={onDelete}
       >
         <Trash2 />
@@ -656,7 +656,7 @@ function ConnectorRowFacts({
           {address && (
             <span
               className="inline-flex shrink-0 items-center gap-1 text-[0.6875rem] text-muted-foreground"
-              title="PolySIEM allocates this address from this edge's subnet — operators never assign one"
+              title="PolySIEM allocates this address from this relay's subnet — operators never assign one"
             >
               <Waypoints className="size-3" aria-hidden="true" /> assigned automatically
             </span>

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { restrictedAuthorizedKey as restrictedManagedKey } from "@/lib/ssh/target";
 
 /**
  * PolySIEM connector — the reverse-tunnel "last hop" agent.
@@ -388,23 +389,15 @@ export function connectorRulesetHash(ruleset: ConnectorRuleset): string {
  *
  * `restrict` disables every channel feature (no pty, no port/agent/X11 forwarding,
  * no user rc), and the forced command means the key cannot run anything except the
- * agent — which itself only understands STATUS and APPLY. This mirrors
- * `restrictedAuthorizedKey` in the Edge NAT integration byte for byte.
+ * agent — which itself only understands STATUS and APPLY. Shape and input
+ * validation are {@link restrictedManagedKey} in `src/lib/ssh/target.ts`, shared
+ * with the Edge NAT integration so the two lines cannot drift.
  */
 export function connectorRestrictedAuthorizedKey(
   publicKey: string,
   agentPath: string = CONNECTOR_AGENT_PATH,
 ): string {
-  const key = String(publicKey ?? "").trim();
-  if (
-    !/^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}(?: [^\r\n"]*)?$/.test(key)
-  ) {
-    throw new Error("Invalid connector SSH public key");
-  }
-  if (!/^\/[A-Za-z0-9._/-]{1,255}$/.test(agentPath)) {
-    throw new Error("Invalid connector agent path");
-  }
-  return `restrict,command="sudo -n ${agentPath}" ${key}`;
+  return restrictedManagedKey({ publicKeyLine: publicKey, agentPath });
 }
 
 /**

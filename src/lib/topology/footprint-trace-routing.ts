@@ -385,6 +385,36 @@ interface ResolvedRouteOptions {
   occupied: readonly FootprintRouteSegment[];
   owner: string;
   group: string | undefined;
+  /** Other owners' segments with precomputed bounds — see `foreignSegments`. */
+  foreign: ForeignSegments;
+}
+
+interface ForeignSegments {
+  segments: FootprintRouteSegment[];
+  minX: Float64Array;
+  maxX: Float64Array;
+  minY: Float64Array;
+  maxY: Float64Array;
+}
+
+/**
+ * Every candidate trace for one route is scored against the same occupied
+ * set, so filter out the route's own segments and compute bounds once per
+ * route instead of once per candidate × segment.
+ */
+function foreignSegments(occupied: readonly FootprintRouteSegment[], owner: string): ForeignSegments {
+  const segments = occupied.filter((segment) => segment.owner !== owner);
+  const minX = new Float64Array(segments.length);
+  const maxX = new Float64Array(segments.length);
+  const minY = new Float64Array(segments.length);
+  const maxY = new Float64Array(segments.length);
+  segments.forEach(({ a, b }, index) => {
+    minX[index] = Math.min(a.x, b.x);
+    maxX[index] = Math.max(a.x, b.x);
+    minY[index] = Math.min(a.y, b.y);
+    maxY[index] = Math.max(a.y, b.y);
+  });
+  return { segments, minX, maxX, minY, maxY };
 }
 
 function resolveRouteOptions(options: FootprintRouteOptions): ResolvedRouteOptions {
@@ -399,6 +429,7 @@ function resolveRouteOptions(options: FootprintRouteOptions): ResolvedRouteOptio
     occupied: options.occupied ?? [],
     owner: options.owner ?? "",
     group: options.group,
+    foreign: foreignSegments(options.occupied ?? [], options.owner ?? ""),
   };
 }
 
@@ -543,18 +574,30 @@ function traceCollisionMetrics(
 ): { overlap: number; crossings: number; verticalCrowding: boolean } {
   let overlap = 0;
   let crossings = 0;
-  let verticalCrowding = false;
-  for (const segment of segments) {
-    for (const used of resolved.occupied) {
-      if (used.owner === resolved.owner) continue;
-      overlap += overlapLength(segment.a, segment.b, used.a, used.b);
-      if (verticalRunIsTooClose(segment.a, segment.b, used.a, used.b, resolved.minimumTraceSpacing))
-        verticalCrowding = true;
+  // Overlap, vertical crowding and crossings all need the two segments' boxes
+  // to touch (crowding: within `spacing` horizontally), so disjoint pairs are
+  // rejected on precomputed bounds before the exact checks.
+  const spacing = Math.max(resolved.minimumTraceSpacing, 0.01);
+  const { segments: foreign, minX, maxX, minY, maxY } = resolved.foreign;
+  for (const { a, b } of segments) {
+    const left = Math.min(a.x, b.x) - spacing;
+    const right = Math.max(a.x, b.x) + spacing;
+    const top = Math.min(a.y, b.y) - 0.01;
+    const bottom = Math.max(a.y, b.y) + 0.01;
+    for (let index = 0; index < foreign.length; index += 1) {
+      if (maxX[index] < left || minX[index] > right || maxY[index] < top || minY[index] > bottom) continue;
+      const used = foreign[index];
+      overlap += overlapLength(a, b, used.a, used.b);
+      // Any overlap or crowding disqualifies the candidate outright, so the
+      // exact totals no longer matter — stop scanning.
+      if (overlap > 0) return { overlap, crossings, verticalCrowding: false };
+      if (verticalRunIsTooClose(a, b, used.a, used.b, resolved.minimumTraceSpacing))
+        return { overlap, crossings, verticalCrowding: true };
       if ((resolved.group === undefined || used.group !== resolved.group) &&
-        segmentsCross(segment.a, segment.b, used.a, used.b)) crossings += 1;
+        segmentsCross(a, b, used.a, used.b)) crossings += 1;
     }
   }
-  return { overlap, crossings, verticalCrowding };
+  return { overlap, crossings, verticalCrowding: false };
 }
 
 function scoreTraceCandidate(

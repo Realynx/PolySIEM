@@ -59,6 +59,16 @@ export const BACKUP_MODELS = [
   // connector, and they carry the per-edge tunnel address a restored rule needs.
   "connectorEdgeLink",
   "edgeNatRule",
+  // Privacy router. managedHost first (PrivacyRouter points at it), then the router,
+  // then everything that hangs off the router. PrivacyRouter.defaultExitId points
+  // FORWARD at VpnExit, so it is also listed in DEFERRED_FK_COLUMNS and filled
+  // in by restore's second pass.
+  "managedHost",
+  "privacyRouter",
+  "vpnExit",
+  "privacyRoutingRule",
+  "serviceTrafficSample",
+  "serviceTrafficRollup",
   "tunnel",
   "tunnelHostname",
   "sshKey",

@@ -146,7 +146,17 @@ export interface RawFwAlias {
 }
 
 export interface RawGuestFwOptions {
-  enable?: number;
+  enable?: number | string;
+  policy_in?: string;
+  policy_out?: string;
+  ipfilter?: number | string;
+  macfilter?: number | string;
+  [key: string]: unknown;
+}
+
+/** `/cluster/firewall/options` — keys at their default value are omitted. */
+export interface RawClusterFwOptions {
+  enable?: number | string;
   policy_in?: string;
   policy_out?: string;
   [key: string]: unknown;

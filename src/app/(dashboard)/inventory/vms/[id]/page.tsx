@@ -22,6 +22,7 @@ import {
 import { EntityFormDialog } from "@/components/inventory/entity-form-dialog";
 import { bytesToGibString } from "@/components/inventory/entity-configs";
 import { MetadataCard } from "@/components/inventory/metadata-card";
+import { GuestFirewallBadges, GuestFirewallPanel, hasGuestFirewallPosture } from "@/components/inventory/guest-firewall";
 import {
   GuestsTable,
   InterfacesTable,
@@ -95,6 +96,7 @@ export default async function VmDetailPage({ params }: { params: Promise<{ id: s
           <PowerBadge state={vm.powerState} />
           <SourceBadge source={vm.source} />
           <StatusBadge status={vm.status} />
+          <GuestFirewallBadges metadata={vm.metadata} />
           {vm.host && (
             <span className="text-xs text-muted-foreground">
               on{" "}
@@ -162,6 +164,11 @@ export default async function VmDetailPage({ params }: { params: Promise<{ id: s
                 <SpecItem label="Updated">{formatRelative(vm.updatedAt)}</SpecItem>
               </SpecList>
             </SectionCard>
+            {hasGuestFirewallPosture(vm.metadata) && (
+              <SectionCard title="Proxmox firewall">
+                <GuestFirewallPanel metadata={vm.metadata} />
+              </SectionCard>
+            )}
             <SectionCard title="Tags">
               <TagPicker
                 entityType="vm"

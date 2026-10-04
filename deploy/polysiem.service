@@ -15,6 +15,13 @@ Environment=PORT=3000
 Environment=HOSTNAME=0.0.0.0
 # Generated/uploaded web certificates survive release-bundle swaps here.
 Environment=POLYSIEM_CERT_DIR=/opt/polysiem/data/certs
+# Inside an LXC, V8 sizes its heap from the HOST's memory, so on a small guest
+# it grows lazily into swap. A fixed ceiling keeps GC eager and the app in RAM
+# (768 MB suits a 2 GB guest that also runs PostgreSQL).
+Environment=NODE_OPTIONS=--max-old-space-size=768
+# Hold idle keep-alive connections for a minute so the next click reuses the
+# TLS session instead of paying a fresh handshake (Node's default is 5s).
+Environment=KEEP_ALIVE_TIMEOUT=65000
 ExecStart=/usr/bin/node tls-server.js
 Restart=always
 RestartSec=5

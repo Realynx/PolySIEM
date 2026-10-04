@@ -7,9 +7,15 @@
 #   docker build -f deploy/Dockerfile -t polysiem .
 #
 # Stages:
-#   deps    - install the full npm dependency tree (cached on lockfile)
-#   builder - prisma generate + next build (standalone output)
-#   runner  - minimal non-root runtime: standalone server + prisma CLI for migrations
+#   deps          - install the full npm dependency tree (cached on lockfile)
+#   builder       - prisma generate + next build (standalone output)
+#   proxy-builder - statically-linked musl build of the privacy router's SNI proxy
+#   runner        - minimal non-root runtime: standalone server + prisma CLI for migrations
+
+# Global build args must be declared before the first FROM to be usable in one.
+# The privacy proxy artefact is always x86_64 regardless of the image's own platform
+# - see the proxy-builder stage for why.
+ARG PRIVACY_PROXY_PLATFORM=linux/amd64
 
 # ---------------------------------------------------------------------------
 # deps: install dependencies
@@ -45,6 +51,46 @@ RUN npx prisma generate
 RUN DATABASE_URL=postgresql://build:build@localhost:5432/build \
     APP_SECRET=build-secret-placeholder-32-characters \
     npm run build
+
+# ---------------------------------------------------------------------------
+# proxy-builder: the privacy router's SNI proxy, as a static musl binary
+#
+# This binary is a PAYLOAD, not part of the runtime image: PolySIEM serves it to
+# a managed privacy router, which verifies its sha256 and installs it. Nothing in
+# this image ever executes it.
+#
+# `--platform=linux/amd64` is therefore deliberate and is NOT the image's own
+# platform. v1 supports x86_64 routers only, so the artifact must be x86_64 even
+# when the image itself is being built for arm64 - otherwise an arm64 build of
+# PolySIEM would quietly ship a binary no router can execute. On an arm64 builder
+# this stage runs under emulation, which is slow but correct; widening router
+# support means adding a target here, not editing a router.
+#
+# Static musl: no glibc dependency, so one artifact runs on Debian, Ubuntu and
+# Alpine routers alike.
+# ---------------------------------------------------------------------------
+FROM --platform=${PRIVACY_PROXY_PLATFORM} rust:1-alpine AS proxy-builder
+# `rust:alpine` ships the toolchain but not a linker or the musl C runtime.
+RUN apk add --no-cache musl-dev
+WORKDIR /src
+COPY native/privacy-proxy ./privacy-proxy
+WORKDIR /src/privacy-proxy
+# `--locked` so the shipped binary is reproducible from the committed Cargo.lock
+# rather than from whatever the registry resolved to today. The release profile
+# strips symbols itself (see Cargo.toml); alpine has no binutils.
+RUN cargo build --release --target x86_64-unknown-linux-musl --locked \
+    && install -D -m 0755 \
+         target/x86_64-unknown-linux-musl/release/polysiem-privacy-proxy \
+         /out/polysiem-privacy-proxy-x86_64 \
+    # Bare lowercase hex, no filename column: every consumer wants just the
+    # digest, and `sha256sum`'s two-column format has bitten shell readers here
+    # before. PolySIEM recomputes this from the binary at runtime anyway - the
+    # sidecar exists so the image can be audited without hashing anything.
+    && sha256sum /out/polysiem-privacy-proxy-x86_64 | cut -d' ' -f1 \
+         > /out/polysiem-privacy-proxy-x86_64.sha256 \
+    # Fail the build rather than ship something a router cannot run.
+    && test -s /out/polysiem-privacy-proxy-x86_64.sha256 \
+    && /out/polysiem-privacy-proxy-x86_64 --version
 
 # ---------------------------------------------------------------------------
 # runner: minimal runtime image
@@ -102,6 +148,15 @@ RUN cd /opt \
 ENV PRISMA_BIN=/opt/prisma-cli/node_modules/.bin/prisma \
     PRISMA_HIDE_UPDATE_MESSAGE=1 \
     CHECKPOINT_DISABLE=1
+
+# Privacy router SNI proxy, served to managed routers over the authenticated HTTP
+# path and verified by sha256 before it is installed. Read-only to the runtime
+# user: PolySIEM only ever hashes it and streams it out.
+COPY --from=proxy-builder --chown=polysiem:nodejs \
+     /out/polysiem-privacy-proxy-x86_64 \
+     /out/polysiem-privacy-proxy-x86_64.sha256 \
+     /app/assets/privacy-proxy/
+ENV POLYSIEM_PRIVACY_PROXY_DIR=/app/assets/privacy-proxy
 
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 # Strip CR in case the file was checked out with CRLF line endings on Windows

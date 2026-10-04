@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { restrictedAuthorizedKey as restrictedManagedKey } from "@/lib/ssh/target";
 import { assertEdgeBootstrapUsername, edgeBootstrapAuthorizedKey } from "./bootstrap";
 
 /** Fixed forced-command path installed by the enrollment bundle. */
@@ -418,8 +419,16 @@ case "$action" in
 esac
 `;
 
+/**
+ * The exact `authorized_keys` line PolySIEM installs for an edge server.
+ *
+ * Shape and input validation are {@link restrictedManagedKey} in
+ * `src/lib/ssh/target.ts`, shared with the connector — this used to be the
+ * unvalidated copy, which let a malformed public key break out of the quoted
+ * forced command.
+ */
 export function restrictedAuthorizedKey(publicKey: string): string {
-  return `restrict,command="sudo -n ${EDGE_AGENT_PATH}" ${publicKey}`;
+  return restrictedManagedKey({ publicKeyLine: publicKey, agentPath: EDGE_AGENT_PATH });
 }
 
 export function buildEdgeAgentInstallScript(

@@ -20,17 +20,30 @@ function readSaved(storageKey: string): PositionMap {
 // before the browser paints, so there's no visible jump.
 const useClientLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
+function samePositions(a: PositionMap, b: PositionMap): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => key in b && a[key]?.x === b[key]?.x && a[key]?.y === b[key]?.y);
+}
+
 /**
  * Remember user-dragged node positions in localStorage so a hand-tuned map
  * layout survives reloads. Positions win over the automatic layout until the
  * user resets them.
+ *
+ * `clientOnly` maps (never server-rendered) read storage on their first render
+ * so an expensive layout keyed on `positions` runs once instead of twice.
  */
-export function useSavedPositions(storageKey: string) {
-  const [positions, setPositions] = useState<PositionMap>({});
+export function useSavedPositions(storageKey: string, { clientOnly = false } = {}) {
+  const [positions, setPositions] = useState<PositionMap>(() =>
+    clientOnly && typeof window !== "undefined" ? readSaved(storageKey) : {},
+  );
 
   useClientLayoutEffect(() => {
     const saved = readSaved(storageKey);
-    setPositions((current) => (Object.keys(saved).length > 0 || Object.keys(current).length > 0 ? saved : current));
+    // Keep the current object when nothing changed: consumers memoise layout
+    // work on its identity.
+    setPositions((current) => (samePositions(current, saved) ? current : saved));
   }, [storageKey]);
 
   const savePosition = useCallback(

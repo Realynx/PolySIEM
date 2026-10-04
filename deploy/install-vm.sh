@@ -14,6 +14,10 @@
 #   --demo    provision a locked, read-only demo with login demo / demo
 #   --source  build the selected release from source instead of using a bundle
 #   --force   reinstall even when the selected release is already healthy
+#   --bundle FILE
+#             install a locally built standalone bundle (the same tarball CI
+#             publishes) instead of downloading a release; still backs up,
+#             migrates, health-checks and rolls back like a normal update
 #   --uninstall
 #             permanently remove PolySIEM, its database, config, and backups
 #
@@ -48,6 +52,7 @@ STAGED_RUNTIME=""
 DOWNLOAD_DIR=""
 RELEASE_VERSION=""
 BUNDLE_ASSET=""
+LOCAL_BUNDLE=""
 SOURCE_MODE=0
 FORCE_INSTALL=0
 UNINSTALL_MODE=0
@@ -57,6 +62,12 @@ DEMO_CONFIG_CHANGED=0
 ROLLBACK_ARMED=0
 ROLLING_BACK=0
 SERVICE_STOPPED_FOR_UPDATE=0
+# PostgreSQL settings Settings -> Database may tune via ALTER SYSTEM. Keep in
+# sync with MANAGED_SETTINGS in src/lib/postgres-tuning/catalog.ts.
+POSTGRES_TUNING_PARAMETERS="shared_buffers effective_cache_size maintenance_work_mem work_mem wal_buffers min_wal_size max_wal_size random_page_cost effective_io_concurrency checkpoint_completion_target max_worker_processes max_parallel_workers max_parallel_workers_per_gather jit"
+PG_RESTART_REQUEST="${BASE_DIR}/data/postgres-restart.request"
+PG_RESTART_PATH_UNIT="/etc/systemd/system/polysiem-postgres-restart.path"
+PG_RESTART_SERVICE_UNIT="/etc/systemd/system/polysiem-postgres-restart.service"
 
 log()  { printf '\033[1;36m[polysiem]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[polysiem]\033[0m %s\n' "$*" >&2; }
@@ -69,11 +80,16 @@ parse_args() {
             --source) SOURCE_MODE=1 ;;
             --force) FORCE_INSTALL=1 ;;
             --uninstall) UNINSTALL_MODE=1 ;;
+            --bundle)
+                [ "$#" -ge 2 ] || die "--bundle needs a path to a standalone .tar.gz"
+                shift
+                LOCAL_BUNDLE="$1"
+                ;;
             -h|--help)
                 sed -n '2,/^set -/s/^# \{0,1\}//p' "$0" 2>/dev/null || true
                 exit 0
                 ;;
-            *) die "unknown option: $1 (supported: --demo, --source, --force, --uninstall)" ;;
+            *) die "unknown option: $1 (supported: --demo, --source, --force, --bundle FILE, --uninstall)" ;;
         esac
         shift
     done
@@ -81,6 +97,16 @@ parse_args() {
         if [ "$DEMO_REQUESTED" -eq 1 ] || [ "$SOURCE_MODE" -eq 1 ] || [ "$FORCE_INSTALL" -eq 1 ]; then
             die "--uninstall cannot be combined with --demo, --source, or --force"
         fi
+        return 0
+    fi
+    if [ -n "$LOCAL_BUNDLE" ]; then
+        if [ "$SOURCE_MODE" -eq 1 ] || [ -n "$CUSTOM_REF" ] || [ "$UNINSTALL_MODE" -eq 1 ]; then
+            die "--bundle cannot be combined with --source, POLYSIEM_REF, or --uninstall"
+        fi
+        [ -f "$LOCAL_BUNDLE" ] || die "bundle not found: $LOCAL_BUNDLE"
+        LOCAL_BUNDLE="$(cd "$(dirname "$LOCAL_BUNDLE")" && pwd)/$(basename "$LOCAL_BUNDLE")"
+        # A local build may reuse the installed version number; always install.
+        FORCE_INSTALL=1
         return 0
     fi
     if [ -n "$CUSTOM_REF" ]; then
@@ -171,7 +197,22 @@ install_packages() {
     log "Using Node $(node --version), npm $(npm --version)"
 }
 
+load_local_bundle_ref() {
+    # sed (not head) consumes the whole listing, so tar never hits SIGPIPE under pipefail.
+    top="$(tar -tzf "$LOCAL_BUNDLE" | sed -n 1p)"
+    RELEASE_VERSION="$(printf '%s' "$top" | sed -n 's#^polysiem-\([0-9][0-9A-Za-z.+-]*\)/.*$#\1#p')"
+    printf '%s' "$RELEASE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' \
+        || die "could not read a version from the bundle (expected a polysiem-<version>/ top directory)"
+    POLYSIEM_REF="v${RELEASE_VERSION}"
+    BUNDLE_ASSET="$(basename "$LOCAL_BUNDLE")"
+    log "Using local bundle ${BUNDLE_ASSET} (version ${RELEASE_VERSION})"
+}
+
 load_release_ref() {
+    if [ -n "$LOCAL_BUNDLE" ]; then
+        load_local_bundle_ref
+        return 0
+    fi
     if [ -n "$POLYSIEM_REF" ]; then
         log "Using requested source ref ${POLYSIEM_REF}"
         return 0
@@ -321,6 +362,76 @@ ensure_release_metadata() {
     fi
 }
 
+grant_postgres_tuning_access() {
+    # Runs on every install and update: GRANT is idempotent, and existing
+    # installs pick up the privileges without a reinstall.
+    pg_version_num="$(sudo -u postgres psql -tAc 'SHOW server_version_num' 2>/dev/null)" || pg_version_num=""
+    pg_version_num="$(printf '%s' "$pg_version_num" | tr -d '[:space:]')"
+    case "$pg_version_num" in
+        ''|*[!0-9]*)
+            warn "Could not read the PostgreSQL version; skipping database tuning grants."
+            return 0
+            ;;
+    esac
+    if [ "$pg_version_num" -lt 150000 ]; then
+        log "PostgreSQL ${pg_version_num} predates per-parameter grants; Settings -> Database will show the tuning SQL to run manually"
+        return 0
+    fi
+
+    grant_sql=""
+    for parameter in $POSTGRES_TUNING_PARAMETERS; do
+        grant_sql="${grant_sql}GRANT ALTER SYSTEM ON PARAMETER ${parameter} TO polysiem; "
+    done
+    grant_sql="${grant_sql}GRANT EXECUTE ON FUNCTION pg_catalog.pg_reload_conf() TO polysiem;"
+    if sudo -u postgres psql -v ON_ERROR_STOP=1 -d polysiem -qc "$grant_sql" >/dev/null 2>&1; then
+        log "Granted PostgreSQL tuning privileges to role 'polysiem'"
+    else
+        warn "Could not grant PostgreSQL tuning privileges; Settings -> Database will show the SQL to run manually."
+    fi
+}
+
+install_postgres_restart_helper() {
+    # The app runs unprivileged (NoNewPrivileges), so it asks for a PostgreSQL
+    # restart by creating a file; this root path unit acts on it.
+    mkdir -p "${BASE_DIR}/data"
+    chown polysiem:polysiem "${BASE_DIR}/data"
+
+    cat > "$PG_RESTART_SERVICE_UNIT" <<EOF
+[Unit]
+Description=Restart PostgreSQL on request from PolySIEM (Settings -> Database)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/rm -f ${PG_RESTART_REQUEST}
+ExecStart=/bin/echo "PolySIEM requested a PostgreSQL restart; restarting postgresql.service"
+ExecStart=/bin/systemctl restart postgresql
+EOF
+    cat > "$PG_RESTART_PATH_UNIT" <<EOF
+[Unit]
+Description=Watch for PolySIEM PostgreSQL restart requests
+
+[Path]
+PathExists=${PG_RESTART_REQUEST}
+Unit=polysiem-postgres-restart.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 0644 "$PG_RESTART_SERVICE_UNIT" "$PG_RESTART_PATH_UNIT"
+    systemctl daemon-reload
+    systemctl enable --now polysiem-postgres-restart.path >/dev/null 2>&1 \
+        || warn "Could not enable polysiem-postgres-restart.path; restart PostgreSQL manually after tuning."
+    if ! grep -q '^POLYSIEM_PG_RESTART_HELPER=' "$ENV_FILE"; then
+        printf 'POLYSIEM_PG_RESTART_HELPER=true\n' >> "$ENV_FILE"
+    fi
+}
+
+configure_postgres_tuning() {
+    grant_postgres_tuning_access
+    install_postgres_restart_helper
+}
+
 current_release_is_healthy() {
     [ "$SOURCE_MODE" -eq 0 ] || return 1
     [ "$FORCE_INSTALL" -eq 0 ] || return 1
@@ -373,7 +484,7 @@ prepare_source_runtime() {
     cp "${APP_DIR}/deploy/polysiem.service" "${STAGED_RUNTIME}/polysiem.service"
 }
 
-prepare_bundle_runtime() {
+download_release_bundle() {
     exact_release_base="https://github.com/${REPO_SLUG}/releases/download/v${RELEASE_VERSION}"
     DOWNLOAD_DIR="$(mktemp -d /tmp/polysiem-runtime.XXXXXX)"
     bundle_path="${DOWNLOAD_DIR}/${BUNDLE_ASSET}"
@@ -393,6 +504,15 @@ prepare_bundle_runtime() {
         die "checksum verification failed for ${BUNDLE_ASSET}"
     fi
     log "Release bundle checksum verified"
+}
+
+prepare_bundle_runtime() {
+    if [ -n "$LOCAL_BUNDLE" ]; then
+        bundle_path="$LOCAL_BUNDLE"
+        log "Local bundle sha256: $(sha256sum "$bundle_path" | awk '{print $1}')"
+    else
+        download_release_bundle
+    fi
 
     mkdir -p "$BASE_DIR"
     STAGED_RUNTIME="$(mktemp -d "${BASE_DIR}/.run-next.XXXXXX")"
@@ -480,6 +600,7 @@ restore_native_install() {
 uninstall_native() {
     warn "Uninstalling PolySIEM permanently (database, config, runtime, and backups)..."
     systemctl disable --now polysiem-native-auto-update.timer >/dev/null 2>&1 || true
+    systemctl disable --now polysiem-postgres-restart.path >/dev/null 2>&1 || true
     systemctl disable --now polysiem >/dev/null 2>&1 || true
 
     if command -v psql >/dev/null 2>&1 && id postgres >/dev/null 2>&1; then
@@ -513,6 +634,7 @@ uninstall_native() {
     rm -f /etc/systemd/system/polysiem.service
     rm -f /etc/systemd/system/polysiem-native-auto-update.service
     rm -f /etc/systemd/system/polysiem-native-auto-update.timer
+    rm -f "$PG_RESTART_PATH_UNIT" "$PG_RESTART_SERVICE_UNIT"
     systemctl daemon-reload
     systemctl reset-failed polysiem >/dev/null 2>&1 || true
 
@@ -654,6 +776,7 @@ main() {
     setup_database
     configure_demo_mode
     ensure_release_metadata
+    configure_postgres_tuning
 
     if current_release_is_healthy; then
         log "PolySIEM ${RELEASE_VERSION} is already installed and healthy; nothing to do."

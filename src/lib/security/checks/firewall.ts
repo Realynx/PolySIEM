@@ -6,10 +6,8 @@
  */
 
 import type { AffectedEntity, SecurityFinding, SecuritySnapshot, SnapshotFirewallRule } from "../types";
+import { checkGuestFirewall } from "./guest-firewall";
 import { isAnyProtocol, isAnySpec, isWanInterface } from "./specs";
-
-/** Minimum Proxmox guests before we'll conclude the datacenter firewall is off. */
-const CLUSTER_OFF_FLOOR = 3;
 
 /** Short human label for a rule in the affected-entity chips. */
 function ruleName(rule: SnapshotFirewallRule): string {
@@ -20,10 +18,6 @@ function ruleName(rule: SnapshotFirewallRule): string {
   const port = (rule.destPort ?? "").trim();
   const iface = (rule.interfaceName ?? "").trim();
   return `${iface ? `[${iface}] ` : ""}${src} → ${dst}${port ? `:${port}` : ""}`;
-}
-
-function isProxmoxGuest(source: string): boolean {
-  return /prox/i.test(source);
 }
 
 function countForm(count: number, singular: string, plural: string): string {
@@ -156,45 +150,9 @@ export function checkFirewall(snap: SecuritySnapshot): SecurityFinding[] {
     });
   }
 
-  // Proxmox guest-firewall state. Two distinct failure modes:
-  //   1. The datacenter firewall looks entirely off (no guest carries any
-  //      firewall metadata) — the cluster isn't isolating guests at all.
-  //   2. The firewall exists but individual guests opted out.
-  const activeGuests = snap.guests.filter((g) => g.status === "ACTIVE");
-  const pveGuests = activeGuests.filter((g) => isProxmoxGuest(g.source));
-  const clusterOff = pveGuests.length >= CLUSTER_OFF_FLOOR && pveGuests.every((g) => !g.firewallPresent);
-
-  if (clusterOff) {
-    findings.push({
-      id: "firewall-proxmox-cluster-off",
-      severity: "medium",
-      category: "firewall",
-      title: "Proxmox datacenter firewall appears to be off cluster-wide",
-      detail:
-        "None of the Proxmox guests report any firewall configuration, which is what a cluster with the datacenter firewall switched off looks like. Nothing is enforcing guest-to-guest isolation — one compromised container can reach every other VM on the bridge.",
-      remediation:
-        "Enable the firewall at Datacenter → Firewall → Options in Proxmox, then set per-guest policies. Re-sync the Proxmox integration afterwards so PolySIEM sees the change.",
-      affected: pveGuests.map((g): AffectedEntity => ({ kind: g.kind, id: g.id, name: g.name })),
-    });
-  }
-
-  const guestsNoFw = activeGuests.filter((g) => g.firewallPresent && !g.firewallEnabled);
-  if (guestsNoFw.length > 0) {
-    findings.push({
-      id: "firewall-guest-disabled",
-      severity: "medium",
-      category: "firewall",
-      title: `${guestsNoFw.length} Proxmox guest${countForm(guestsNoFw.length, " has", "s have")} the guest firewall disabled`,
-      detail:
-        "The cluster runs a datacenter firewall, but these guests opted out — they sit outside the guest-isolation policy the rest of the fleet gets.",
-      remediation:
-        "Enable the firewall on each guest (Options → Firewall) and attach the appropriate security group, or document why a guest must bypass isolation.",
-      // Medium baseline that grows with the share of exposed guests: 6-pt base
-      // + 2 pt per guest, capped at 10 (a whole fleet opting out ≈ high).
-      weight: Math.min(10, 6 + guestsNoFw.length * 2),
-      affected: guestsNoFw.map((g): AffectedEntity => ({ kind: g.kind, id: g.id, name: g.name })),
-    });
-  }
+  // Proxmox guest-firewall posture (datacenter switch, guest switch, IP
+  // filter, per-NIC firewall=1) lives in its own module.
+  findings.push(...checkGuestFirewall(snap));
 
   return findings;
 }

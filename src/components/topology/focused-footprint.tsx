@@ -1,4 +1,4 @@
-import { FootprintMap } from "@/components/topology/footprint-map";
+import { FootprintMapLazy } from "@/components/topology/footprint-map-lazy";
 import { loadFootprintInput } from "@/lib/topology/footprint-data";
 import { deriveFootprint, focusFootprintGraph } from "@/lib/topology/footprint";
 
@@ -26,7 +26,7 @@ export async function FocusedFootprint({ targetId }: { targetId: string }) {
           exposure.
         </p>
       </div>
-      <FootprintMap
+      <FootprintMapLazy
         graph={graph}
         heightClassName="h-[52vh] min-h-[420px]"
         storageKey={`polysiem:footprint:inspection:${targetId}:positions:v1`}

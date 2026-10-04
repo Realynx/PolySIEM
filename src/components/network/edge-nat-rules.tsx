@@ -82,13 +82,14 @@ export function EdgeNatRulesTab({
 function NatRulesEmptyState({ canEdit, onAdd }: { canEdit: boolean; onAdd: () => void }) {
   return (
     <div className="rounded-lg border border-dashed p-6 text-center">
-      <p className="font-medium">No ports are published</p>
+      <p className="font-medium">Nothing is relayed yet</p>
       <p className="mt-1 text-sm text-muted-foreground">
-        This server exposes no lab targets until an explicit rule is added and applied.
+        Nothing at home is reachable through this relay server until you relay a port and apply it. Pick a public
+        port, then the service it should reach: directly, or through a connector at home.
       </p>
       {canEdit && (
         <Button variant="outline" size="sm" className="mt-3" onClick={onAdd}>
-          <Plus /> Add first rule
+          <Plus /> Relay your first port
         </Button>
       )}
     </div>
@@ -320,7 +321,7 @@ export function NatRuleDialog({
       rule ? `/api/network/edge-networks/servers/${server.id}/rules/${rule.id}` : `/api/network/edge-networks/servers/${server.id}/rules`,
       { method: rule ? "PATCH" : "POST", body: JSON.stringify(input) },
     ),
-    onSuccess: () => { toast.success(`${rule ? "Updated" : "Added"} NAT rule. Apply changes when ready.`); onOpenChange(false); void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY }); },
+    onSuccess: () => { toast.success(`${rule ? "Updated" : "Added"} relayed port. Apply changes when ready.`); onOpenChange(false); void queryClient.invalidateQueries({ queryKey: EDGE_NETWORKS_QUERY_KEY }); },
     onError: (error: Error) => toast.error(error.message),
   });
   const update = (patch: Partial<NatRuleForm>) => setForm({ ...currentForm, ...patch });
@@ -352,7 +353,7 @@ export function NatRuleDialog({
     <Dialog open={open} onOpenChange={(next) => { if (next) setForm(initial); onOpenChange(next); }}>
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-lg">
         <form onSubmit={submit} className="contents">
-          <DialogHeader><DialogTitle>{rule ? "Edit" : "Add"} NAT rule</DialogTitle><DialogDescription>Publish one listener on {server.name} and send it to a private lab address.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>{rule ? "Edit relayed port" : "Relay a port"}</DialogTitle><DialogDescription>Choose a public port on {server.name} and the service at home it should reach. The relay server forwards it with nftables NAT, directly or over the relay tunnel to a connector.</DialogDescription></DialogHeader>
           <div className="grid gap-4 py-1">
             <div className="grid gap-1.5"><Label htmlFor="nat-name">Rule name</Label><Input id="nat-name" value={currentForm.name} onChange={(event) => update({ name: event.target.value })} placeholder="Plex HTTPS" autoFocus /></div>
 
@@ -369,7 +370,7 @@ export function NatRuleDialog({
 
             <div className="grid gap-3 sm:grid-cols-[0.7fr_1fr]">
               <div className="grid gap-1.5"><Label>Protocol</Label><Select value={currentForm.protocol} onValueChange={(value) => update({ protocol: value as NatProtocol })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="tcp">TCP</SelectItem><SelectItem value="udp">UDP</SelectItem></SelectContent></Select></div>
-              <div className="grid gap-1.5"><Label htmlFor="public-port">Edge port</Label><Input id="public-port" inputMode="numeric" value={currentForm.publicPort} onChange={(event) => update({ publicPort: event.target.value })} placeholder="443" /></div>
+              <div className="grid gap-1.5"><Label htmlFor="public-port">Relay port</Label><Input id="public-port" inputMode="numeric" value={currentForm.publicPort} onChange={(event) => update({ publicPort: event.target.value })} placeholder="443" /></div>
             </div>
             <div className="grid gap-3 sm:grid-cols-[1fr_0.55fr]">
               <div className="grid gap-1.5"><Label htmlFor="target-address">{targetCopy.label}</Label><Input id="target-address" value={currentForm.targetAddress} onChange={(event) => update({ targetAddress: event.target.value })} placeholder={targetCopy.placeholder} /></div>
@@ -467,10 +468,10 @@ function NatRuleConnectorField({
         </SelectContent>
       </Select>
       <p className="text-xs text-muted-foreground">
-        Only connectors linked to {server.name} are listed. Traffic lands on the edge port below, crosses the tunnel to{" "}
-        {address ? <code className="font-mono">{address}</code> : "its address on this edge"}, and the connector
+        Only connectors linked to {server.name} are listed. Traffic lands on the relay port below, crosses the tunnel to{" "}
+        {address ? <code className="font-mono">{address}</code> : "its address on this relay"}, and the connector
         delivers it — that address is assigned automatically, and the same connector holds a different one on every
-        other edge box it serves.
+        other relay server it serves.
       </p>
       {selected && (
         <ConnectorSetupDisclosure
@@ -516,7 +517,7 @@ function NatRuleNoConnectors({
       <AlertTitle>No connector is ready on {serverName}</AlertTitle>
       <AlertDescription className="grid gap-2">
         <span>
-          A connector is installed once and can serve several edge boxes. Link one you already run to {serverName}, or
+          A connector is installed once and can serve several relay servers. Link one you already run to {serverName}, or
           add a new one from the Connectors tab and run its install command.
         </span>
         {onLinkConnector && (

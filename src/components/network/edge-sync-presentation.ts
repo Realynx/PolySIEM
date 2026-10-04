@@ -52,8 +52,8 @@ function stagedRuleCount(server: EdgeNatServer): number {
 
 function stagedHeadline(server: EdgeNatServer): string {
   const staged = stagedRuleCount(server);
-  if (staged === 0) return "Saved changes have not been pushed to the edge yet";
-  return `${staged} route${staged === 1 ? "" : "s"} staged · not pushed to the edge yet`;
+  if (staged === 0) return "Saved changes have not been pushed to the relay yet";
+  return `${staged} relayed port${staged === 1 ? "" : "s"} staged · not pushed to the relay yet`;
 }
 
 function disabledSummary(server: EdgeNatServer, appliedRuleCount: number | null): EdgeSyncSummary {
@@ -61,7 +61,7 @@ function disabledSummary(server: EdgeNatServer, appliedRuleCount: number | null)
   if (!cleanup) {
     return {
       tone: "disabled",
-      headline: "Management is off · the edge reports no PolySIEM rules",
+      headline: "Management is off · the relay reports no PolySIEM rules",
       detail: "Nothing PolySIEM manages is forwarding here. The server stays listed so the cleanup stays auditable.",
       actionLabel: null,
       actionUrgent: false,
@@ -71,7 +71,7 @@ function disabledSummary(server: EdgeNatServer, appliedRuleCount: number | null)
   return {
     tone: "cleanup",
     headline: `Management is off, but ${count} rule${appliedRuleCount === 1 ? "" : "s"} may still be forwarding`,
-    detail: "Turning management off does not remove rules from the edge. Clearing sends an empty managed ruleset and waits for the server to confirm it.",
+    detail: "Turning management off does not remove rules from the relay. Clearing sends an empty managed ruleset and waits for the server to confirm it.",
     actionLabel: "Clear remote rules",
     actionUrgent: true,
   };
@@ -92,7 +92,7 @@ export function edgeSyncSummary(server: EdgeNatServer): EdgeSyncSummary {
   if (state.drift === "drifted") {
     return {
       tone: "drifted",
-      headline: "The edge is running something other than what is saved here",
+      headline: "The relay is running something other than what is saved here",
       detail: "Its ruleset changed outside PolySIEM. Applying replaces it with the saved rules.",
       actionLabel: "Re-apply saved rules",
       actionUrgent: true,
@@ -111,15 +111,15 @@ export function edgeSyncSummary(server: EdgeNatServer): EdgeSyncSummary {
     return {
       tone: "synced",
       headline: `In sync${appliedAgoClause(server, state.observedAt)}`,
-      detail: "The edge is running exactly the routes saved here.",
+      detail: "The relay is running exactly the ports saved here.",
       actionLabel: "Re-apply",
       actionUrgent: false,
     };
   }
   return {
     tone: "unknown",
-    headline: "PolySIEM has not confirmed what the edge is running",
-    detail: "No successful apply has been recorded yet. Applying pushes the saved routes and records the result.",
+    headline: "PolySIEM has not confirmed what the relay is running",
+    detail: "No successful apply has been recorded yet. Applying pushes the saved ports and records the result.",
     actionLabel: "Apply rules",
     actionUrgent: true,
   };
@@ -162,13 +162,13 @@ export function edgeSyncFacts(server: EdgeNatServer): EdgeSyncFact[] {
   const forwarding = settings.syncedSnapshot?.ipForwarding ?? settings.enableIpForwarding;
   const facts: EdgeSyncFact[] = [
     { label: "Saved revision", value: revisionText(state.desiredRevision) },
-    { label: "Revision on the edge", value: revisionText(state.appliedRevision) },
+    { label: "Revision on the relay", value: revisionText(state.appliedRevision) },
     { label: "Saved ruleset hash", value: shortRulesetHash(state.desiredHash), mono: true, copy: state.desiredHash ?? undefined },
-    { label: "Ruleset hash on the edge", value: shortRulesetHash(state.appliedHash), mono: true, copy: state.appliedHash ?? undefined },
+    { label: "Ruleset hash on the relay", value: shortRulesetHash(state.appliedHash), mono: true, copy: state.appliedHash ?? undefined },
     { label: "Rules saved here", value: countText(state.desiredRuleCount) },
-    { label: "Rules confirmed on the edge", value: countText(state.appliedRuleCount) },
+    { label: "Rules confirmed on the relay", value: countText(state.appliedRuleCount) },
     { label: "Remote state observed", value: state.observedAt ? formatRelative(state.observedAt) : "Never" },
-    { label: "IP forwarding on the edge", value: forwarding ? "Enabled" : "Enabled by the next apply" },
+    { label: "IP forwarding on the relay", value: forwarding ? "Enabled" : "Enabled by the next apply" },
   ];
   if (settings.hostKeyFingerprint) {
     facts.push({ label: "Pinned host key", value: settings.hostKeyFingerprint, mono: true, copy: settings.hostKeyFingerprint });
@@ -291,7 +291,7 @@ export function edgeRoutePath(
   integrationId: string,
 ): EdgeRoutePath {
   if (ruleRouteMode(rule) !== "connector") {
-    return { kind: "direct", label: "Direct from the edge", address: null, note: null, noteDetail: null };
+    return { kind: "direct", label: "Direct from the relay", address: null, note: null, noteDetail: null };
   }
   const connector = connectors.find(
     (entry) => entry.id === rule.connectorId || entry.connectorId === rule.connectorId,
@@ -319,16 +319,16 @@ export function edgeServersNeedingCleanup(servers: readonly EdgeNatServer[]): Ed
 /** The concept the old always-on diagram taught, as collapsed reference copy. */
 export const EDGE_TRAFFIC_PATH_STEPS: ReadonlyArray<{ title: string; detail: string }> = [
   {
-    title: "The internet reaches the edge server",
-    detail: "Clients connect to the edge server's public address, so the home WAN address never appears in a published rule.",
+    title: "The internet reaches the relay server",
+    detail: "Clients connect to the relay server's public address, so the home WAN address never appears in a published rule.",
   },
   {
-    title: "One rule per published port",
+    title: "One rule per relayed port",
     detail: "Nothing is exposed until a rule exists and has been applied. An allowed source CIDR narrows who may enter it.",
   },
   {
-    title: "The edge forwards to a private target",
-    detail: "Directly, when the edge can already reach the target — or over the tunnel to a connector inside your network, which makes the last hop.",
+    title: "The relay forwards to a private target",
+    detail: "Directly, when the relay can already reach the target — or over the tunnel to a connector inside your network, which makes the last hop.",
   },
 ];
 

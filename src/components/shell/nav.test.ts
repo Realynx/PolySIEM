@@ -5,15 +5,31 @@ describe("navigation ordering", () => {
   const groupTitleFor = (href: string) =>
     NAV_GROUPS.find((group) => group.items.some((item) => item.href === href))?.title;
 
-  it("leads with firewall, access map, edge networks, and networks in that order", () => {
+  it("leads with firewall, privacy router, access map, and edge networks in that order", () => {
     const network = NAV_GROUPS.find((group) => group.title === "Network");
 
     expect(network?.items.slice(0, 4).map(({ title, href }) => ({ title, href }))).toEqual([
       { title: "Firewall", href: "/firewall" },
+      { title: "Privacy router", href: "/network/privacy-router" },
       { title: "Access map", href: "/network/access-map" },
       { title: "Edge networks", href: "/network/edge-networks" },
-      { title: "Networks", href: "/network" },
     ]);
+  });
+
+  it("puts the privacy router directly under Firewall, with an icon Edge networks does not own", () => {
+    // It is the second firewall in this product — one ordered, first-match-wins
+    // list deciding where each flow leaves — so it sits with the first one
+    // rather than among the inventory pages. `Router` is Edge networks': two
+    // identical icons in one group make the rail unreadable, and the two
+    // features are not the same thing.
+    const network = NAV_GROUPS.find((group) => group.title === "Network");
+    const privacyRouter = network?.items.find((item) => item.href === "/network/privacy-router");
+    const edgeNetworks = network?.items.find((item) => item.href === "/network/edge-networks");
+
+    expect(privacyRouter?.title).toBe("Privacy router");
+    expect(network?.items.indexOf(privacyRouter!)).toBe(1);
+    expect(privacyRouter?.icon).not.toBe(edgeNetworks?.icon);
+    expect(privacyRouter?.paletteOnly).toBeUndefined();
   });
 
   it("places Lab map directly under Storage in Inventory", () => {

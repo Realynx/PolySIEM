@@ -1,16 +1,25 @@
 import "server-only";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { runCommand, runManagedSsh, type CommandResult, type CommandRunner } from "@/lib/ssh/managed-host";
 import type { DriverConfig } from "../types";
 import { edgeNatSettingsSchema, storedEdgeNatCredentialsSchema } from "@/lib/validators/integrations";
 import { assertEdgeBootstrapUsername } from "./bootstrap";
 import { buildEdgeAgentInstallScript } from "./agent";
-import { parseEdgeSshUrl, runCommand, scanEdgeHostKeys, type CommandResult, type CommandRunner } from "./ssh";
+import { edgeSshTarget } from "./ssh";
 
 export interface EdgeProvisionResult {
   stdout: string;
 }
+
+/** The forced command the operator's TEMPORARY bootstrap authorization runs. */
+const EDGE_BOOTSTRAP_COMMAND = "polysiem-edge-bootstrap";
+
+/**
+ * The installer now installs missing dependencies (wireguard-tools and friends)
+ * through the host package manager, so this budget has to cover an apt/dnf run —
+ * normally 10-30s, but a slow or stale mirror can take far longer, and timing out
+ * here leaves the box half-provisioned.
+ */
+const EDGE_BOOTSTRAP_TIMEOUT_MS = 300_000;
 
 function provisioningError(result: CommandResult): Error {
   const detail = result.stderr.trim().replace(/\s+/g, " ").slice(0, 1_000);
@@ -22,6 +31,11 @@ function provisioningError(result: CommandResult): Error {
  * Installs the root-owned helper through the temporary, forced-command admin
  * authorization. The operational private key never leaves PolySIEM and the
  * installer removes the exact temporary admin key line before succeeding.
+ *
+ * This is the second of the two custody modes in `src/lib/ssh/managed-host.ts`:
+ * the same pinned session as every operational call, but authenticating as the
+ * human admin the operator authorized by hand, running the bootstrap command
+ * with the package-manager budget above.
  */
 export async function runEdgeNatProvisioning(
   cfg: DriverConfig,
@@ -35,33 +49,16 @@ export async function runEdgeNatProvisioning(
     throw new Error("Generate the service key and pin the SSH host fingerprint before installing the helper");
   }
 
-  const observed = await scanEdgeHostKeys(cfg.baseUrl, runner);
-  const enrolled = observed.find((key) => key.fingerprint === settings.hostKeyFingerprint);
-  if (!enrolled) {
-    throw new Error("SSH host key changed or does not match the enrolled fingerprint; installation refused");
-  }
-
-  const { host, port } = parseEdgeSshUrl(cfg.baseUrl);
-  const dir = await mkdtemp(join(tmpdir(), "polysiem-edge-provision-"));
-  const privateKeyPath = join(dir, "identity");
-  const knownHostsPath = join(dir, "known_hosts");
-  try {
-    await writeFile(privateKeyPath, credentials.privateKey, { encoding: "utf8", mode: 0o600 });
-    await chmod(privateKeyPath, 0o600).catch(() => undefined);
-    await writeFile(knownHostsPath, `${enrolled.knownHostsLine}\n`, { encoding: "utf8", mode: 0o600 });
-    const result = await runner("ssh", [
-      "-T", "-p", String(port), "-i", privateKeyPath,
-      "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
-      "-o", `UserKnownHostsFile=${knownHostsPath}`, "-o", "GlobalKnownHostsFile=none",
-      "-o", "ConnectTimeout=10", `${admin}@${host}`, "polysiem-edge-bootstrap",
-      // The installer now installs missing dependencies (wireguard-tools and
-      // friends) through the host package manager, so this budget has to cover
-      // an apt/dnf run — normally 10-30s, but a slow or stale mirror can take
-      // far longer, and timing out here leaves the box half-provisioned.
-    ], buildEdgeAgentInstallScript(settings.publicKey, credentials.username, admin), 300_000);
-    if (result.code !== 0) throw provisioningError(result);
-    return { stdout: result.stdout.trim().slice(0, 2_000) };
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-  }
+  const result = await runManagedSsh(edgeSshTarget(cfg, admin), {
+    remoteCommand: EDGE_BOOTSTRAP_COMMAND,
+    // The service account the installer creates is the one the OPERATIONAL key
+    // will log in as; the bootstrap account above is torn down by the installer.
+    stdin: buildEdgeAgentInstallScript(settings.publicKey, credentials.username, admin),
+    timeoutMs: EDGE_BOOTSTRAP_TIMEOUT_MS,
+    tempPrefix: "polysiem-edge-provision-",
+    hostKeyMismatchError: () =>
+      new Error("SSH host key changed or does not match the enrolled fingerprint; installation refused"),
+  }, runner);
+  if (result.code !== 0) throw provisioningError(result);
+  return { stdout: result.stdout.trim().slice(0, 2_000) };
 }

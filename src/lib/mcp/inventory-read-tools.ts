@@ -3,92 +3,108 @@ import "server-only";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { prisma } from "@/lib/db";
-import { runTool as run } from "@/lib/mcp/tool-results";
-import { searchAll } from "@/lib/services/search";
-import { ragSearch } from "@/lib/rag/search";
-import * as inventory from "@/lib/services/inventory";
-import { deviceKinds, listQuerySchema, type ListQuery } from "@/lib/validators/inventory";
-import type { EntityKind } from "@/lib/types";
+import {
+  EDGE_LIST_KINDS,
+  FIREWALL_LIST_KINDS,
+  INVENTORY_LIST_TYPES,
+  NETWORK_LIST_KINDS,
+  listEdge,
+  listFirewall,
+  listInventory,
+  listNetworkRecords,
+} from "@/lib/mcp/listings";
+import { cursorInput, detailInput, limitInput, pageArray } from "@/lib/mcp/pagination";
+import { runTool } from "@/lib/mcp/tool-results";
+import { deviceKinds } from "@/lib/validators/inventory";
 
-const ENTITY_KIND_VALUES = ["device", "vm", "container", "network", "service", "doc"] as const;
-const pageInput = z.number().int().min(1).optional().describe("Page number (50 items per page, default 1)");
-const qInput = z.string().max(255).optional().describe("Case-insensitive name filter");
-const readOnly = { readOnlyHint: true } as const;
-
-function toListQuery(args: { q?: string; page?: number; source?: string; status?: string }): ListQuery {
-  return listQuerySchema.parse({
-    q: args.q,
-    source: args.source,
-    status: args.status,
-    page: args.page ?? 1,
-  });
-}
+const readOnly = { readOnlyHint: true, openWorldHint: false } as const;
+const idInput = z.string().trim().min(1).max(128);
+const qInput = z.string().trim().max(255).optional();
 
 export function registerInventoryReadTools(server: McpServer): void {
   server.registerTool(
-    "search_inventory",
+    "list_inventory",
     {
-      title: "Search inventory",
+      title: "List inventory",
       description:
-        "Cross-entity name/title search over devices, VMs, containers, networks, services, and docs. Returns up to 8 matches per kind with ids and dashboard links. Use when you don't know an entity's id.",
+        "Page through one inventory type: device (physical hosts: hypervisors, firewalls, switches, NAS), vm, container (LXC/Docker), service (apps/endpoints), storage_pool, switch (parsed switch configs) or wireless_network (SSIDs). " +
+        "Filters: q (name substring), hostId (VMs/containers/services/storage on a host), kind (device kind), source, status (default excludes REMOVED), powerState, tag. Returns {items,total,nextCursor}. Use get_entity for one item's full detail.",
       inputSchema: {
-        query: z.string().min(1).max(255).describe("Search text (name/title substring)"),
-        kinds: z.array(z.enum(ENTITY_KIND_VALUES)).optional().describe("Restrict to these entity kinds (default: all)"),
+        type: z.enum(INVENTORY_LIST_TYPES).describe("Inventory type to list"),
+        q: qInput.describe("Case-insensitive name substring"),
+        hostId: idInput.optional().describe("Only items on this device (or, for services, this device/VM/container) id"),
+        kind: z.enum(deviceKinds).optional().describe("Device kind (type=device only)"),
+        source: z.enum(["MANUAL", "PROXMOX", "OPNSENSE", "UNIFI", "CLOUDFLARE", "TAILSCALE", "EDGE_NAT_SERVER"]).optional().describe("Record source"),
+        status: z.enum(["ACTIVE", "STALE", "REMOVED"]).optional().describe("Lifecycle status (default: everything except REMOVED)"),
+        powerState: z.enum(["RUNNING", "STOPPED", "PAUSED", "UNKNOWN"]).optional().describe("VM/container power state"),
+        tag: z.string().trim().max(48).optional().describe("Only items carrying this tag"),
+        detail: detailInput,
+        cursor: cursorInput,
+        limit: limitInput,
       },
       annotations: readOnly,
     },
-    async (args, extra) =>
-      run("read", extra, () => searchAll(args.query, args.kinds as EntityKind[] | undefined)),
+    async (args, extra) => runTool("read", extra, () => listInventory(args)),
   );
 
   server.registerTool(
-    "rag_search",
+    "list_network",
     {
-      title: "RAG search",
+      title: "List network data",
       description:
-        "Semantic vector search (RAG) over the lab's knowledge base — documentation pages plus synced inventory entities (devices, VMs, containers, networks, services). Embeds your query and returns the most similar text chunks with a cosine score, source, snippet, and dashboard link. Prefer this over search_inventory for open-ended 'what/why/how' questions where a literal name match won't do (e.g. \"what is dixie\", \"which network is the LocalServers VLAN\").",
+        "Page through layer-3 data: networks (VLANs with CIDR, gateway, purpose, counts), ip_addresses (documented IPs with owning host/VM/container), dhcp_leases (OPNsense/UniFi leases), arp (ARP/NDP neighbours seen on the wire, incl. undocumented devices), gateways (WAN gateways and their status) or dyndns (dynamic DNS hostnames). " +
+        "q matches name/IP/MAC/hostname/vendor. networkId restricts addresses, leases and ARP to one network. To identify a single IP use get_entity or investigate_ip instead.",
       inputSchema: {
-        query: z.string().min(1).max(1000).describe("Natural-language question or search text"),
-        limit: z.number().int().min(1).max(20).optional().describe("Max results to return (default 8)"),
-        sourceTypes: z
-          .array(z.enum(["doc", "device", "vm", "container", "network", "service"]))
-          .optional()
-          .describe("Restrict to these source types (default: all)"),
+        kind: z.enum(NETWORK_LIST_KINDS).describe("What to list"),
+        networkId: idInput.optional().describe("Restrict to one network id"),
+        q: qInput.describe("Substring match on name, IP, MAC, hostname or vendor"),
+        cursor: cursorInput,
+        limit: limitInput,
       },
       annotations: readOnly,
     },
-    async (args, extra) =>
-      run("read", extra, () => ragSearch(args.query, { limit: args.limit, sourceTypes: args.sourceTypes })),
+    async (args, extra) => runTool("read", extra, () => listNetworkRecords(args)),
   );
 
   server.registerTool(
-    "list_devices",
+    "list_firewall",
     {
-      title: "List devices",
+      title: "List firewall policy",
       description:
-        "Paginated list of physical devices/hosts (servers, hypervisors, firewalls, switches, NAS). Returns items with tags and VM/container/service counts, plus a total.",
+        "Page through synced firewall policy: rules (OPNsense and Proxmox guest-firewall rules with action, interface, source/dest specs, ports and the PolySIEM annotation), aliases (resolve alias names used in rule specs) or port_forwards (WAN NAT into the lab). " +
+        "Read-only: PolySIEM never pushes firewall changes. To answer \"can X reach Y?\" use check_access; for the internet-facing surface use get_exposure.",
       inputSchema: {
-        kind: z.enum(deviceKinds).optional().describe("Filter by device kind"),
-        source: z.enum(["MANUAL", "PROXMOX", "OPNSENSE", "UNIFI", "CLOUDFLARE", "TAILSCALE", "EDGE_NAT_SERVER"]).optional().describe("Filter by record source"),
-        status: z.enum(["ACTIVE", "STALE", "REMOVED"]).optional().describe("Filter by lifecycle status (default: not REMOVED)"),
-        q: qInput,
-        page: pageInput,
+        kind: z.enum(FIREWALL_LIST_KINDS).describe("What to list"),
+        interface: z.string().trim().max(64).optional().describe("Interface name, e.g. lan, wan, opt3"),
+        action: z.enum(["PASS", "BLOCK", "REJECT"]).optional().describe("Rule action (rules only)"),
+        source: z.enum(["OPNSENSE", "PROXMOX"]).optional().describe("Rule origin (rules only)"),
+        enabledOnly: z.boolean().optional().describe("Hide disabled rules/forwards"),
+        q: qInput.describe("Substring match on description, specs, annotation, alias name/content or NAT target IP"),
+        cursor: cursorInput,
+        limit: limitInput,
       },
       annotations: readOnly,
     },
-    async (args, extra) => run("read", extra, () => inventory.listDevices(toListQuery(args), args.kind)),
+    async (args, extra) => runTool("read", extra, () => listFirewall(args)),
   );
 
   server.registerTool(
-    "get_device",
+    "list_edge",
     {
-      title: "Get device",
+      title: "List edge, tunnels and overlays",
       description:
-        "Full detail for one device by id: VMs, containers, network interfaces with IPs, services, storage pools, tags, and owning integration.",
-      inputSchema: { id: z.string().min(1).describe("Device id") },
+        "Page through the lab's ingress/egress plumbing: edge_servers (Edge NAT relay VPSes with relay/connector counts), connectors (WireGuard reverse-tunnel connectors with status, handshakes and per-edge tunnel addresses), port_relays (public port → connector/target rules on edge servers), " +
+        "privacy_routers (policy-routing boxes with VPN exits and ordered routing rules), tunnels (Cloudflare/other tunnels with ingress hostnames and DNS resolution), tailscale or cloudflare (last synced account snapshots). Private keys and tokens are never included.",
+      inputSchema: {
+        kind: z.enum(EDGE_LIST_KINDS).describe("What to list"),
+        edgeServerId: idInput.optional().describe("Restrict connectors/port_relays to one edge server (integration id)"),
+        q: qInput.describe("Name substring (tunnels also match an exact ingress hostname)"),
+        cursor: cursorInput,
+        limit: limitInput,
+      },
       annotations: readOnly,
     },
-    async (args, extra) => run("read", extra, () => inventory.getDevice(args.id)),
+    async (args, extra) => runTool("read", extra, () => listEdge(args)),
   );
 
   server.registerTool(
@@ -96,30 +112,33 @@ export function registerInventoryReadTools(server: McpServer): void {
     {
       title: "List SSH keys",
       description:
-        "Documented SSH public keys with fingerprints and where each is authorized (machine, account, install method). Public keys only — PolySIEM never stores private key material.",
+        "Documented SSH public keys: type, bits, fingerprint, owner, purpose and where each key is authorized (machine, account, install method). Public information only; PolySIEM never stores private key material for documented keys.",
+      inputSchema: {
+        q: qInput.describe("Substring match on name, fingerprint, owner or comment"),
+        cursor: cursorInput,
+        limit: limitInput,
+      },
       annotations: readOnly,
     },
-    async (extra) =>
-      run("read", extra, async () => {
+    async (args, extra) =>
+      runTool("read", extra, async () => {
+        const ci = (v: string) => ({ contains: v, mode: "insensitive" as const });
         const keys = await prisma.sshKey.findMany({
-          orderBy: { createdAt: "asc" },
+          where: args.q ? { OR: [{ name: ci(args.q) }, { fingerprint: ci(args.q) }, { ownerLabel: ci(args.q) }, { comment: ci(args.q) }] } : {},
+          orderBy: { name: "asc" },
           select: {
             id: true,
             name: true,
             keyType: true,
             bits: true,
             fingerprint: true,
-            publicKey: true,
             comment: true,
             ownerLabel: true,
             purpose: true,
-            createdAt: true,
             deployments: {
               select: {
-                entityType: true,
                 username: true,
                 method: true,
-                notes: true,
                 hostLabel: true,
                 device: { select: { id: true, name: true } },
                 vm: { select: { id: true, name: true } },
@@ -128,144 +147,44 @@ export function registerInventoryReadTools(server: McpServer): void {
             },
           },
         });
-        return { keys, total: keys.length };
+        const items = keys.map(({ deployments, ...key }) => ({
+          ...key,
+          authorizedOn: deployments.map((d) => ({
+            target: d.device?.name ?? d.vm?.name ?? d.container?.name ?? d.hostLabel ?? "unknown",
+            targetId: d.device?.id ?? d.vm?.id ?? d.container?.id ?? null,
+            user: d.username,
+            method: d.method,
+          })),
+        }));
+        return pageArray(items, args);
       }),
   );
 
   server.registerTool(
-    "list_vms",
+    "list_docs",
     {
-      title: "List virtual machines",
-      description: "Paginated list of virtual machines with host reference and tags, plus a total.",
+      title: "List documentation pages",
+      description:
+        "Page through documentation pages (id, title, slug, parentId, tags, updatedAt) sorted by title; content is not included. Use get_entity with type=doc and detail=full to read a page, search mode=semantic to find pages by meaning, and write_doc to create or edit.",
       inputSchema: {
-        hostId: z.string().min(1).optional().describe("Filter to VMs on this device id"),
-        q: qInput,
-        page: pageInput,
-      },
-      annotations: readOnly,
-    },
-    async (args, extra) => run("read", extra, () => inventory.listVms(toListQuery(args), args.hostId)),
-  );
-
-  server.registerTool(
-    "get_vm",
-    {
-      title: "Get virtual machine",
-      description:
-        "Full detail for one VM by id: host, nested containers, interfaces with IPs, services, tags, and owning integration.",
-      inputSchema: { id: z.string().min(1).describe("VM id") },
-      annotations: readOnly,
-    },
-    async (args, extra) => run("read", extra, () => inventory.getVm(args.id)),
-  );
-
-  server.registerTool(
-    "list_containers",
-    {
-      title: "List containers",
-      description:
-        "Paginated list of containers (LXC/Docker/Podman) with host/VM references and tags, plus a total.",
-      inputSchema: {
-        hostId: z.string().min(1).optional().describe("Filter to containers on this device id"),
-        q: qInput,
-        page: pageInput,
-      },
-      annotations: readOnly,
-    },
-    async (args, extra) => run("read", extra, () => inventory.listContainers(toListQuery(args), args.hostId)),
-  );
-
-  server.registerTool(
-    "get_container",
-    {
-      title: "Get container",
-      description:
-        "Full detail for one container by id: host, parent VM, interfaces with IPs, services, tags, and owning integration.",
-      inputSchema: { id: z.string().min(1).describe("Container id") },
-      annotations: readOnly,
-    },
-    async (args, extra) => run("read", extra, () => inventory.getContainer(args.id)),
-  );
-
-  server.registerTool(
-    "list_networks",
-    {
-      title: "List networks",
-      description:
-        "Paginated list of networks/VLANs with tags and counts of IPs, interfaces, and DHCP leases, plus a total.",
-      inputSchema: { q: qInput, page: pageInput },
-      annotations: readOnly,
-    },
-    async (args, extra) => run("read", extra, () => inventory.listNetworks(toListQuery(args))),
-  );
-
-  server.registerTool(
-    "get_network",
-    {
-      title: "Get network",
-      description:
-        "Full detail for one network by id: IP addresses, attached interfaces (with owning device/VM/container), DHCP leases, tags, and owning integration.",
-      inputSchema: { id: z.string().min(1).describe("Network id") },
-      annotations: readOnly,
-    },
-    async (args, extra) => run("read", extra, () => inventory.getNetwork(args.id)),
-  );
-
-  server.registerTool(
-    "list_services",
-    {
-      title: "List services",
-      description:
-        "Paginated list of services (apps/endpoints) with their host device/VM/container references and tags, plus a total.",
-      inputSchema: { q: qInput, page: pageInput },
-      annotations: readOnly,
-    },
-    async (args, extra) => run("read", extra, () => inventory.listServices(toListQuery(args))),
-  );
-
-  server.registerTool(
-    "list_storage_pools",
-    {
-      title: "List storage pools",
-      description:
-        "Paginated list of storage pools (zfs/lvm/dir/nfs/cifs) with capacity figures and owning device, plus a total.",
-      inputSchema: { q: qInput, page: pageInput },
-      annotations: readOnly,
-    },
-    async (args, extra) => run("read", extra, () => inventory.listStoragePools(toListQuery(args))),
-  );
-
-  server.registerTool(
-    "get_firewall_rules",
-    {
-      title: "Get firewall rules",
-      description:
-        "OPNsense firewall rules (optionally filtered by interface or action) plus the full firewall alias list for resolving source/destination specs. Read-only; only the PolySIEM annotation field is ever writable.",
-      inputSchema: {
-        interface: z.string().max(64).optional().describe("Filter by interface name (e.g. lan, wan)"),
-        action: z.enum(["PASS", "BLOCK", "REJECT"]).optional().describe("Filter by rule action"),
+        q: qInput.describe("Title substring"),
+        parentId: idInput.optional().describe("Only direct children of this page id"),
+        cursor: cursorInput,
+        limit: limitInput,
       },
       annotations: readOnly,
     },
     async (args, extra) =>
-      run("read", extra, async () => {
-        const [rules, aliases] = await Promise.all([
-          inventory.listFirewallRules({ interfaceName: args.interface, action: args.action }),
-          inventory.listFirewallAliases(),
-        ]);
-        return { rules, aliases };
+      runTool("read", extra, async () => {
+        const docs = await prisma.docPage.findMany({
+          where: {
+            ...(args.q ? { title: { contains: args.q, mode: "insensitive" as const } } : {}),
+            ...(args.parentId ? { parentId: args.parentId } : {}),
+          },
+          orderBy: { title: "asc" },
+          select: { id: true, title: true, slug: true, parentId: true, updatedAt: true, createdVia: true, tags: { select: { tag: { select: { name: true } } } } },
+        });
+        return pageArray(docs.map((d) => ({ ...d, tags: d.tags.map((t) => t.tag.name) })), args);
       }),
-  );
-
-  server.registerTool(
-    "get_dhcp_leases",
-    {
-      title: "Get DHCP leases",
-      description:
-        "DHCP leases synced from OPNsense (IP, MAC, hostname, static flag), optionally filtered to one network.",
-      inputSchema: { networkId: z.string().min(1).optional().describe("Filter to leases on this network id") },
-      annotations: readOnly,
-    },
-    async (args, extra) => run("read", extra, () => inventory.listDhcpLeases(args.networkId)),
   );
 }

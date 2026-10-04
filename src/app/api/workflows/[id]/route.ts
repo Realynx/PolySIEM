@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { handleApi, jsonOk } from "@/lib/api";
 import { requireAdmin, requireUser } from "@/lib/auth/guards";
-import { parseWorkflowPatch } from "@/lib/workflows/schemas";
+import { updateWorkflowSchema } from "@/lib/workflows/schemas";
 import { deleteWorkflow, getWorkflow, updateWorkflow } from "@/lib/workflows/service";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -19,7 +19,7 @@ export const GET = handleApi(async (_req: NextRequest, ctx: Ctx) => {
 export const PATCH = handleApi(async (req: NextRequest, ctx: Ctx) => {
   const { user } = await requireAdmin();
   const { id } = await ctx.params;
-  const input = parseWorkflowPatch(await req.json());
+  const input = updateWorkflowSchema.parse(await req.json());
   return jsonOk(await updateWorkflow({ type: "user", userId: user.id }, id, input));
 });
 

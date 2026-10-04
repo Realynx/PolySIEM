@@ -8,7 +8,8 @@ import { generateWireguardKeypair, isValidWireguardKey, wireguardPublicFromPriva
 import { toDriverConfig } from "@/lib/integrations/config";
 import { parseEdgeApplyResponse, testEdgeNatConnection } from "@/lib/integrations/edge-nat/client";
 import { buildApplyProtocol, desiredEdgeRulesetHash, type EdgeApplyRule } from "@/lib/integrations/edge-nat/agent";
-import { EdgeHostKeyScanError, parseEdgeSshUrl, runVerifiedSsh, scanEdgeHostKeys } from "@/lib/integrations/edge-nat/ssh";
+import { runVerifiedSsh, scanEdgeHostKeys } from "@/lib/integrations/edge-nat/ssh";
+import { ManagedSshError, parseSshUrl } from "@/lib/ssh/managed-host";
 import { runEdgeNatProvisioning } from "@/lib/integrations/edge-nat/provision";
 import { allocateEdgeTunnelAddress, tunnelSubnetFrom } from "@/lib/connectors/allocate";
 import { cloudflareSettingsSchema, edgeNatSettingsSchema, elasticsearchSettingsSchema, storedEdgeNatCredentialsSchema, tailscaleSettingsSchema, wireguardTunnelSchema, type EdgeNatSettings } from "@/lib/validators/integrations";
@@ -292,7 +293,7 @@ export async function markEdgeRulesPending(tx: Prisma.TransactionClient, integra
 async function assertRuleCanListen(tx: Prisma.TransactionClient, integrationId: string, input: EdgeNatRuleInput, excludeId?: string) {
   const integration = await edgeIntegration(integrationId, tx);
   const value = normalizeRule(input);
-  const { port: sshPort } = parseEdgeSshUrl(integration.baseUrl);
+  const { port: sshPort } = parseSshUrl(integration.baseUrl);
   if (edgeNatRuleUsesManagementPort(value, sshPort)) {
     throw new ApiError(400, "management_port", "A NAT rule cannot listen on the SSH management port");
   }
@@ -572,7 +573,7 @@ export async function clearEdgeNatRules(actor: AuditActor, integrationId: string
 /** Sanitized tunnel settings (never carries a private key) plus paste-ready OPNsense values. */
 function edgeWireguardView(baseUrl: string, settings: EdgeNatSettings) {
   const tunnel = settings.wireguard ?? wireguardTunnelSchema.parse({});
-  const { host } = parseEdgeSshUrl(baseUrl);
+  const { host } = parseSshUrl(baseUrl);
   return { settings: tunnel, peerConfig: deriveEdgeWireguardPeerConfig(host, tunnel) };
 }
 
@@ -844,7 +845,7 @@ export async function getEdgeWireguardConfig(integrationId: string) {
 export async function inspectEdgeHostKeys(integrationId: string) {
   const integration = await edgeIntegration(integrationId);
   const settings = edgeNatSettingsSchema.parse(integration.settings ?? {});
-  const { host, port } = parseEdgeSshUrl(integration.baseUrl);
+  const { host, port } = parseSshUrl(integration.baseUrl);
   const keys = await scanEdgeHostKeys(integration.baseUrl);
   return {
     host, port,
@@ -908,8 +909,8 @@ export async function provisionEdgeNatService(
     });
     return { installed: true, detail: test.detail, installerOutput: installed.stdout };
   } catch (error) {
-    if (error instanceof EdgeHostKeyScanError) {
-      throw new ApiError(502, error.code, error.message);
+    if (error instanceof ManagedSshError) {
+      throw new ApiError(error.status, error.code, error.message);
     }
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
     await prisma.integrationConfig.update({

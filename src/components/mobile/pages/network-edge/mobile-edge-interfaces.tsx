@@ -151,7 +151,7 @@ function MobileEdgeInterfacesSheet({
               mono
               invalid={!publicValid}
               customPlaceholder="eth0"
-              help="The interface published traffic arrives on — usually the one holding the edge's public address."
+              help="The interface published traffic arrives on — usually the one holding the relay's public address."
             />
             <MobileSelectField
               id="m-edge-outbound-if"
@@ -179,7 +179,7 @@ function MobileEdgeInterfacesSheet({
         <div className="flex items-center justify-between gap-4 rounded-xl border p-3">
           <div>
             <Label htmlFor="m-edge-forwarding">IP forwarding</Label>
-            <p className="text-xs text-muted-foreground">Required for the edge to forward published traffic at all.</p>
+            <p className="text-xs text-muted-foreground">Required for the relay to forward published traffic at all.</p>
           </div>
           <Switch id="m-edge-forwarding" checked={forwarding} onCheckedChange={setForwarding} />
         </div>
@@ -235,7 +235,7 @@ function EdgeInterfaceTextFields({
         />
       </div>
       <p className="rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">
-        This edge has not reported its interfaces yet, so these stay free text. Sync the server and the real interfaces
+        This relay has not reported its interfaces yet, so these stay free text. Sync the server and the real interfaces
         become selectable.
       </p>
     </>

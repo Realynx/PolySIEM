@@ -38,6 +38,10 @@ const ANONYMIZE_URL_PREFIXES = [
   "/api/keys",
   "/api/logs",
   "/api/network",
+  // Already covered by "/api/network", but listed because the privacy router's
+  // traffic breakdown is keyed by real hostnames and must never be the reason
+  // demo mode leaks one. If the network prefix is ever narrowed, this stays.
+  "/api/network/privacy-router",
   "/api/search",
   "/api/security",
   "/api/tags",

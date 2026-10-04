@@ -2,54 +2,31 @@ import "server-only";
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ApiError } from "@/lib/api";
-import { prisma } from "@/lib/db";
-import { runTool as run } from "@/lib/mcp/tool-results";
+import { getIntegrationHealth } from "@/lib/ai/agent/assistant-read";
 import { triggerIntegrationSyncs } from "@/lib/services/integration-sync";
+import { getEntityDetail } from "@/lib/mcp/entity-detail";
+import { runTool } from "@/lib/mcp/tool-results";
 
-const readOnly = { readOnlyHint: true } as const;
-const INTEGRATION_STATUS_SELECT = {
-  id: true,
-  type: true,
-  name: true,
-  enabled: true,
-  lastSyncAt: true,
-  lastSyncStatus: true,
-  lastSyncError: true,
-} as const;
+const readOnly = { readOnlyHint: true, openWorldHint: false } as const;
 
 export function registerIntegrationReadTools(server: McpServer): void {
   server.registerTool(
     "get_integration_status",
     {
-      title: "Get integration status",
+      title: "Get integration and sync status",
       description:
-        "Health of configured integrations (Proxmox/OPNsense/Elasticsearch): enabled flag, last sync time, last sync status, and last error. Never exposes credentials.",
-      annotations: readOnly,
-    },
-    async (extra) =>
-      run("read", extra, () =>
-        prisma.integrationConfig.findMany({ orderBy: { name: "asc" }, select: INTEGRATION_STATUS_SELECT }),
-      ),
-  );
-
-  server.registerTool(
-    "get_sync_run",
-    {
-      title: "Get sync run",
-      description:
-        "One sync run by id: status (RUNNING/SUCCESS/PARTIAL/FAILED), trigger, timing, per-entity stats, and error. Use after trigger_sync to check progress.",
-      inputSchema: { runId: z.string().min(1).describe("SyncRun id") },
+        "Health of every configured integration (Proxmox, OPNsense, UniFi, Elasticsearch, Cloudflare, Tailscale, Edge NAT, OTX, Censys, SecurityTrails): enabled flag, last sync time/status and a sanitized last error. Pass integrationId for host and the 5 most recent sync runs, or runId to check one sync run (e.g. after trigger_sync). Never returns URLs with credentials, settings or secrets.",
+      inputSchema: {
+        integrationId: z.string().trim().min(1).max(128).optional().describe("One integration's detail"),
+        runId: z.string().trim().min(1).max(128).optional().describe("One sync run's status, stats and error"),
+      },
       annotations: readOnly,
     },
     async (args, extra) =>
-      run("read", extra, async () => {
-        const runRecord = await prisma.syncRun.findUnique({
-          where: { id: args.runId },
-          include: { integration: { select: { id: true, name: true, type: true } } },
-        });
-        if (!runRecord) throw new ApiError(404, "not_found", "Sync run not found");
-        return runRecord;
+      runTool("read", extra, async () => {
+        if (args.runId) return getEntityDetail("sync_run", args.runId, "full");
+        if (args.integrationId) return getEntityDetail("integration", args.integrationId, "full");
+        return { integrations: await getIntegrationHealth() };
       }),
   );
 }
@@ -60,12 +37,12 @@ export function registerIntegrationSyncTools(server: McpServer): void {
     {
       title: "Trigger integration sync",
       description:
-        "Trigger a read-only inventory sync from remote systems into PolySIEM. Live-query integrations such as Elasticsearch, OTX, Censys, and SecurityTrails have no sync run.",
+        "Start a read-only inventory pull from Proxmox/OPNsense/UniFi/Cloudflare/Tailscale/Edge into PolySIEM (one integration, or all enabled ones). Returns run ids; poll get_integration_status with runId. Live-query integrations (Elasticsearch, OTX, Censys, SecurityTrails) have no sync. Never changes the remote systems.",
       inputSchema: {
-        integrationId: z.string().min(1).optional().describe("Integration id (omit to sync all enabled)"),
+        integrationId: z.string().trim().min(1).optional().describe("Integration id (omit to sync all enabled)"),
       },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async (args, extra) =>
-      run("trigger_sync", extra, () => triggerIntegrationSyncs(args.integrationId, "mcp")),
+    async (args, extra) => runTool("trigger_sync", extra, () => triggerIntegrationSyncs(args.integrationId, "mcp")),
   );
 }

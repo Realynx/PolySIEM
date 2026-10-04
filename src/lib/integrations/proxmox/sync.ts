@@ -8,6 +8,7 @@ import {
   type DesiredInterface,
   type SyncStats,
 } from "../sync-helpers";
+import { guestHasSshEgressRule } from "./firewall-posture";
 
 // ---------- normalized snapshot ----------
 
@@ -43,12 +44,23 @@ export interface PveGuestNic {
   vlanTag: number | null;
   /** Configured LXC IPv4 or a QEMU guest-agent IPv4, when available. */
   ip: string | null;
+  /**
+   * `firewall=1` on the netN line — without it the guest firewall (including
+   * IP/MAC filtering) never sees this NIC's traffic. Undefined = not collected.
+   */
+  firewall?: boolean;
 }
 
 /** Per-guest firewall config (null when the guest has no firewall config). */
 export interface PveGuestFirewall {
   enabled: boolean;
   policyIn: string | null;
+  /** Outbound default policy (Proxmox default ACCEPT). Undefined = not collected. */
+  policyOut?: string | null;
+  /** IP spoofing protection (Proxmox default off). Undefined = not collected. */
+  ipfilter?: boolean;
+  /** MAC spoofing protection (Proxmox default on). Undefined = not collected. */
+  macfilter?: boolean;
   /** Security group references in the order the guest's rules list them. */
   groups: string[];
   /** Plain rules defined directly on this VM or container. */
@@ -127,10 +139,15 @@ export interface PveClusterFirewall {
   aliases: PveFwAlias[];
   /** Cluster-level rules (same shape as group rules). */
   rules: PveFirewallRule[];
+  /**
+   * Datacenter → Firewall → Options → Firewall. When false no guest firewall
+   * (rules, IP filter, MAC filter) is enforced anywhere. null = unknown.
+   */
+  enabled?: boolean | null;
 }
 
 export function emptyPveClusterFirewall(): PveClusterFirewall {
-  return { groups: [], ipsets: [], aliases: [], rules: [] };
+  return { groups: [], ipsets: [], aliases: [], rules: [], enabled: null };
 }
 
 export interface ProxmoxSnapshot {
@@ -168,18 +185,33 @@ function firewallAction(action: string): FirewallAction {
   }
 }
 
-/** Guest metadata: { node } plus firewall info when the guest has a config. */
-function guestMetadata(guest: PveGuest): Prisma.InputJsonValue {
-  if (!guest.firewall) return { node: guest.node };
-  return {
+/**
+ * Guest metadata: { node, clusterFirewallEnabled, nicFirewall? } plus firewall
+ * posture when the guest has a config. Shape is read back by
+ * readGuestFirewallPosture (src/lib/security/guest-firewall.ts).
+ */
+export function guestMetadata(guest: PveGuest, cluster: PveClusterFirewall): Prisma.InputJsonValue {
+  const meta: Record<string, Prisma.InputJsonValue | null> = {
     node: guest.node,
-    firewall: {
+    clusterFirewallEnabled: cluster.enabled ?? null,
+  };
+  if (guest.nics.some((nic) => nic.firewall !== undefined)) {
+    meta.nicFirewall = guest.nics.map((nic) => ({ name: nic.name, firewall: nic.firewall === true }));
+  }
+  if (guest.firewall) {
+    const fw: Record<string, Prisma.InputJsonValue | null> = {
       enabled: guest.firewall.enabled,
       policyIn: guest.firewall.policyIn,
       groups: guest.firewall.groups,
       localRuleCount: guest.firewall.rules.length,
-    },
-  };
+      sshEgressRule: guestHasSshEgressRule(guest, cluster.groups),
+    };
+    if (guest.firewall.policyOut !== undefined) fw.policyOut = guest.firewall.policyOut;
+    if (guest.firewall.ipfilter !== undefined) fw.ipfilter = guest.firewall.ipfilter;
+    if (guest.firewall.macfilter !== undefined) fw.macfilter = guest.firewall.macfilter;
+    meta.firewall = fw;
+  }
+  return meta;
 }
 
 /**
@@ -323,7 +355,7 @@ export async function applyProxmoxSnapshot(
             memoryBytes: guest.memoryBytes,
             diskBytes: guest.diskBytes,
             osName: guest.osName,
-            metadata: guestMetadata(guest),
+            metadata: guestMetadata(guest, snap.firewall),
           };
           const id = byExt.get(externalId);
           let vmId: string;
@@ -377,7 +409,7 @@ export async function applyProxmoxSnapshot(
             memoryBytes: guest.memoryBytes,
             diskBytes: guest.diskBytes,
             osName: guest.osName,
-            metadata: guestMetadata(guest),
+            metadata: guestMetadata(guest, snap.firewall),
           };
           const id = byExt.get(externalId);
           let containerId: string;

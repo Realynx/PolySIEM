@@ -109,6 +109,7 @@ export const proxmoxContainerProvisioner: ContainerProvisioner = {
             bridge: input.bridge,
             vlanTag: input.vlanTag ?? null,
             ip: input.ipv4Mode === "static" ? (input.ipv4Address?.split("/")[0] ?? null) : null,
+            firewall: input.firewall,
           },
         ],
         firewall: input.firewall ? { enabled: true, policyIn: null, groups: [], rules: [] } : null,

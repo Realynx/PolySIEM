@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { pushWithNavigationFeedback } from "@/components/shell/navigation-feedback";
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, Plus, RefreshCw, Router, Server, Share2 } from "lucide-react";
+import { ExternalLink, Plus, RefreshCw, Router, Share2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiFetch } from "@/components/shared/api-client";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -27,6 +27,8 @@ import {
   type OtherEdgeNetwork,
 } from "@/components/network/edge-networks-types";
 import { edgeCardsStartExpanded } from "@/components/network/cloudflare-presentation";
+import { RelayGetStarted } from "@/components/network/edge-relay-get-started";
+import { RELAY_EXPLAINER } from "@/components/network/edge-relay-presentation";
 import { MobileCloudflarePanel } from "./mobile-cloudflare";
 import { MobileAllConnectorsPanel } from "./mobile-connectors-all";
 import { MobileEdgeServerSection } from "./mobile-edge-server";
@@ -44,7 +46,7 @@ function addAction(tab: MobileEdgeTab): { label: string; href: string | null } {
   if (tab === "connectors") return { label: "Add connector", href: null };
   if (tab === "tailscale") return { label: "Connect Tailscale", href: "/settings/integrations?add=TAILSCALE" };
   if (tab === "cloudflare") return { label: "Connect Cloudflare", href: "/settings/integrations?add=CLOUDFLARE" };
-  return { label: "Add Edge NAT server", href: "/settings/integrations?add=EDGE_NAT_SERVER" };
+  return { label: "Add relay server", href: "/settings/integrations?add=EDGE_NAT_SERVER" };
 }
 
 function resolveEdgeTab(param: string | null, fallback: EdgeNetworkTab): MobileEdgeTab {
@@ -85,7 +87,7 @@ export function MobileEdgeNetworks({ isAdmin }: { isAdmin: boolean }) {
       >
         <MobileSegmented
           items={[
-            { label: `SSH · ${overview.edgeServers.length}`, href: "/network/edge-networks?tab=edge", active: tab === "edge" },
+            { label: `Relays · ${overview.edgeServers.length}`, href: "/network/edge-networks?tab=edge", active: tab === "edge" },
             {
               label: "Connectors",
               href: "/network/edge-networks?tab=connectors",
@@ -192,15 +194,7 @@ function EdgeNetworksBody({
       />
     );
   }
-  if (!hasAnyNetwork) {
-    return (
-      <EmptyState
-        icon={Router}
-        title="No edge networks connected"
-        description="Add an Edge NAT server to publish selected services through a remote IP, or connect Tailscale to inventory private routes and entry points."
-      />
-    );
-  }
+  if (!hasAnyNetwork) return <RelayGetStarted isAdmin={isAdmin} withAlternatives />;
   if (tab === "edge") return <EdgeServersPanel overview={overview} counts={counts} isAdmin={isAdmin} />;
   if (tab === "tailscale") return <TailscalePanel networks={overview.tailscale} />;
   return <MobileCloudflarePanel networks={cloudflare} isAdmin={isAdmin} />;
@@ -218,13 +212,12 @@ function EdgeServersPanel({
   return (
     <>
       {overview.edgeServers.length === 0 ? (
-        <EmptyState
-          icon={Server}
-          title="No SSH-managed edge boxes"
-          description="Add an Edge NAT server to publish selected services through a remote IP."
-        />
+        <RelayGetStarted isAdmin={isAdmin} />
       ) : (
-        <MobileSummaryLine items={edgeOverviewItems(overview, counts)} />
+        <>
+          <MobileSummaryLine items={edgeOverviewItems(overview, counts)} />
+          <p className="px-0.5 text-xs text-muted-foreground">{RELAY_EXPLAINER}</p>
+        </>
       )}
       {overview.edgeServers.map((server) => (
         <MobileEdgeServerSection
@@ -252,10 +245,10 @@ function edgeOverviewItems(
   const total = overview.edgeServers.length;
   const offline = overview.edgeServers.filter((server) => edgeServerState(server) === "offline").length;
   const items: MobileSummaryItem[] = [
-    { label: `${counts.onlineServers}/${total} online`, tone: offline > 0 ? "warning" : undefined },
-    { label: `${counts.enabledRules} published ${counts.enabledRules === 1 ? "port" : "ports"}` },
+    { label: `${counts.onlineServers}/${total} reachable`, tone: offline > 0 ? "warning" : undefined },
+    { label: `${counts.enabledRules} relayed ${counts.enabledRules === 1 ? "port" : "ports"}` },
   ];
-  if (counts.needsReconcile > 0) items.push({ label: `${counts.needsReconcile} not in sync` });
+  if (counts.needsReconcile > 0) items.push({ label: `${counts.needsReconcile} to apply` });
   return items;
 }
 

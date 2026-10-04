@@ -80,7 +80,22 @@ export function ConnectorInstallCommands({ view }: { view: ConnectorInstallComma
       <CommandBlock command={view.primary} caption="Run as root" copyLabel="Copy connector command" />
       {view.primaryNote && <p className="text-xs text-muted-foreground">{view.primaryNote}</p>}
       {view.alternate && <InstallAlternateBlock alternate={view.alternate} />}
-      <p className="text-xs text-muted-foreground">{connectorInstallReachabilityCopy(view.origin)}</p>
+      {/*
+        Reachability is a footnote while the address is merely unverified, and a
+        warning once it is provably wrong — an operator browsing on localhost or
+        through a tunnel is about to paste a command that points the connector
+        at itself, and a quiet grey line is not enough to stop that.
+      */}
+      <p
+        className={cn(
+          "text-xs",
+          view.originUnreachable
+            ? "rounded-md border border-warning/30 bg-warning/5 px-2.5 py-2 text-warning"
+            : "text-muted-foreground",
+        )}
+      >
+        {connectorInstallReachabilityCopy(view.origin)}
+      </p>
     </div>
   );
 }

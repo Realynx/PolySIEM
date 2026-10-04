@@ -34,70 +34,59 @@ export interface EntityHandlers {
 }
 
 /**
- * Parse a PATCH body with an update schema, then drop keys the client did not
- * send. The update schemas are `createXSchema.partial()`, and zod still applies
- * `.default()` values (e.g. kind, powerState, runtime) for absent keys — which
- * would trip the integration-owned field guard on synced entities.
+ * The `updateXSchema`s are built with `patchSchema`, so a key the client did not
+ * send is genuinely absent from the parsed body. That is what keeps a PATCH from
+ * tripping the integration-owned-field guard on a synced entity — parsing them
+ * with a plain `.partial()` schema would reintroduce `kind`/`powerState`/`runtime`.
  */
-function parsePatch<S extends { parse: (body: unknown) => object }>(
-  schema: S,
-  body: unknown,
-): ReturnType<S["parse"]> {
-  const parsed = schema.parse(body) as Record<string, unknown>;
-  const provided = new Set(Object.keys((body ?? {}) as Record<string, unknown>));
-  return Object.fromEntries(
-    Object.entries(parsed).filter(([key]) => provided.has(key)),
-  ) as ReturnType<S["parse"]>;
-}
-
 const INVENTORY_ENTITIES: Record<string, EntityHandlers> = {
   hosts: {
     list: (q) => inventory.listDevices(q),
     get: (id) => inventory.getDevice(id),
     create: (actor, body) => inventory.createDevice(actor, createDeviceSchema.parse(body)),
-    update: (actor, id, body) => inventory.updateDevice(actor, id, parsePatch(updateDeviceSchema, body)),
+    update: (actor, id, body) => inventory.updateDevice(actor, id, updateDeviceSchema.parse(body)),
     remove: (actor, id) => inventory.deleteDevice(actor, id),
   },
   vms: {
     list: (q) => inventory.listVms(q),
     get: (id) => inventory.getVm(id),
     create: (actor, body) => inventory.createVm(actor, createVmSchema.parse(body)),
-    update: (actor, id, body) => inventory.updateVm(actor, id, parsePatch(updateVmSchema, body)),
+    update: (actor, id, body) => inventory.updateVm(actor, id, updateVmSchema.parse(body)),
     remove: (actor, id) => inventory.deleteVm(actor, id),
   },
   containers: {
     list: (q) => inventory.listContainers(q),
     get: (id) => inventory.getContainer(id),
     create: (actor, body) => inventory.createContainer(actor, createContainerSchema.parse(body)),
-    update: (actor, id, body) => inventory.updateContainer(actor, id, parsePatch(updateContainerSchema, body)),
+    update: (actor, id, body) => inventory.updateContainer(actor, id, updateContainerSchema.parse(body)),
     remove: (actor, id) => inventory.deleteContainer(actor, id),
   },
   services: {
     list: (q) => inventory.listServices(q),
     get: (id) => inventory.getService(id),
     create: (actor, body) => inventory.createService(actor, createServiceSchema.parse(body)),
-    update: (actor, id, body) => inventory.updateService(actor, id, parsePatch(updateServiceSchema, body)),
+    update: (actor, id, body) => inventory.updateService(actor, id, updateServiceSchema.parse(body)),
     remove: (actor, id) => inventory.deleteService(actor, id),
   },
   networks: {
     list: (q) => inventory.listNetworks(q),
     get: (id) => inventory.getNetwork(id),
     create: (actor, body) => inventory.createNetwork(actor, createNetworkSchema.parse(body)),
-    update: (actor, id, body) => inventory.updateNetwork(actor, id, parsePatch(updateNetworkSchema, body)),
+    update: (actor, id, body) => inventory.updateNetwork(actor, id, updateNetworkSchema.parse(body)),
     remove: (actor, id) => inventory.deleteNetwork(actor, id),
   },
   ips: {
     list: (q) => inventory.listIps(q),
     get: (id) => inventory.getIp(id),
     create: (actor, body) => inventory.createIp(actor, createIpSchema.parse(body)),
-    update: (actor, id, body) => inventory.updateIp(actor, id, parsePatch(updateIpSchema, body)),
+    update: (actor, id, body) => inventory.updateIp(actor, id, updateIpSchema.parse(body)),
     remove: (actor, id) => inventory.deleteIp(actor, id),
   },
   storage: {
     list: (q) => inventory.listStoragePools(q),
     get: (id) => inventory.getStoragePool(id),
     create: (actor, body) => inventory.createStoragePool(actor, createStorageSchema.parse(body)),
-    update: (actor, id, body) => inventory.updateStoragePool(actor, id, parsePatch(updateStorageSchema, body)),
+    update: (actor, id, body) => inventory.updateStoragePool(actor, id, updateStorageSchema.parse(body)),
     remove: (actor, id) => inventory.deleteStoragePool(actor, id),
   },
 };

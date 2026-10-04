@@ -17,6 +17,7 @@ import { MobileKeyRow, MobileList } from "@/components/mobile/ui/mobile-list";
 import { MobileStat, MobileStatStrip } from "@/components/mobile/ui/mobile-stats";
 import { MobileCard, MobileGuestList, MobileInterfaceList, MobileServiceList } from "./detail-bits";
 import { MobileMetadataSheet } from "./metadata-sheet";
+import { GuestFirewallBadges, GuestFirewallPanel, hasGuestFirewallPosture } from "@/components/inventory/guest-firewall";
 
 type VmDetail = Awaited<ReturnType<typeof getVm>>;
 
@@ -55,6 +56,7 @@ export function MobileVmDetail({ vm, initial }: { vm: VmDetail; initial: FormVal
           <PowerBadge state={vm.powerState} className="text-xs" />
           <SourceBadge source={vm.source} />
           <StatusBadge status={vm.status} />
+          <GuestFirewallBadges metadata={vm.metadata} />
           {vm.host && (
             <span className="text-[11px] text-muted-foreground">
               on{" "}
@@ -130,6 +132,14 @@ export function MobileVmDetail({ vm, initial }: { vm: VmDetail; initial: FormVal
             />
           </MobileCard>
         </MobileSection>
+
+        {hasGuestFirewallPosture(vm.metadata) && (
+          <MobileSection title="Proxmox firewall">
+            <MobileCard>
+              <GuestFirewallPanel metadata={vm.metadata} />
+            </MobileCard>
+          </MobileSection>
+        )}
 
         <MobileSection title="Tags">
           <MobileCard>
