@@ -1,6 +1,6 @@
 {
   "name": "polysiem",
-  "version": "0.6.9",
+  "version": "0.6.10",
   "description": "PolySIEM self-hosted homelab documentation and security dashboard",
   "private": true,
   "repository": {
