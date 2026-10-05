@@ -28,6 +28,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
+# The arm64 half of the release build runs under QEMU, where registry fetches
+# time out far more often; npm's defaults (2 retries, 10–60s backoff) let one
+# dropped connection fail the whole multi-arch release.
+ENV NPM_CONFIG_FETCH_RETRIES=6 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=180000
 # The app uses the CPU execution provider. onnxruntime-node otherwise downloads
 # the large CUDA 12 provider bundle on linux/x64 during its postinstall step.
 RUN ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund
@@ -139,6 +145,7 @@ COPY --from=deps /app/package.json /tmp/app-package.json
 RUN cd /opt \
     && mkdir prisma-cli && cd prisma-cli \
     && npm install --no-save --omit=dev --no-audit --no-fund \
+         --fetch-retries=6 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=180000 \
          "prisma@$(node -p "require('/tmp/app-package.json').devDependencies.prisma")" \
     && npm cache clean --force \
     && rm /tmp/app-package.json \
